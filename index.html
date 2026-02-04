@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Shannon Robotics</title>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap"
+        rel="stylesheet" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+        rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#0ea5e9", // Electric Blue
+                        accent: "#14b8a6", // Vibrant Teal
+                        "brand-dark": "#0f172a",
+                        "background-light": "#f8fafc",
+                        "background-dark": "#020617"
+                    },
+                    fontFamily: {
+                        display: "Space Grotesk"
+                    },
+                    borderRadius: {
+                        DEFAULT: "0.25rem",
+                        lg: "0.5rem",
+                        xl: "0.75rem",
+                        full: "9999px"
+                    }
+                }
+            }
+        };
+    </script>
+    <style type="text/tailwindcss">
+        .glass-card {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .dark .glass-card {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .future-grid {
+            background-image: 
+                linear-gradient(to right, rgba(14, 165, 233, 0.1) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(14, 165, 233, 0.1) 1px, transparent 1px);
+            background-size: 40px 40px;
+            mask-image: linear-gradient(to bottom, black, black 85%, transparent);
+        }
+        .glow-line {
+            position: absolute;
+            background: linear-gradient(90deg, transparent, #0ea5e9, #14b8a6, transparent);
+            height: 1px;
+            width: 100%;
+            opacity: 0.2;
+        }
+    </style>
+</head>
+
+<body class="bg-background-dark font-display text-slate-100 transition-colors duration-300">
+    <main>
+        <section class="relative min-h-[85vh] flex flex-col items-center overflow-hidden px-6">
+            <div class="absolute inset-0 z-0">
+                <div class="future-grid absolute inset-0"></div>
+                <div class="glow-line top-10 -rotate-12"></div>
+                <div class="glow-line top-1/4 rotate-6"></div>
+                <div class="glow-line top-1/2 -rotate-3"></div>
+                <div
+                    class="absolute top-[15%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[600px] bg-primary/10 rounded-full blur-[140px]">
+                </div>
+                <div
+                    class="absolute top-[10%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-accent/10 rounded-full blur-[120px]">
+                </div>
+            </div>
+
+            <!-- Header integrated into section for blending -->
+            <header class="relative z-20 w-full pt-12 pb-4 flex justify-center text-center">
+                <img src="src/Shannon-logo-transparent.png" alt="Shannon Robotics" class="h-24 md:h-32 w-auto">
+            </header>
+
+            <div
+                class="relative z-10 max-w-5xl mx-auto text-center flex-1 flex flex-col items-center justify-center gap-10 py-12">
+                <h1 class="text-5xl md:text-7xl lg:text-8xl font-black leading-[1.1] tracking-tighter text-white">
+                    Building <span
+                        class="text-transparent bg-clip-text bg-gradient-to-r from-primary via-accent to-emerald-300">Intelligent
+                        Robots</span> <br class="hidden md:block" /> for a Smarter World
+                </h1>
+                <p class="text-lg md:text-xl text-slate-400 max-w-2xl leading-relaxed font-light">
+                    An Indonesian AI startup dedicated to create advanced robotics and implementing machine learning
+                    models for a
+                    safer, more efficient, and automated future.
+                </p>
+            </div>
+        </section>
+        <section class="py-24 bg-slate-50 dark:bg-background-dark/50">
+            <div class="max-w-7xl mx-auto px-6">
+                <div class="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-16">
+                    <div class="max-w-2xl">
+                        <h2 class="text-primary font-bold uppercase tracking-widest text-sm mb-4">Our Expertise</h2>
+                        <h3 class="text-4xl md:text-5xl font-black mb-6 text-slate-900 dark:text-white">What We Do</h3>
+                        <p class="text-lg text-slate-600 dark:text-slate-400">
+                            Comprehensive AI and robotics services tailored for modern industry needs, from physical
+                            hardware to complex neural networks.
+                        </p>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div
+                        class="glass-card p-8 rounded-3xl hover:-translate-y-2 transition-transform duration-300 flex flex-col gap-6 border-t-2 border-t-primary">
+                        <div class="size-14 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                            <span class="material-symbols-outlined text-3xl">smart_toy</span>
+                        </div>
+                        <div>
+                            <h4 class="text-xl font-bold mb-3">AI-Powered Robotic Products</h4>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">Developing
+                                cutting-edge physical robot units designed for autonomy and safety.</p>
+                        </div>
+                    </div>
+                    <div
+                        class="glass-card p-8 rounded-3xl hover:-translate-y-2 transition-transform duration-300 flex flex-col gap-6 border-t-2 border-t-accent">
+                        <div class="size-14 rounded-2xl bg-accent/10 flex items-center justify-center text-accent">
+                            <span class="material-symbols-outlined text-3xl">psychology</span>
+                        </div>
+                        <div>
+                            <h4 class="text-xl font-bold mb-3">Artificial Intelligence Development</h4>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">Custom LLMs, computer
+                                vision models, and proprietary machine learning solutions.</p>
+                        </div>
+                    </div>
+                    <div
+                        class="glass-card p-8 rounded-3xl hover:-translate-y-2 transition-transform duration-300 flex flex-col gap-6 border-t-2 border-t-primary">
+                        <div class="size-14 rounded-2xl bg-primary/10 flex items-center justify-center text-primary">
+                            <span class="material-symbols-outlined text-3xl">terminal</span>
+                        </div>
+                        <div>
+                            <h4 class="text-xl font-bold mb-3">Embedded &amp; Robotics Software</h4>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">Robust low-level code
+                                for real-time hardware control and sensor fusion.</p>
+                        </div>
+                    </div>
+                    <div
+                        class="glass-card p-8 rounded-3xl hover:-translate-y-2 transition-transform duration-300 flex flex-col gap-6 border-t-2 border-t-accent">
+                        <div class="size-14 rounded-2xl bg-accent/10 flex items-center justify-center text-accent">
+                            <span class="material-symbols-outlined text-3xl">language</span>
+                        </div>
+                        <div>
+                            <h4 class="text-xl font-bold mb-3">Smart System Integration</h4>
+                            <p class="text-slate-600 dark:text-slate-400 text-sm leading-relaxed">Seamlessly connecting
+                                smart devices, IoT sensors, and enterprise ecosystems.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <section class="py-24">
+            <div class="max-w-7xl mx-auto px-6">
+                <div class="text-center mb-20">
+                    <h3 class="text-4xl md:text-5xl font-black mb-6 text-slate-900 dark:text-white">How We Build</h3>
+                    <p class="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">Our rigorous development lifecycle
+                        ensures every robot we deploy is ready for real-world complexity.</p>
+                </div>
+                <div class="relative mb-24">
+                    <div
+                        class="hidden lg:block absolute top-10 left-0 right-0 h-px bg-slate-200 dark:bg-slate-800 -z-10">
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-12 lg:gap-8">
+                        <div class="flex flex-col items-center text-center gap-4">
+                            <div
+                                class="size-20 rounded-full bg-white dark:bg-slate-900 shadow-xl border-4 border-slate-50 dark:border-slate-800 flex items-center justify-center text-primary font-bold text-2xl group hover:border-primary transition-all">
+                                <span
+                                    class="material-symbols-outlined text-3xl group-hover:scale-110 transition-transform">search</span>
+                            </div>
+                            <h5 class="font-bold text-lg">Understand</h5>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Phase 01</p>
+                        </div>
+                        <div class="flex flex-col items-center text-center gap-4">
+                            <div
+                                class="size-20 rounded-full bg-white dark:bg-slate-900 shadow-xl border-4 border-slate-50 dark:border-slate-800 flex items-center justify-center text-primary font-bold text-2xl group hover:border-primary transition-all">
+                                <span
+                                    class="material-symbols-outlined text-3xl group-hover:scale-110 transition-transform">architecture</span>
+                            </div>
+                            <h5 class="font-bold text-lg">Design</h5>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Phase 02</p>
+                        </div>
+                        <div class="flex flex-col items-center text-center gap-4">
+                            <div
+                                class="size-20 rounded-full bg-white dark:bg-slate-900 shadow-xl border-4 border-slate-50 dark:border-slate-800 flex items-center justify-center text-primary font-bold text-2xl group hover:border-primary transition-all">
+                                <span
+                                    class="material-symbols-outlined text-3xl group-hover:scale-110 transition-transform">construction</span>
+                            </div>
+                            <h5 class="font-bold text-lg">Build &amp; Prototype</h5>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Phase 03</p>
+                        </div>
+                        <div class="flex flex-col items-center text-center gap-4">
+                            <div
+                                class="size-20 rounded-full bg-white dark:bg-slate-900 shadow-xl border-4 border-slate-50 dark:border-slate-800 flex items-center justify-center text-primary font-bold text-2xl group hover:border-primary transition-all">
+                                <span
+                                    class="material-symbols-outlined text-3xl group-hover:scale-110 transition-transform">verified</span>
+                            </div>
+                            <h5 class="font-bold text-lg">Test</h5>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Phase 04</p>
+                        </div>
+                        <div class="flex flex-col items-center text-center gap-4">
+                            <div
+                                class="size-20 rounded-full bg-white dark:bg-slate-900 shadow-xl border-4 border-slate-50 dark:border-slate-800 flex items-center justify-center text-primary font-bold text-2xl group hover:border-primary transition-all">
+                                <span
+                                    class="material-symbols-outlined text-3xl group-hover:scale-110 transition-transform">rocket_launch</span>
+                            </div>
+                            <h5 class="font-bold text-lg">Scale</h5>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-bold">Phase 05</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-col items-center gap-8">
+                    <p class="text-sm font-bold text-slate-500 uppercase tracking-widest">Key Principles</p>
+                    <div class="flex flex-wrap justify-center gap-3">
+                        <span
+                            class="px-6 py-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-primary text-sm">groups</span> Human-centered
+                        </span>
+                        <span
+                            class="px-6 py-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-accent text-sm">shield</span> Reliability
+                        </span>
+                        <span
+                            class="px-6 py-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-primary text-sm">health_and_safety</span> Safety
+                        </span>
+                        <span
+                            class="px-6 py-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-accent text-sm">trending_up</span> Scalable
+                        </span>
+                        <span
+                            class="px-6 py-2 rounded-full border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-primary text-sm">gavel</span> Ethical AI
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <section class="py-24 bg-brand-dark text-white overflow-hidden relative">
+            <div class="absolute inset-0 opacity-10">
+                <svg height="100%" width="100%" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <pattern height="40" id="grid-footer" patternUnits="userSpaceOnUse" width="40">
+                            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="white" stroke-width="1"></path>
+                        </pattern>
+                    </defs>
+                    <rect fill="url(#grid-footer)" height="100%" width="100%"></rect>
+                </svg>
+            </div>
+            <div class="max-w-7xl mx-auto px-6 relative z-10">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-20 items-center">
+                    <div class="flex flex-col gap-4">
+                        <a href="https://bohrlabs.id/" target="_blank" rel="noopener noreferrer">
+                            <img src="src/BohrLabs_logo_white.png" alt="BohrLabs Group"
+                                class="h-4 md:h-6 w-auto hover:opacity-80 transition-opacity">
+                        </a>
+                        <p class="text-xl text-white/80 leading-relaxed">
+                            Shannon is a core division of BohrLabs, an Indonesian technology group focused on the
+                            intersection of physical systems and intelligent software.
+                        </p>
+                        <div class="h-px w-32 bg-accent/50"></div>
+                        <p class="text-lg text-white/70">
+                            Our mission is simple yet profound: to build a future where intelligent machines handle the
+                            most dangerous, repetitive, and complex tasks, allowing humans to focus on creative and
+                            strategic endeavors.
+                        </p>
+                    </div>
+                    <div class="relative">
+                        <div class="absolute -inset-10 bg-primary/20 blur-3xl rounded-full"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        <footer class="bg-background-dark text-white pt-24 pb-12 border-t border-slate-800">
+            <div class="max-w-7xl mx-auto px-6">
+                <div class="flex flex-col lg:flex-row items-start lg:items-start gap-12 lg:gap-[50px] mb-20">
+                    <div class="max-w-md">
+                        <h2 class="text-4xl md:text-5xl font-black mb-8">Let’s Build the <br /><span
+                                class="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">Future
+                                Together</span></h2>
+                        <p class="text-slate-400 text-lg">Ready to transform your industrial operations
+                            with AI-powered robotics? Reach out to our team of experts today.</p>
+                    </div>
+                    <div class="flex flex-col gap-6 lg:mt-12">
+                        <div class="flex items-center gap-4">
+                            <div
+                                class="size-12 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-primary">
+                                <span class="material-symbols-outlined">mail</span>
+                            </div>
+                            <div>
+                                <p class="text-lg font-bold">hello@shannon.id</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <div
+                                class="size-12 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-accent">
+                                <span class="material-symbols-outlined">location_on</span>
+                            </div>
+                            <div>
+                                <p class="text-lg font-bold">Jakarta, Indonesia</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="pt-12 border-t border-slate-800 flex justify-center text-sm text-slate-500">
+                    <div class="flex items-center gap-2">
+                        <div
+                            class="size-6 bg-gradient-to-br from-primary to-accent rounded-sm flex items-center justify-center text-white text-[10px] font-bold">
+                            S</div>
+                        <span>© 2026 Shannon Robotics. Part of BohrLabs Group.</span>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </main>
+
+</body>
+
+</html>
