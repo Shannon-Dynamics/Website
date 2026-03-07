@@ -64,8 +64,30 @@
 </head>
 
 <body class="bg-background-dark font-display text-slate-100 transition-colors duration-300">
-    <main>
-        <section class="relative min-h-[85vh] flex flex-col items-center overflow-hidden px-6">
+    <!-- Navigation that looks good -->
+    <header class="fixed inset-x-0 top-0 z-50 bg-background-dark/80 backdrop-blur-md border-b border-white/5">
+        <nav class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+            <a href="index.html" class="flex items-center gap-3 group">
+                <img src="src/logo-horizontal-white.png" alt="Shannon Robotics"
+                    class="w-[120px] h-[76px] object-contain group-hover:opacity-80 transition-opacity" />
+            </a>
+
+            <div class="hidden items-center gap-8 text-sm md:flex">
+                <a href="index.html" class="text-white font-medium">Home</a>
+                <a href="#about-team" class="text-slate-400 hover:text-white transition-colors">About Team</a>
+                <a href="#expertise" class="text-slate-400 hover:text-white transition-colors">Expertise</a>
+                <a href="#process" class="text-slate-400 hover:text-white transition-colors">Process</a>
+            </div>
+
+            <a href="#contact"
+                class="hidden md:inline-flex items-center rounded-full bg-primary/10 border border-primary/20 px-5 py-2 text-sm font-medium text-primary hover:bg-primary/20 transition-colors">
+                Contact us
+            </a>
+        </nav>
+    </header>
+
+    <main class="pt-24">
+        <section class="relative min-h-[85vh] flex flex-col items-center justify-center overflow-hidden px-6">
             <div class="absolute inset-0 z-0">
                 <div class="future-grid absolute inset-0"></div>
                 <div class="glow-line top-10 -rotate-12"></div>
@@ -78,11 +100,6 @@
                     class="absolute top-[10%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-accent/10 rounded-full blur-[120px]">
                 </div>
             </div>
-
-            <!-- Header integrated into section for blending -->
-            <header class="relative z-20 w-full pt-12 pb-4 flex justify-center text-center">
-                <img src="src/Shannon-logo-transparent.png" alt="Shannon Robotics" class="h-24 md:h-32 w-auto">
-            </header>
 
             <div
                 class="relative z-10 max-w-5xl mx-auto text-center flex-1 flex flex-col items-center justify-center gap-10 py-12">
@@ -98,8 +115,10 @@
                 </p>
             </div>
         </section>
-        <section class="py-24 bg-slate-50 dark:bg-background-dark/50">
-            <div class="max-w-7xl mx-auto px-6">
+        <section id="expertise" class="py-24 bg-slate-50 dark:bg-background-dark/50 relative">
+            <div class="absolute inset-0 bg-gradient-to-b from-transparent to-background-dark/20 pointer-events-none">
+            </div>
+            <div class="max-w-7xl mx-auto px-6 relative z-10">
                 <div class="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-16">
                     <div class="max-w-2xl">
                         <h2 class="text-primary font-bold uppercase tracking-widest text-sm mb-4">Our Expertise</h2>
@@ -158,8 +177,11 @@
                 </div>
             </div>
         </section>
-        <section class="py-24">
-            <div class="max-w-7xl mx-auto px-6">
+        <section id="process" class="py-24 relative overflow-hidden">
+            <div class="absolute inset-0 z-0">
+                <div class="future-grid absolute inset-0 opacity-50"></div>
+            </div>
+            <div class="max-w-7xl mx-auto px-6 relative z-10">
                 <div class="text-center mb-20">
                     <h3 class="text-4xl md:text-5xl font-black mb-6 text-slate-900 dark:text-white">How We Build</h3>
                     <p class="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">Our rigorous development lifecycle
@@ -279,8 +301,183 @@
                 </div>
             </div>
         </section>
-        <footer class="bg-background-dark text-white pt-24 pb-12 border-t border-slate-800">
-            <div class="max-w-7xl mx-auto px-6">
+
+        <div id="about-team">
+            <!-- Hero section -->
+            <section class="relative min-h-[50vh] flex flex-col items-center justify-center overflow-hidden px-6 py-20">
+                <div class="absolute inset-0 z-0">
+                    <div class="future-grid absolute inset-0"></div>
+                    <div class="glow-line top-10 -rotate-12"></div>
+                    <div
+                        class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[400px] bg-primary/10 rounded-full blur-[120px]">
+                    </div>
+                </div>
+
+                <div class="relative z-10 max-w-4xl mx-auto text-center flex flex-col items-center gap-8">
+                    <div
+                        class="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-4 py-1.5 text-xs text-primary font-medium tracking-widest uppercase">
+                        <span class="material-symbols-outlined text-sm">groups</span>
+                        Meet The Team
+                    </div>
+
+                    <h1 class="text-5xl md:text-6xl lg:text-7xl font-black leading-[1.1] tracking-tighter text-white">
+                        The Innovators Behind <br class="hidden md:block" />
+                        <span
+                            class="text-transparent bg-clip-text bg-gradient-to-r from-primary via-accent to-emerald-300">Shannon
+                            Dynamics</span>
+                    </h1>
+
+                    <p class="text-lg md:text-xl text-slate-400 max-w-2xl leading-relaxed font-light">
+                        We are a group of 5 visionaries combining expertise in hardware, physical real-time control,
+                        artificial intelligence, and systems integration.
+                    </p>
+                </div>
+            </section>
+
+            <!-- The 5 person team composition -->
+            <section class="py-24 relative z-10 border-t border-white/5 bg-slate-50 dark:bg-background-dark/50">
+                <div class="max-w-7xl mx-auto px-6">
+                    <!-- Uniform Layout Grid for All 5 Members -->
+                    <div class="grid grid-cols-1 md:grid-cols-5 gap-4 lg:gap-6">
+                        <!-- Member 1: CEO -->
+                        <div
+                            class="glass-card rounded-3xl p-6 border-t-2 border-t-primary group hover:-translate-y-2 transition-all duration-300 flex flex-col items-center text-center h-full w-full">
+                            <div
+                                class="w-full aspect-[4/3] rounded-2xl bg-gradient-to-br from-primary/10 to-accent/10 border border-white/10 overflow-hidden relative group-hover:border-primary/50 transition-colors mb-6 shrink-0">
+                                <!-- Placeholder icon -->
+                                <span
+                                    class="material-symbols-outlined absolute inset-0 m-auto text-6xl text-primary/30 flex items-center justify-center group-hover:scale-110 transition-transform">person</span>
+                            </div>
+                            <div class="flex flex-col flex-grow items-center">
+                                <h3 class="text-2xl font-bold text-white mb-1">Risman Adnan</h3>
+                                <p class="text-primary font-bold tracking-widest uppercase text-xs mb-4">Founder</p>
+                                <p class="text-slate-400 text-sm font-light leading-relaxed mb-6 flex-grow">
+                                    Former robotics institute director with 15+ years bridging theoretical machine
+                                    learning
+                                    and applied physical robotics for Southeast Asian markets. He leads Shannon Dynamics
+                                    in
+                                    pioneering the future of automation.
+                                </p>
+                                <div class="flex gap-4 mt-auto justify-center">
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">alternate_email</span></a>
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">language</span></a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Member 2: CTO -->
+                        <div
+                            class="glass-card rounded-3xl p-6 border-t-2 border-t-accent group hover:-translate-y-2 transition-all duration-300 flex flex-col items-center text-center h-full w-full">
+                            <div
+                                class="w-full aspect-[4/3] rounded-2xl bg-gradient-to-br from-accent/10 to-emerald-400/10 border border-white/10 overflow-hidden relative group-hover:border-accent/50 transition-colors mb-6 shrink-0">
+                                <!-- Placeholder icon -->
+                                <span
+                                    class="material-symbols-outlined absolute inset-0 m-auto text-6xl text-accent/30 flex items-center justify-center group-hover:scale-110 transition-transform">person</span>
+                            </div>
+                            <div class="flex flex-col flex-grow items-center">
+                                <h3 class="text-2xl font-bold text-white mb-1">Soma Wiraga</h3>
+                                <p class="text-accent font-bold tracking-widest uppercase text-xs mb-4">Co-Founder</p>
+                                <p class="text-slate-400 text-sm font-light leading-relaxed mb-6 flex-grow">
+                                    Pioneered Rust-based safety-critical control architectures for autonomous vehicles.
+                                    Nina
+                                    oversees all of Shannon's core technical strategy.
+                                </p>
+                                <div class="flex gap-4 mt-auto justify-center">
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">alternate_email</span></a>
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">language</span></a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Member 3 -->
+                        <div
+                            class="glass-card rounded-3xl p-6 border-t-2 border-t-primary group hover:-translate-y-2 transition-all duration-300 flex flex-col items-center text-center h-full w-full">
+                            <div
+                                class="w-full aspect-[4/3] rounded-2xl bg-gradient-to-br from-primary/10 to-accent/10 border border-white/10 overflow-hidden relative group-hover:border-primary/50 transition-colors mb-6 shrink-0">
+                                <span
+                                    class="material-symbols-outlined absolute inset-0 m-auto text-6xl text-primary/30 flex items-center justify-center group-hover:scale-110 transition-transform">person</span>
+                            </div>
+                            <div class="flex flex-col flex-grow items-center">
+                                <h3 class="text-2xl font-bold text-white mb-1">Edwin Simjaya</h3>
+                                <p class="text-primary font-bold tracking-widest uppercase text-xs mb-4">Chief Executive
+                                    Officer</p>
+                                <p class="text-slate-400 text-sm font-light leading-relaxed mb-6 flex-grow">
+                                    Leads Shannon Dynamics with a vision to integrate advanced AI and robotics into the
+                                    Indonesian industrial landscape.
+                                </p>
+                                <div class="flex gap-4 mt-auto justify-center">
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">alternate_email</span></a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Member 4 -->
+                        <div
+                            class="glass-card rounded-3xl p-6 border-t-2 border-t-accent group hover:-translate-y-2 transition-all duration-300 flex flex-col items-center text-center h-full w-full">
+                            <div
+                                class="w-full aspect-[4/3] rounded-2xl bg-gradient-to-br from-accent/10 to-emerald-400/10 border border-white/10 overflow-hidden relative group-hover:border-accent/50 transition-colors mb-6 shrink-0">
+                                <span
+                                    class="material-symbols-outlined absolute inset-0 m-auto text-6xl text-accent/30 flex items-center justify-center group-hover:scale-110 transition-transform">person</span>
+                            </div>
+                            <div class="flex flex-col flex-grow items-center">
+                                <h3 class="text-2xl font-bold text-white mb-1">Russell Otniel</h3>
+                                <p class="text-accent font-bold tracking-widest uppercase text-xs mb-4">Chief Technology
+                                </p>
+                                <p class="text-slate-400 text-sm font-light leading-relaxed mb-6 flex-grow text-center">
+                                    Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, quod.
+                                </p>
+                                <div class="flex gap-4 mt-auto justify-center">
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">alternate_email</span></a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Member 5 -->
+                        <div
+                            class="glass-card rounded-3xl p-6 border-t-2 border-t-primary group hover:-translate-y-2 transition-all duration-300 flex flex-col items-center text-center h-full w-full">
+                            <div
+                                class="w-full aspect-[4/3] rounded-2xl bg-gradient-to-br from-primary/10 to-blue-500/10 border border-white/10 overflow-hidden relative group-hover:border-primary/50 transition-colors mb-6 shrink-0">
+                                <span
+                                    class="material-symbols-outlined absolute inset-0 m-auto text-6xl text-primary/30 flex items-center justify-center group-hover:scale-110 transition-transform">person</span>
+                            </div>
+                            <div class="flex flex-col flex-grow items-center">
+                                <h3 class="text-2xl font-bold text-white mb-1">Tamaria Artpinkan</h3>
+                                <p class="text-primary font-bold tracking-widest uppercase text-xs mb-4">Chief Operating
+                                    Officer
+                                </p>
+                                <p class="text-slate-400 text-sm font-light leading-relaxed mb-6 flex-grow text-center">
+                                    Lorem ipsum dolor sit amet consectetur adipisicing elit. Quisquam, quod.
+                                </p>
+                                <div class="flex gap-4 mt-auto justify-center">
+                                    <a href="#"
+                                        class="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition-all"><span
+                                            class="material-symbols-outlined text-sm">alternate_email</span></a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <footer id="contact"
+            class="bg-background-dark text-white pt-24 pb-12 border-t border-slate-800 relative overflow-hidden">
+            <div
+                class="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[500px] bg-primary/5 rounded-full blur-[120px] pointer-events-none">
+            </div>
+            <div class="max-w-7xl mx-auto px-6 relative z-10">
                 <div class="flex flex-col lg:flex-row items-start lg:items-start gap-12 lg:gap-[50px] mb-20">
                     <div class="max-w-md">
                         <h2 class="text-4xl md:text-5xl font-black mb-8">Let’s Build the <br /><span
@@ -290,6 +487,16 @@
                             with AI-powered robotics? Reach out to our team of experts today.</p>
                     </div>
                     <div class="flex flex-col gap-6 lg:mt-12">
+                        <div class="flex gap-4 mb-4">
+                            <a href="#contact"
+                                class="px-8 py-3 rounded-full bg-primary text-slate-950 font-bold hover:bg-primary/90 transition-colors shadow-lg shadow-primary/20">
+                                Contact Us
+                            </a>
+                            <a href="#demo"
+                                class="px-8 py-3 rounded-full border border-white/20 text-white font-bold hover:bg-white/10 transition-colors">
+                                Watch Demo
+                            </a>
+                        </div>
                         <div class="flex items-center gap-4">
                             <div
                                 class="size-12 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center text-primary">
