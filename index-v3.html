@@ -493,6 +493,26 @@
             font-size: 11.5px; font-weight: 600; line-height: 1.35; letter-spacing: -.01em;
         }
 
+        /* ═══ coming-soon book placeholder ═══ */
+        .bc-soon {
+            background: rgba(16,24,27,.05);
+            border: 1px dashed rgba(16,24,27,.16) !important;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 10px;
+        }
+        .bc-soon::after { display: none; }
+        .bc-soon-tag {
+            font-family: "JetBrains Mono", monospace; font-size: 8.5px;
+            letter-spacing: .2em; color: rgba(16,24,27,.28);
+        }
+        .bc-soon-line {
+            width: 28px; height: 1px; background: rgba(16,24,27,.14);
+        }
+        .book.is-soon .book-by b { color: rgba(16,24,27,.35); font-weight: 500; }
+        .book.is-soon .book-by span { opacity: .5; }
+        .book.is-soon:hover .book-by b { color: rgba(16,24,27,.45); }
+        .book.is-soon .book-cover { cursor: default; }
+
         /* ═══ LIB.03 Open Source & Docs — folder stack ═══
            Manila folders with staggered tabs, each showing a 48px sliver.
            Lifting one pushes every folder below it down, opening a window on
@@ -1672,7 +1692,11 @@
                             </div>
                             <div class="shelf-vp">
                                 <div class="shelf-track">
-                                    <!-- set A -->
+                                    <!-- ── set A ── -->
+                                    <div class="book is-soon" aria-label="Coming soon">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
+                                    </div>
                                     <div class="book">
                                         <p class="book-by"><b>Probabilistic Robotics via Rust</b><span>Shannon Press</span></p>
                                         <a href="book-probabilistic-robotics-via-rust.html" class="book-cover bc-design">
@@ -1688,7 +1712,19 @@
                                         <p class="book-by"><b>Reinforcement Learning for Robotics</b><span>Shannon Press</span></p>
                                         <a href="book-reinforcement-learning-for-robotics.html" class="book-cover bc-ink bc-v3"><span class="book-cover-t">Reinforcement Learning for Robotics</span></a>
                                     </div>
-                                    <!-- set B — duplicate, so the -50% drift loops seamlessly -->
+                                    <div class="book is-soon" aria-label="Coming soon">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
+                                    </div>
+                                    <div class="book is-soon" aria-label="Coming soon">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
+                                    </div>
+                                    <!-- ── set B — exact duplicate for seamless -50% loop ── -->
+                                    <div class="book is-soon" aria-hidden="true">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
+                                    </div>
                                     <div class="book" aria-hidden="true">
                                         <p class="book-by"><b>Probabilistic Robotics via Rust</b><span>Shannon Press</span></p>
                                         <span class="book-cover bc-design">
@@ -1703,6 +1739,14 @@
                                     <div class="book" aria-hidden="true">
                                         <p class="book-by"><b>Reinforcement Learning for Robotics</b><span>Shannon Press</span></p>
                                         <span class="book-cover bc-ink bc-v3"><span class="book-cover-t">Reinforcement Learning for Robotics</span></span>
+                                    </div>
+                                    <div class="book is-soon" aria-hidden="true">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
+                                    </div>
+                                    <div class="book is-soon" aria-hidden="true">
+                                        <p class="book-by"><b>Coming Soon</b><span>Shannon Press</span></p>
+                                        <span class="book-cover bc-soon"><span class="bc-soon-line"></span><span class="bc-soon-tag">COMING SOON</span></span>
                                     </div>
                                 </div>
                             </div>
