@@ -503,6 +503,23 @@
         .fold-meta a { margin-left: auto; color: #4C7EFF; }
         .fold-meta a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
+        /* ═══ LIB.03 — repo cards (terminal style) ═══ */
+        .repo-stack { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+        .repo-card {
+            display: block; padding: 16px 18px; border-radius: 10px;
+            background: #10181b; border: 1px solid rgba(255,255,255,.08);
+            transition: border-color .25s, background .25s; text-decoration: none;
+        }
+        .repo-card:hover { border-color: rgba(76,126,255,.45); background: #141e22; }
+        .repo-card-top { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+        .repo-dot { width: 7px; height: 7px; border-radius: 50%; background: #4C7EFF; flex-shrink: 0; }
+        .repo-name { font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500; color: #e8edf0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .repo-arrow { font-size: 13px; color: rgba(255,255,255,.3); transition: color .2s; flex-shrink: 0; }
+        .repo-card:hover .repo-arrow { color: #4C7EFF; }
+        .repo-desc { font-size: 12px; line-height: 1.6; color: rgba(255,255,255,.45); margin-bottom: 12px; }
+        .repo-foot { display: flex; gap: 10px; }
+        .repo-foot span { font-size: 10px; letter-spacing: .08em; color: rgba(255,255,255,.28); }
+
         /* Stacked and fully open below the accordion breakpoint — a 150px-wide
            slat is unusable on a phone, so every panel just becomes a section. */
         @media (max-width: 1023.98px) {
@@ -1669,26 +1686,28 @@
 
                         <div class="lib-inner" id="lib-oss">
                             <div class="lib-cap">
-                                <span>REPOSITORIES, GUIDES &amp; TYPED INTERFACES</span>
+                                <span>REPOSITORIES AND DOCUMENTATION</span>
                                 <a href="library-open-source.html">All repos &amp; docs ↗</a>
                             </div>
-                            <div class="folders">
-                                <div class="folder fold-a" style="--i:0; --tx:0px">
-                                    <p class="fold-name">octo_map_rust</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">Pure-Rust port of OctoMap C++ 1.10.0 — 3D occupancy mapping with no unsafe code, no C++ toolchain, and byte-identical .bt/.ot file compatibility.</p>
-                                        <p class="fold-meta"><span>RUST</span><span>APACHE-2.0</span>
-                                            <a href="https://github.com/Shannon-Dynamics/octo_map_rust" target="_blank" rel="noopener">Repository ↗</a></p>
+                            <div class="repo-stack">
+                                <a class="repo-card" href="https://github.com/Shannon-Dynamics/octo_map_rust" target="_blank" rel="noopener">
+                                    <div class="repo-card-top">
+                                        <span class="repo-dot"></span>
+                                        <span class="repo-name">octo_map_rust</span>
+                                        <span class="repo-arrow">↗</span>
                                     </div>
-                                </div>
-                                <div class="folder fold-b" style="--i:1; --tx:214px">
-                                    <p class="fold-name">scan_candi_with_octomap_rust</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">End-to-end Rust demo of octo_map_rust: a MuJoCo drone orbits a temple, renders depth frames, and reconstructs a 3D occupancy map.</p>
-                                        <p class="fold-meta"><span>RUST</span><span>APACHE-2.0</span>
-                                            <a href="https://github.com/Shannon-Dynamics/scan_candi_with_octomap_rust" target="_blank" rel="noopener">Repository ↗</a></p>
+                                    <p class="repo-desc">Pure-Rust port of OctoMap C++ 1.10.0 — 3D occupancy mapping with no unsafe code, no C++ toolchain, and byte-identical .bt/.ot file compatibility.</p>
+                                    <div class="repo-foot"><span>RUST</span><span>APACHE-2.0</span></div>
+                                </a>
+                                <a class="repo-card" href="https://github.com/Shannon-Dynamics/scan_candi_with_octomap_rust" target="_blank" rel="noopener">
+                                    <div class="repo-card-top">
+                                        <span class="repo-dot"></span>
+                                        <span class="repo-name">scan_candi_with_octomap_rust</span>
+                                        <span class="repo-arrow">↗</span>
                                     </div>
-                                </div>
+                                    <p class="repo-desc">End-to-end Rust demo of octo_map_rust: a MuJoCo drone orbits a temple, renders depth frames, and reconstructs a 3D occupancy map.</p>
+                                    <div class="repo-foot"><span>RUST</span><span>APACHE-2.0</span></div>
+                                </a>
                             </div>
                         </div>
                     </article>
