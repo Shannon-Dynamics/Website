@@ -1351,8 +1351,12 @@
              container that traps the sticky .bd-side sidebar -->
         <div class="overflow-x-clip">
 
-            <!-- ═══════════ PAGE BANNER ═══════════ -->
-            <div class="lp-banner tex tex-bottom" style="height:38vh;min-height:300px">
+            <!-- ═══════════ PAGE BANNER ═══════════
+                 height/min-height sized so the bottom-anchored breadcrumb
+                 always clears the fixed #nav on load — a shorter banner here
+                 let the crumb sit under the nav's hit-box, which both looked
+                 wrong and silently ate clicks on the first link or two. -->
+            <div class="lp-banner tex tex-bottom" style="height:44vh;min-height:420px">
                 <canvas class="halftone absolute inset-0" data-speed="1.6"></canvas>
                 <div class="lp-banner-in">
                     <p class="lp-crumb">
