@@ -883,22 +883,22 @@
         @media (min-width: 768px) { .disc2-grid { grid-template-columns: 1fr 1fr; } }
         .disc2-card {
             position: relative; overflow: hidden;
-            background: #10181b; border-radius: 20px;
+            background: #fff; border-radius: 20px;
             padding: clamp(28px,4vw,44px);
-            border: 1px solid rgba(255,255,255,.07);
+            border: 1px solid rgba(16,24,27,.08);
             transition: transform .45s cubic-bezier(.22,1,.36,1),
                         box-shadow .45s ease, border-color .45s ease;
             will-change: transform;
         }
         .disc2-card:hover {
             transform: translateY(-7px);
-            box-shadow: 0 30px 64px rgba(0,0,0,.45), 0 0 0 1px rgba(76,126,255,.22);
+            box-shadow: 0 24px 56px rgba(16,24,27,.1), 0 0 0 1px rgba(76,126,255,.2);
             border-color: rgba(76,126,255,.2);
         }
         .disc2-card::before {
             content: '';
             position: absolute; inset: -28px;
-            background-image: radial-gradient(circle, rgba(76,126,255,.2) 1.5px, transparent 1.5px);
+            background-image: radial-gradient(circle, rgba(76,126,255,.12) 1.5px, transparent 1.5px);
             background-size: 28px 28px;
             animation: disc2-drift 30s linear infinite;
             pointer-events: none;
@@ -918,21 +918,21 @@
         .disc2-scan {
             position: absolute; left: 0; right: 0; top: 0;
             height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(76,126,255,.6), transparent);
+            background: linear-gradient(90deg, transparent, rgba(76,126,255,.5), transparent);
             pointer-events: none; opacity: 0; z-index: 3;
         }
         .disc2-bg-num {
             position: absolute; bottom: -20px; right: 8px;
             font-size: clamp(110px,13vw,150px); font-weight: 700;
             letter-spacing: -.06em; line-height: 1;
-            color: rgba(255,255,255,.03);
+            color: rgba(16,24,27,.04);
             pointer-events: none; user-select: none; z-index: 0;
         }
         .disc2-inner { position: relative; z-index: 1; }
         .disc2-tag {
             display: flex; align-items: center; gap: 10px;
             font-family: "JetBrains Mono", monospace;
-            font-size: 10px; letter-spacing: .2em; color: #8FAEFF;
+            font-size: 10px; letter-spacing: .2em; color: rgba(76,126,255,.8);
         }
         .disc2-tag-line { display: block; width: 22px; height: 1px; background: #4C7EFF; flex-shrink: 0; }
         .disc2-num {
@@ -942,14 +942,14 @@
         }
         .disc2-h3 {
             font-size: clamp(18px,2vw,23px); font-weight: 600;
-            color: #fff; letter-spacing: -.018em; line-height: 1.3; margin-top: 14px;
+            color: #10181b; letter-spacing: -.018em; line-height: 1.3; margin-top: 14px;
         }
         .disc2-p {
             font-size: 13.5px; line-height: 1.72;
-            color: rgba(255,255,255,.5); margin-top: 12px; max-width: 44ch;
+            color: rgba(16,24,27,.55); margin-top: 12px; max-width: 44ch;
         }
         .disc2-list { list-style: none; margin-top: 24px; display: flex; flex-direction: column; gap: 11px; }
-        .disc2-list li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: rgba(255,255,255,.72); }
+        .disc2-list li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: rgba(16,24,27,.72); }
         .disc2-dot {
             width: 5px; height: 5px; border-radius: 50%;
             background: #4C7EFF; flex-shrink: 0; margin-top: 5px; opacity: .8;
@@ -957,7 +957,7 @@
         .disc2-cta {
             display: inline-flex; align-items: center; gap: 7px;
             margin-top: 30px; padding: 9px 20px; border-radius: 999px;
-            border: 1px solid rgba(76,126,255,.35); color: #8FAEFF;
+            border: 1px solid rgba(76,126,255,.4); color: #4C7EFF;
             font-size: 13px; font-weight: 500; text-decoration: none;
             transition: background .28s, border-color .28s, color .28s, gap .28s;
         }
