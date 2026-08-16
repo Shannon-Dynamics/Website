@@ -1469,13 +1469,6 @@
                                 <h3 class="ps-title">Shannon Sentinel</h3>
                                 <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
                                 <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
-                                <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Classify · Evaluate · Enforce architecture</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>Fail-closed decision function on every request</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>Tamper-evident audit log at the point of action</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Fully self-hostable inside your environment</p></div>
-                                </div>
-                            
                             </div>
                         </article>
 
@@ -2117,15 +2110,9 @@
             }
 
             tabs.forEach((tab, i) => {
-                tab.addEventListener("click", () => { clearTimeout(timer); show(i); });
+                tab.addEventListener("click", () => show(i));
                 tab.addEventListener("focus", () => show(i));
-                tab.addEventListener("mouseenter", () => {
-                    if (!fine.matches) return;
-                    clearTimeout(timer);
-                    timer = setTimeout(() => show(i), 90);   // no thrash while sweeping across
-                });
             });
-            row.addEventListener("mouseleave", () => clearTimeout(timer));
 
             show(0);
         })();
