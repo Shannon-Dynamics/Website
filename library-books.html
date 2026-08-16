@@ -1113,27 +1113,22 @@
             background: linear-gradient(90deg, rgba(0,0,0,.34), rgba(0,0,0,.05) 70%, rgba(255,255,255,.1)); }
         .bk .book-cover-t { left: 30px; right: 18px; bottom: 20px; font-size: 14px; font-weight: 600; line-height: 1.35; }
 
-        /* ═══ 3D book cover — interactive perspective book ═══
-           A CSS 3D book with front cover (reproducing the artifact design),
-           spine, and page edges. Mouse-tracking rotation via JS. */
+        /* ═══ flat 2D book cover ═══
+           A CSS book front cover (reproducing the artifact design) with a
+           spine-shadow accent on the left edge — no perspective/tilt. */
         .book-3d-scene {
-            perspective: 1400px; perspective-origin: 50% 50%;
             width: 100%; aspect-ratio: 3 / 4.2;
         }
         .book-3d {
             position: relative; display: block; width: 100%; height: 100%;
-            transform-style: preserve-3d;
-            transform: rotateY(-8deg) rotateX(2deg);
-            transition: transform .7s cubic-bezier(.76,0,.24,1), box-shadow .5s ease;
+            transition: box-shadow .5s ease;
         }
-        .book-3d-scene:hover .book-3d { transform: rotateY(-18deg) rotateX(4deg); }
         /* front face */
         .book-3d-front {
             position: absolute; inset: 0;
             background: #f2f2f3;
-            border-radius: 2px 6px 6px 2px;
+            border-radius: 4px;
             overflow: hidden;
-            backface-visibility: hidden;
             display: flex; flex-direction: column;
             padding: 5% 6% 4%;
             box-shadow: 0 22px 44px -22px rgba(16,24,27,.65);
@@ -1142,43 +1137,6 @@
         .book-3d-front::after {
             content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 14px; z-index: 5;
             background: linear-gradient(90deg, rgba(0,0,0,.3), rgba(0,0,0,.04) 70%, rgba(255,255,255,.08));
-        }
-        /* spine */
-        .book-3d-spine {
-            position: absolute; top: 0; bottom: 0; left: 0; width: 28px;
-            background: #1d2d3d;
-            transform: rotateY(-90deg) translateX(-14px);
-            transform-origin: left center;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 6px 0 0 6px;
-        }
-        .book-3d-spine span {
-            writing-mode: vertical-rl;
-            font-family: "Inter", sans-serif; font-size: 8px; font-weight: 700;
-            letter-spacing: .12em; text-transform: uppercase;
-            color: rgba(255,255,255,.85); white-space: nowrap;
-        }
-        /* right edge (pages) */
-        .book-3d-pages {
-            position: absolute; top: 2px; bottom: 2px; right: 0; width: 14px;
-            background: linear-gradient(90deg, #e8e8e8, #f5f5f5);
-            transform: rotateY(90deg) translateX(7px);
-            transform-origin: right center;
-            border-radius: 0 2px 2px 0;
-        }
-        .book-3d-pages::before {
-            content: ''; position: absolute; inset: 4px 0;
-            background: repeating-linear-gradient(
-                180deg,
-                rgba(16,24,27,.06) 0px, transparent 1px, transparent 3px
-            );
-        }
-        /* bottom edge */
-        .book-3d-bottom {
-            position: absolute; bottom: 0; left: 0; right: 0; height: 14px;
-            background: linear-gradient(180deg, #e4e4e4, #eee);
-            transform: rotateX(90deg) translateY(7px);
-            transform-origin: bottom center;
         }
         /* cover design elements */
         .cv-header {
@@ -1215,17 +1173,6 @@
             border-top: 1px solid rgba(16,24,27,.2); padding-top: 4px; margin-top: 4%;
             font-family: "JetBrains Mono", monospace; font-size: 5.5px;
             letter-spacing: .12em; text-transform: uppercase; color: #5d5d60;
-        }
-        /* the 3D scene overrides the flat .bk .book-cover hover — the scene
-           handles its own transform, so disable the parent's */
-        .bk .book-3d-scene .book-cover { transform: none !important; box-shadow: none !important; }
-        @media (max-width: 639.98px) {
-            .book-3d { transform: rotateY(-5deg) rotateX(1deg); }
-            .book-3d-scene:hover .book-3d { transform: rotateY(-12deg) rotateX(3deg); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .book-3d { transition-duration: .01ms; transform: none; }
-            .book-3d-scene:hover .book-3d { transform: none; }
         }
         /* grow so the meta line lands on the same baseline across a row,
            however long each blurb runs */
@@ -1354,7 +1301,7 @@
                 </div>
                 <div class="bk-grid">
                     <article class="bk" data-reveal>
-                        <div class="book-3d-scene" data-book3d>
+                        <div class="book-3d-scene">
                             <a href="book-probabilistic-robotics-via-rust.html" class="book-3d">
                                 <div class="book-3d-front">
                                     <div class="cv-header"><span>Shannon Dynamics</span><span>Fig. 12.4</span></div>
@@ -1365,9 +1312,6 @@
                                     </div>
                                     <div class="cv-footer"><span>Shannon Dynamics</span><span>26 Ch · 99 Sims</span></div>
                                 </div>
-                                <div class="book-3d-spine"><span>Probabilistic Robotics via Rust</span></div>
-                                <div class="book-3d-pages"></div>
-                                <div class="book-3d-bottom"></div>
                             </a>
                         </div>
                         <div class="bk-meta">
@@ -1378,7 +1322,7 @@
                         </div>
                     </article>
                     <article class="bk" data-reveal>
-                        <div class="book-3d-scene" data-book3d>
+                        <div class="book-3d-scene">
                             <a href="book-reinforcement-learning-for-robotics.html" class="book-3d">
                                 <div class="book-3d-front">
                                     <div class="cv-header"><span>Shannon Dynamics</span><span>Fig. 7.2</span></div>
@@ -1389,9 +1333,6 @@
                                     </div>
                                     <div class="cv-footer"><span>Shannon Dynamics</span><span>22 Ch · Rust</span></div>
                                 </div>
-                                <div class="book-3d-spine"><span>Reinforcement Learning for Robotics</span></div>
-                                <div class="book-3d-pages"></div>
-                                <div class="book-3d-bottom"></div>
                             </a>
                         </div>
                         <div class="bk-meta">
@@ -1772,32 +1713,6 @@
                 }
             }
             draw();
-        });
-
-        /* ---------- 3D book mouse-tracking ---------- */
-        document.querySelectorAll("[data-book3d]").forEach(scene => {
-            const book = scene.querySelector(".book-3d");
-            if (!book) return;
-            let tx = 0, ty = 0, cx = 0, cy = 0, active = false;
-            scene.addEventListener("pointerenter", () => { active = true; });
-            scene.addEventListener("pointerleave", () => { active = false; tx = 0; ty = 0; });
-            scene.addEventListener("pointermove", e => {
-                const r = scene.getBoundingClientRect();
-                const px = (e.clientX - r.left) / r.width - .5;   // -0.5 to 0.5
-                const py = (e.clientY - r.top) / r.height - .5;
-                tx = -px * 32;   // rotateY: left edge forward when pointer is left
-                ty = py * 14;    // rotateX: tilt toward pointer
-            });
-            (function tick() {
-                cx += (tx - cx) * .12;
-                cy += (ty - cy) * .12;
-                if (active || Math.abs(cx) + Math.abs(cy) > .3) {
-                    book.style.transform = "rotateY(" + cx.toFixed(1) + "deg) rotateX(" + cy.toFixed(1) + "deg)";
-                } else {
-                    book.style.transform = "";
-                }
-                requestAnimationFrame(tick);
-            })();
         });
     </script>
 </body>
