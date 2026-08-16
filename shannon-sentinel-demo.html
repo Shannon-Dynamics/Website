@@ -376,8 +376,8 @@ body{font-family:var(--font);display:flex;flex-direction:column;align-items:cent
 @keyframes rip{0%{transform:scale(.25);opacity:.85}100%{transform:scale(1.4);opacity:0}}
 
 /* Bottom stage bar: caption + chapter rail */
-#stagebar{position:absolute;left:0;right:0;bottom:0;height:64px;background:#0c0c0c;z-index:12;
-          display:flex;align-items:center;padding:0 calc(21px * var(--us));
+#stagebar{display:none!important;position:absolute;left:0;right:0;bottom:0;height:64px;background:#0c0c0c;z-index:12;
+          align-items:center;padding:0 calc(21px * var(--us));
           gap:calc(19px * var(--us));border-top:1px solid rgba(255,255,255,.07)}
 #capwrap{flex:1;min-width:0;display:flex;align-items:center;
          gap:calc(9px * var(--us));overflow:hidden}
@@ -853,8 +853,6 @@ body.embed #wrap{width:100%;height:100%;max-width:none;aspect-ratio:auto;
     <div class="tag" id="etag">The agent acts.<br>Every action is logged, scoped, and <b>yours to approve</b>.</div>
     <div class="sb" id="esub">Human-in-the-loop by policy, not by promise —
       47 agent actions today, 100% attributable.</div>
-    <div class="url" id="eurl"><svg class="ic" style="width:15px;height:15px"><use href="#i-shield"/></svg>
-      sentinel.shannon.id</div>
   </div></div>
 
   <div id="poster">
@@ -946,7 +944,7 @@ function layout(){
   let dh = clamp(Math.round(h / (w/1440)), 690, 1260);
   const s = Math.min(w/1440, h/dh), shown = dh * s;
   const mode = shown >= 380 ? "full" : shown >= 292 ? "slim" : "none";
-  BARH = mode === "none" ? 0 : Math.round((mode === "full" ? 52 : 38) / s);
+  BARH = 0;
   APPH = dh - BARH;
   /* a small panel is useless at 1:1 — hold a floor zoom so the UI reads */
   MINZ = w < 620 ? 1.5 : w < 900 ? 1.16 : 1;
@@ -1027,7 +1025,9 @@ function cap(text){
     if (!text) return;
     text.split(" ").forEach((w,i) => {
       const s = document.createElement("i");
-      s.textContent = w + " ";
+      /* non-breaking space: a trailing normal space inside an
+         inline-block is collapsed away, jamming the words together */
+      s.textContent = w + "\u00A0";
       s.style.transitionDelay = (i*26) + "ms";
       capEl.appendChild(s);
     });
