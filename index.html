@@ -458,6 +458,41 @@
             font-size: 11.5px; font-weight: 600; line-height: 1.35; letter-spacing: -.01em;
         }
 
+        /* ═══ shelf cover — particle filter design face ═══
+           The shelf already provides perspective and rotateY; this just
+           replaces the flat blue fill with the cover design elements. */
+        .bc-design {
+            background: #f2f2f3; display: flex; flex-direction: column;
+            padding: 10px 12px 8px;
+        }
+        .bc-design::before { display: none; }
+        .bc-design .book-cover-t { display: none; }
+        .bc-design .scv-header {
+            font-family: "JetBrains Mono", monospace; font-size: 5px; letter-spacing: .14em;
+            text-transform: uppercase; color: #416180;
+            border-bottom: 1px solid rgba(16,24,27,.15); padding-bottom: 3px;
+        }
+        .bc-design .scv-title {
+            margin: 8px 0 0; font-family: "Inter", sans-serif; font-weight: 800;
+            font-size: 16px; line-height: .92; letter-spacing: -.01em;
+            text-transform: uppercase; color: #1d1f20;
+        }
+        .bc-design .scv-sub {
+            margin: 5px 0 0; font-family: "JetBrains Mono", monospace;
+            font-size: 4.5px; line-height: 1.3; letter-spacing: .02em;
+            text-transform: uppercase; color: #416180;
+        }
+        .bc-design .scv-diagram {
+            flex: 1; min-height: 0; margin-top: 6px;
+            border: 1px solid rgba(16,24,27,.12); overflow: hidden;
+        }
+        .bc-design .scv-diagram svg { display: block; width: 100%; height: 100%; }
+        .bc-design .scv-footer {
+            border-top: 1px solid rgba(16,24,27,.16); padding-top: 3px; margin-top: 4px;
+            font-family: "JetBrains Mono", monospace; font-size: 4px;
+            letter-spacing: .1em; text-transform: uppercase; color: #5d5d60;
+        }
+
         /* ═══ LIB.03 Open Source & Docs — folder stack ═══
            Manila folders with staggered tabs, each showing a 48px sliver.
            Lifting one pushes every folder below it down, opening a window on
@@ -1526,68 +1561,40 @@
                                     <button class="pub-head" type="button" aria-expanded="false">
                                         <span class="pub-tag">PAPER</span>
                                         <span>
-                                            <span class="pub-title">High-Fidelity Contact Dynamics for Sim-to-Real Transfer</span>
-                                            <span class="pub-by">Shannon Robotics Group</span>
+                                            <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
+                                            <span class="pub-by">Shannon Dynamics</span>
                                         </span>
-                                        <span class="pub-chev">›</span>
                                     </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Contact is where simulation usually lies. We model compliant contact with
-                                        measured material response instead of tuned stiffness, and show policies trained in
-                                        the simulator holding their grasp success rate on hardware without retuning.</p>
-                                        <div class="pub-meta"><span>2026</span><span>PEER-REVIEWED</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
                                 </div>
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
                                         <span class="pub-tag">PREPRINT</span>
                                         <span>
-                                            <span class="pub-title">Agentic Autonomy Under Partial Observability</span>
+                                            <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
                                             <span class="pub-by">Shannon Dynamics</span>
                                         </span>
-                                        <span class="pub-chev">›</span>
                                     </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">A planner that reasons about what it cannot see. We give the agent an
-                                        explicit budget for information-gathering actions and measure how that budget trades
-                                        against task completion time across 400 simulated warehouse layouts.</p>
-                                        <div class="pub-meta"><span>2025</span><span>PREPRINT</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
                                 </div>
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
                                         <span class="pub-tag">NOTE</span>
                                         <span>
-                                            <span class="pub-title">What Breaks When You Simulate a Factory</span>
-                                            <span class="pub-by">Field notes from the team</span>
+                                            <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
+                                            <span class="pub-by">Shannon Dynamics</span>
                                         </span>
-                                        <span class="pub-chev">›</span>
                                     </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Everything fits in CAD and nothing fits on the floor. A write-up of the
-                                        six assumptions that failed first when we rehearsed a real production line — and the
-                                        validation step we now run before any asset enters the simulator.</p>
-                                        <div class="pub-meta"><span>2025</span><span>ENGINEERING</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
                                 </div>
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
                                         <span class="pub-tag">NOTE</span>
                                         <span>
-                                            <span class="pub-title">Rust in the Control Loop</span>
-                                            <span class="pub-by">Field notes from the team</span>
+                                            <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
+                                            <span class="pub-by">Shannon Dynamics</span>
                                         </span>
-                                        <span class="pub-chev">›</span>
                                     </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Why the borrow checker earns its keep at 1 kHz. Allocation discipline,
-                                        deterministic teardown, and the places we still reach for unsafe — with the latency
-                                        numbers that justified moving the loop off C++.</p>
-                                        <div class="pub-meta"><span>2024</span><span>ENGINEERING</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
                                 </div>
                             </div>
                         </div>
@@ -1623,7 +1630,14 @@
                                     <!-- set A -->
                                     <div class="book">
                                         <p class="book-by"><b>Probabilistic Robotics via Rust</b><span>Shannon Press</span></p>
-                                        <a href="book-probabilistic-robotics-via-rust.html" class="book-cover bc-blue bc-v2"><span class="book-cover-t">Probabilistic Robotics via Rust</span></a>
+                                        <a href="book-probabilistic-robotics-via-rust.html" class="book-cover bc-design">
+                                            <span class="book-cover-t">Probabilistic Robotics via Rust</span>
+                                            <span class="scv-header">Shannon Dynamics</span>
+                                            <span class="scv-title">Probabilistic<br>Robotics<br>via Rust</span>
+                                            <span class="scv-sub">Estimation, mapping &amp; decision making</span>
+                                            <span class="scv-diagram"><svg viewBox="0 0 400 250" xmlns="http://www.w3.org/2000/svg"><g stroke="#5980a6" stroke-width=".4" opacity=".14"><line x1="0" y1="0" x2="0" y2="250"/><line x1="50" y1="0" x2="50" y2="250"/><line x1="100" y1="0" x2="100" y2="250"/><line x1="150" y1="0" x2="150" y2="250"/><line x1="200" y1="0" x2="200" y2="250"/><line x1="250" y1="0" x2="250" y2="250"/><line x1="300" y1="0" x2="300" y2="250"/><line x1="350" y1="0" x2="350" y2="250"/><line x1="400" y1="0" x2="400" y2="250"/><line x1="0" y1="0" x2="400" y2="0"/><line x1="0" y1="50" x2="400" y2="50"/><line x1="0" y1="100" x2="400" y2="100"/><line x1="0" y1="150" x2="400" y2="150"/><line x1="0" y1="200" x2="400" y2="200"/><line x1="0" y1="250" x2="400" y2="250"/></g><path d="M36 188L69 196L102 199L136 197L169 188L202 173L235 153L268 128L302 100L335 72L368 45" fill="none" stroke="#5980a6" stroke-width="1.2" stroke-dasharray="5 3" opacity=".8"/><g fill="#5980a6" opacity=".45"><circle cx="84" cy="193" r="1.5"/><circle cx="222" cy="149" r="1.5"/><circle cx="163" cy="154" r="1.5"/><circle cx="367" cy="48" r="1.5"/><circle cx="300" cy="101" r="1.5"/><circle cx="345" cy="63" r="1.5"/><circle cx="319" cy="105" r="1.5"/><circle cx="311" cy="88" r="1.5"/><circle cx="248" cy="129" r="1.5"/><circle cx="275" cy="122" r="1.5"/><circle cx="353" cy="53" r="1.5"/><circle cx="365" cy="50" r="1.5"/><circle cx="350" cy="58" r="1.5"/><circle cx="322" cy="108" r="1.5"/><circle cx="369" cy="46" r="1.5"/><circle cx="282" cy="116" r="1.5"/><circle cx="303" cy="103" r="1.5"/><circle cx="291" cy="113" r="1.5"/><circle cx="310" cy="95" r="1.5"/><circle cx="235" cy="129" r="1.5"/><circle cx="268" cy="131" r="1.5"/><circle cx="224" cy="165" r="1.5"/><circle cx="282" cy="101" r="1.5"/><circle cx="324" cy="89" r="1.5"/><circle cx="348" cy="62" r="1.5"/><circle cx="291" cy="96" r="1.5"/><circle cx="334" cy="62" r="1.5"/><circle cx="326" cy="75" r="1.5"/><circle cx="354" cy="61" r="1.5"/><circle cx="346" cy="64" r="1.5"/><circle cx="361" cy="49" r="1.5"/><circle cx="305" cy="98" r="1.5"/><circle cx="335" cy="71" r="1.5"/><circle cx="281" cy="98" r="1.5"/><circle cx="311" cy="108" r="1.5"/><circle cx="345" cy="67" r="1.5"/><circle cx="318" cy="97" r="1.5"/><circle cx="329" cy="71" r="1.5"/><circle cx="351" cy="53" r="1.5"/><circle cx="367" cy="47" r="1.5"/><circle cx="352" cy="61" r="1.5"/><circle cx="324" cy="75" r="1.5"/><circle cx="315" cy="88" r="1.5"/><circle cx="338" cy="72" r="1.5"/><circle cx="358" cy="54" r="1.5"/><circle cx="331" cy="71" r="1.5"/><circle cx="319" cy="96" r="1.5"/><circle cx="339" cy="68" r="1.5"/><circle cx="326" cy="74" r="1.5"/><circle cx="340" cy="71" r="1.5"/><circle cx="346" cy="65" r="1.5"/><circle cx="362" cy="52" r="1.5"/><circle cx="371" cy="53" r="1.5"/><circle cx="366" cy="46" r="1.5"/></g><ellipse cx="69" cy="196" rx="47" ry="28" transform="rotate(9 69 196)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="169" cy="188" rx="33" ry="20" transform="rotate(-2 169 188)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="268" cy="128" rx="19" ry="11" transform="rotate(-12 268 128)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="351" cy="58" rx="7" ry="4" transform="rotate(-20 351 58)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><circle cx="368" cy="45" r="3.5" fill="#5980a6"/></svg></span>
+                                            <span class="scv-footer">26 Chapters · 99 Sims</span>
+                                        </a>
                                     </div>
                                     <div class="book">
                                         <p class="book-by"><b>Reinforcement Learning for Robotics</b><span>Shannon Press</span></p>
@@ -1632,7 +1646,14 @@
                                     <!-- set B — duplicate, so the -50% drift loops seamlessly -->
                                     <div class="book" aria-hidden="true">
                                         <p class="book-by"><b>Probabilistic Robotics via Rust</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-blue bc-v2"><span class="book-cover-t">Probabilistic Robotics via Rust</span></span>
+                                        <span class="book-cover bc-design">
+                                            <span class="book-cover-t">Probabilistic Robotics via Rust</span>
+                                            <span class="scv-header">Shannon Dynamics</span>
+                                            <span class="scv-title">Probabilistic<br>Robotics<br>via Rust</span>
+                                            <span class="scv-sub">Estimation, mapping &amp; decision making</span>
+                                            <span class="scv-diagram"><svg viewBox="0 0 400 250" xmlns="http://www.w3.org/2000/svg"><g stroke="#5980a6" stroke-width=".4" opacity=".14"><line x1="0" y1="0" x2="0" y2="250"/><line x1="50" y1="0" x2="50" y2="250"/><line x1="100" y1="0" x2="100" y2="250"/><line x1="150" y1="0" x2="150" y2="250"/><line x1="200" y1="0" x2="200" y2="250"/><line x1="250" y1="0" x2="250" y2="250"/><line x1="300" y1="0" x2="300" y2="250"/><line x1="350" y1="0" x2="350" y2="250"/><line x1="400" y1="0" x2="400" y2="250"/><line x1="0" y1="0" x2="400" y2="0"/><line x1="0" y1="50" x2="400" y2="50"/><line x1="0" y1="100" x2="400" y2="100"/><line x1="0" y1="150" x2="400" y2="150"/><line x1="0" y1="200" x2="400" y2="200"/><line x1="0" y1="250" x2="400" y2="250"/></g><path d="M36 188L69 196L102 199L136 197L169 188L202 173L235 153L268 128L302 100L335 72L368 45" fill="none" stroke="#5980a6" stroke-width="1.2" stroke-dasharray="5 3" opacity=".8"/><g fill="#5980a6" opacity=".45"><circle cx="84" cy="193" r="1.5"/><circle cx="222" cy="149" r="1.5"/><circle cx="163" cy="154" r="1.5"/><circle cx="367" cy="48" r="1.5"/><circle cx="300" cy="101" r="1.5"/><circle cx="345" cy="63" r="1.5"/><circle cx="319" cy="105" r="1.5"/><circle cx="311" cy="88" r="1.5"/><circle cx="248" cy="129" r="1.5"/><circle cx="275" cy="122" r="1.5"/><circle cx="353" cy="53" r="1.5"/><circle cx="365" cy="50" r="1.5"/><circle cx="350" cy="58" r="1.5"/><circle cx="322" cy="108" r="1.5"/><circle cx="369" cy="46" r="1.5"/><circle cx="282" cy="116" r="1.5"/><circle cx="303" cy="103" r="1.5"/><circle cx="291" cy="113" r="1.5"/><circle cx="310" cy="95" r="1.5"/><circle cx="235" cy="129" r="1.5"/><circle cx="268" cy="131" r="1.5"/><circle cx="224" cy="165" r="1.5"/><circle cx="282" cy="101" r="1.5"/><circle cx="324" cy="89" r="1.5"/><circle cx="348" cy="62" r="1.5"/><circle cx="291" cy="96" r="1.5"/><circle cx="334" cy="62" r="1.5"/><circle cx="326" cy="75" r="1.5"/><circle cx="354" cy="61" r="1.5"/><circle cx="346" cy="64" r="1.5"/><circle cx="361" cy="49" r="1.5"/><circle cx="305" cy="98" r="1.5"/><circle cx="335" cy="71" r="1.5"/><circle cx="281" cy="98" r="1.5"/><circle cx="311" cy="108" r="1.5"/><circle cx="345" cy="67" r="1.5"/><circle cx="318" cy="97" r="1.5"/><circle cx="329" cy="71" r="1.5"/><circle cx="351" cy="53" r="1.5"/><circle cx="367" cy="47" r="1.5"/><circle cx="352" cy="61" r="1.5"/><circle cx="324" cy="75" r="1.5"/><circle cx="315" cy="88" r="1.5"/><circle cx="338" cy="72" r="1.5"/><circle cx="358" cy="54" r="1.5"/><circle cx="331" cy="71" r="1.5"/><circle cx="319" cy="96" r="1.5"/><circle cx="339" cy="68" r="1.5"/><circle cx="326" cy="74" r="1.5"/><circle cx="340" cy="71" r="1.5"/><circle cx="346" cy="65" r="1.5"/><circle cx="362" cy="52" r="1.5"/><circle cx="371" cy="53" r="1.5"/><circle cx="366" cy="46" r="1.5"/></g><ellipse cx="69" cy="196" rx="47" ry="28" transform="rotate(9 69 196)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="169" cy="188" rx="33" ry="20" transform="rotate(-2 169 188)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="268" cy="128" rx="19" ry="11" transform="rotate(-12 268 128)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><ellipse cx="351" cy="58" rx="7" ry="4" transform="rotate(-20 351 58)" fill="none" stroke="#5980a6" stroke-width=".9" opacity=".6"/><circle cx="368" cy="45" r="3.5" fill="#5980a6"/></svg></span>
+                                            <span class="scv-footer">26 Chapters · 99 Sims</span>
+                                        </span>
                                     </div>
                                     <div class="book" aria-hidden="true">
                                         <p class="book-by"><b>Reinforcement Learning for Robotics</b><span>Shannon Press</span></p>
