@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Generate the three dedicated Library pages from index-v3.html.
+"""Generate the three dedicated Library pages from index.html.
 
 Head (all CSS), the pattern <defs>, the nav, the CTA banner, the footer and the
-shared scripts are lifted straight out of index-v3.html so the sub-pages can
-never drift from the main page's design system. Re-run after editing index-v3.
+shared scripts are lifted straight out of index.html so the sub-pages can
+never drift from the main page's design system. Re-run after editing index.html.
+
+(Sourced from index.html, the promoted live homepage, not index-v3.html — the
+draft variant kept alongside it. index.html also no longer has a #work
+section, so these sub-pages naturally lose the "What we do" nav link too.)
 """
 import re, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent
 SRC = pathlib.Path("/Users/tamariaartpinkan/Documents/Shannon/web-upgrade")
-src = (SRC / "index-v3.html").read_text()
+src = (SRC / "index.html").read_text()
 
 # ── shared chunks ───────────────────────────────────────────────────────────
 head = src[src.index("<head>"):src.index("</head>") + len("</head>")]
@@ -18,14 +22,14 @@ defs = src[src.index('<svg width="0" height="0"') if '<svg width="0" height="0"'
            else src.index("<svg", src.index("<body")):src.index("</svg>", src.index("<body")) + 6]
 
 nav = src[src.index('<header id="nav">'):src.index("</header>") + 9]
-# sub-pages live beside index-v3.html, so in-page anchors must be qualified
+# sub-pages live beside index.html, so in-page anchors must be qualified
 nav = re.sub(r'href="#(work|capabilities|showcase|library|ecosystem)"',
-             r'href="index-v3.html#\1"', nav)
+             r'href="index.html#\1"', nav)
 # match on the leading class token (nav-logo), not the full class string — an
-# exact-string .replace() here silently no-ops the moment index-v3.html's own
+# exact-string .replace() here silently no-ops the moment index.html's own
 # class list changes shape, which is exactly what broke the logo link
 old_logo_count = nav.count('href="#" class="nav-logo')
-nav = re.sub(r'href="#"(\s+class="nav-logo)', r'href="index-v3.html"\1', nav)
+nav = re.sub(r'href="#"(\s+class="nav-logo)', r'href="index.html"\1', nav)
 assert old_logo_count == 1, f"expected exactly one nav-logo href=\"#\" in the source header, found {old_logo_count}"
 
 cta_marker = "<!-- ═══════════ CTA BANNER" # exact suffix drifts (e.g. "— contact form") — match the stable prefix
@@ -159,20 +163,20 @@ PAGES = {
     "publications": dict(num="LIB.01", label="PUBLICATIONS", title="Papers, preprints and field notes",
                          sub="Everything the team has written down — peer-reviewed work on simulation fidelity and "
                              "agentic autonomy, alongside the engineering notes we keep while building simulated machines."),
-    "books": dict(num="LIB.02", label="BOOKS", title="Long-form from Shannon &amp; RantAI Press",
-                  sub="Books written by the Shannon and RantAI teams on Rust, robotics and machine learning — "
+    "books": dict(num="LIB.02", label="BOOKS", title="Long-form from Shannon Press",
+                  sub="Books written by the Shannon team on Rust and robotics — "
                       "the long-form counterpart to the papers and notes."),
     "open-source": dict(num="LIB.03", label="OPEN SOURCE", title="Repositories, guides and API reference",
                         sub="The Rust we have published, and the documentation that goes with every Shannon system. "
                             "Open by default — financial and safety tooling should be inspectable."),
 }
 SIBLINGS = {
-    "publications": [("books", "LIB.02", "Books", "Long-form from Shannon &amp; RantAI Press"),
+    "publications": [("books", "LIB.02", "Books", "Long-form from Shannon Press"),
                      ("open-source", "LIB.03", "Open Source", "Repositories, guides and API reference")],
     "books": [("publications", "LIB.01", "Publications", "Papers, preprints and field notes"),
               ("open-source", "LIB.03", "Open Source", "Repositories, guides and API reference")],
     "open-source": [("publications", "LIB.01", "Publications", "Papers, preprints and field notes"),
-                    ("books", "LIB.02", "Books", "Long-form from Shannon &amp; RantAI Press")],
+                    ("books", "LIB.02", "Books", "Long-form from Shannon Press")],
 }
 
 # ── content ─────────────────────────────────────────────────────────────────
@@ -208,30 +212,14 @@ PUBS = [
 
 # slug is the last field — must match an existing book-<slug>.html detail page
 BOOKS = [
-    ("Robotics in Rust", "Shannon Press", "bc-ink bc-v1", "2026 · 512 PP",
-     "Building robot control software in Rust — from real-time constraints and hardware interfaces through to a full "
-     "manipulation stack, with the borrow checker as a design tool rather than an obstacle.",
-     "robotics-in-rust"),
-    ("Simulation-First Engineering", "Shannon Press", "bc-blue bc-v2", "2026 · 384 PP",
-     "The method behind the company: rehearse the machine before it exists. Covers scene construction, validation "
-     "discipline, and how to decide when a simulation is trustworthy enough to build against.",
-     "simulation-first-engineering"),
-    ("Machine Learning Systems in Rust", "RantAI", "bc-paper bc-v1", "2025 · 640 PP",
-     "Training and serving ML systems in a memory-safe stack — data pipelines, GPU batching, and the deployment "
-     "patterns that survive contact with production.",
-     "machine-learning-systems-in-rust"),
-    ("Foundations of Sim-to-Real", "Shannon Press", "bc-ink bc-v3", "2025 · 448 PP",
-     "Why policies trained in simulation fail on hardware, and what actually closes the gap. Domain randomisation, "
-     "system identification, and honest measurement of transfer.",
-     "foundations-of-sim-to-real"),
-    ("The Agentic Machine", "RantAI", "bc-blue bc-v1", "2025 · 296 PP",
-     "Designing agents that act under governance — decision functions, audit trails, and the architecture that keeps "
-     "autonomy accountable when it touches real systems.",
-     "the-agentic-machine"),
-    ("Numerical Methods for Robotics", "Shannon Press", "bc-paper bc-v2", "2024 · 576 PP",
-     "The mathematics under the solver: integrators, constraint formulations, and the numerical failure modes that "
-     "quietly ruin a physics engine.",
-     "numerical-methods-for-robotics"),
+    ("Probabilistic Robotics via Rust", "Shannon Press", "bc-blue bc-v2", "2026 · 26 CHAPTERS",
+     "An interactive book on probabilistic robotics — Bayes filters, Kalman and particle filters, localization, "
+     "occupancy grids, and SLAM as sparse least squares — culminating in a rover that maps a floorplan it has never seen.",
+     "probabilistic-robotics-via-rust"),
+    ("Reinforcement Learning for Robotics", "Shannon Press", "bc-ink bc-v3", "2026 · 22 CHAPTERS",
+     "Reinforcement learning for robotics the FCP way — full mathematical foundations, interactive simulations, and "
+     "production Rust, from multi-armed bandits through PPO/SAC to a quadruped that learns to walk.",
+     "reinforcement-learning-for-robotics"),
 ]
 
 REPOS = [
@@ -286,7 +274,7 @@ def books_body():
                         </div>
                     </article>""" for t, a, cls, meta, d, slug in BOOKS)
     return f"""                <div class="lp-bar" data-reveal>
-                    <span>SHANNON &amp; RANTAI PRESS</span>
+                    <span>SHANNON PRESS</span>
                     <span class="lp-count">{len(BOOKS)} TITLES</span>
                 </div>
                 <div class="bk-grid">
@@ -373,8 +361,8 @@ def page(slug):
                 <canvas class="halftone absolute inset-0" data-speed="1.6"></canvas>
                 <div class="lp-banner-in">
                     <p class="lp-crumb">
-                        <a href="index-v3.html">SHANNON</a> /
-                        <a href="index-v3.html#library">LIBRARY</a> /
+                        <a href="index.html">SHANNON</a> /
+                        <a href="index.html#library">LIBRARY</a> /
                         <span class="on">{meta['label']}</span>
                     </p>
                     <h1 class="lp-title">{meta['title']}</h1>

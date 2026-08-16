@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1.0" name="viewport" />
-    <title>Machine Learning Systems in Rust — Books — Shannon Dynamics</title>
+    <title>Probabilistic Robotics via Rust — Books — Shannon Dynamics</title>
     <meta name="description" content="An engineering company with a passion for rehearsing reality — robots and autonomous software, simulated before they exist." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -1123,7 +1123,6 @@
         .lp-more em { margin-left: auto; font-style: normal; color: rgba(16,24,27,.3); }
     </style>
 </head>
-
 <body class="bg-slatebg antialiased overflow-x-hidden">
 <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
         <defs>
@@ -1144,23 +1143,23 @@
 
 <header id="nav">
         <div class="nav-in">
-            <a href="index-v3.html" class="flex items-center shrink-0">
+            <a href="index.html" class="flex items-center shrink-0">
                 <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" />
             </a>
             <nav class="nav-links glass-dark rounded-full pl-2 pr-1.5 py-1.5 flex items-center gap-1 text-[12.5px] text-white/75">
-                <a class="nav-link" href="index-v3.html#work">What we do</a>
-                <a class="nav-link" href="index-v3.html#capabilities">Capabilities</a>
-                <a class="nav-link" href="index-v3.html#showcase">Products</a>
-                <a class="nav-link" href="index-v3.html#library">Library</a>
-                <a class="nav-link" href="index-v3.html#ecosystem">Ecosystem</a>
+                <a class="nav-link" href="index.html#capabilities">Capabilities</a>
+                <a class="nav-link" href="index.html#showcase">Products</a>
+                <a class="nav-link" href="index.html#library">Library</a>
+                <a class="nav-link" href="index.html#ecosystem">Ecosystem</a>
                 <span class="nav-sep" aria-hidden="true"></span>
             </nav>
         </div>
     </header>
     <!-- floating contact button — revealed once the top of the page is behind you -->
-    <a href="index-v3.html#contact" class="fab" aria-label="Contact Shannon Dynamics"><i aria-hidden="true"></i>Contact Us →</a>
+    <a href="index.html#contact" class="fab" aria-label="Contact Shannon Dynamics"><i aria-hidden="true"></i>Contact Us →</a>
 
 
+    
     <div class="w-full">
         <!-- overflow-x-clip, not overflow-hidden: hidden creates a scroll
              container that traps the sticky .bd-side sidebar -->
@@ -1171,13 +1170,13 @@
                 <canvas class="halftone absolute inset-0" data-speed="1.6"></canvas>
                 <div class="lp-banner-in">
                     <p class="lp-crumb">
-                        <a href="index-v3.html">SHANNON</a> /
-                        <a href="index-v3.html#library">LIBRARY</a> /
+                        <a href="index.html">SHANNON</a> /
+                        <a href="index.html#library">LIBRARY</a> /
                         <a href="library-books.html">BOOKS</a> /
-                        <span class="on">MACHINE LEARNING SYSTEMS IN RUST</span>
+                        <span class="on">PROBABILISTIC ROBOTICS VIA RUST</span>
                     </p>
-                    <h1 class="lp-title">Machine Learning Systems in Rust</h1>
-                    <p class="lp-sub">Training and serving ML in a memory-safe stack.</p>
+                    <h1 class="lp-title">Probabilistic Robotics via Rust</h1>
+                    <p class="lp-sub">A differential-drive rover called Rusty, from its first noisy encoder tick to autonomous SLAM.</p>
                 </div>
             </div>
 
@@ -1191,37 +1190,53 @@
                             <p class="bd-side-h">THIS BOOK</p>
                             <a class="bd-side-top" href="#overview">Overview</a>
                             <a class="bd-side-top" href="#contents">Table of contents</a>
-                            <p class="bd-part">PART I — FOUNDATIONS</p>
-                            <a class="bd-ch" href="#ch-01">The Case for a Memory-Safe Stack</a>
-                            <a class="bd-ch" href="#ch-02">Tensors and Autograd</a>
-                            <a class="bd-ch" href="#ch-03">The Training Loop</a>
-                            <p class="bd-part">PART II — DATA</p>
-                            <a class="bd-ch" href="#ch-04">Pipelines That Do Not Lie</a>
-                            <a class="bd-ch" href="#ch-05">Datasets at Scale</a>
-                            <a class="bd-ch" href="#ch-06">Feature Stores</a>
-                            <p class="bd-part">PART III — COMPUTE</p>
-                            <a class="bd-ch" href="#ch-07">GPU Batching</a>
-                            <a class="bd-ch" href="#ch-08">Distributed Training</a>
-                            <a class="bd-ch" href="#ch-09">Profiling and Custom Kernels</a>
-                            <p class="bd-part">PART IV — SERVING</p>
-                            <a class="bd-ch" href="#ch-10">Inference Servers</a>
-                            <a class="bd-ch" href="#ch-11">Quantisation and Compilation</a>
-                            <a class="bd-ch" href="#ch-12">Monitoring Models in Production</a>
+                            <p class="bd-part">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY</p>
+                            <a class="bd-ch" href="#ch-01">The Robot That Doubts — Why Probabilistic Robotics?</a>
+                            <a class="bd-ch" href="#ch-02">Probability: The Language of Uncertainty</a>
+                            <a class="bd-ch" href="#ch-03">The Geometry of Motion: Poses, Frames, and Lie Groups</a>
+                            <a class="bd-ch" href="#ch-04">Rusty, Sensors, and the Simulator</a>
+                            <p class="bd-part">PART II — THE BAYES FILTER FAMILY</p>
+                            <a class="bd-ch" href="#ch-05">The Bayes Filter: Recursive State Estimation</a>
+                            <a class="bd-ch" href="#ch-06">Kalman Filters: The Linear-Gaussian World</a>
+                            <a class="bd-ch" href="#ch-07">Beyond Linearity: EKF, UKF, and Estimation on Manifolds</a>
+                            <a class="bd-ch" href="#ch-08">Nonparametric Filters: Histograms and Particles</a>
+                            <p class="bd-part">PART III — PROBABILISTIC MODELS</p>
+                            <a class="bd-ch" href="#ch-09">Probabilistic Motion Models</a>
+                            <a class="bd-ch" href="#ch-10">Probabilistic Sensor Models</a>
+                            <p class="bd-part">PART IV — LOCALIZATION</p>
+                            <a class="bd-ch" href="#ch-11">Localization I: Tracking with Gaussians</a>
+                            <a class="bd-ch" href="#ch-12">Localization II: Global Localization with Grids and Particles</a>
+                            <p class="bd-part">PART V — MAPPING AND SLAM</p>
+                            <a class="bd-ch" href="#ch-13">Occupancy Grid Mapping</a>
+                            <a class="bd-ch" href="#ch-14">The SLAM Problem and EKF SLAM</a>
+                            <a class="bd-ch" href="#ch-15">SLAM as Least Squares: Factor Graphs</a>
+                            <a class="bd-ch" href="#ch-16">Scan Matching and Pose-Graph SLAM</a>
+                            <a class="bd-ch" href="#ch-17">FastSLAM and Rao-Blackwellization</a>
+                            <a class="bd-ch" href="#ch-18">Visual and Visual-Inertial SLAM</a>
+                            <a class="bd-ch" href="#ch-19">Modern Map Representations</a>
+                            <p class="bd-part">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY</p>
+                            <a class="bd-ch" href="#ch-20">Motion Planning: From Geometry to Probability</a>
+                            <a class="bd-ch" href="#ch-21">Decision Making I: MDPs and Value Iteration</a>
+                            <a class="bd-ch" href="#ch-22">Decision Making II: POMDPs and Belief-Space Planning</a>
+                            <a class="bd-ch" href="#ch-23">Stochastic Model Predictive Control: MPPI and Friends</a>
+                            <a class="bd-ch" href="#ch-24">Exploration and Active SLAM</a>
+                            <p class="bd-part">PART VII — FRONTIERS AND INTEGRATION</p>
+                            <a class="bd-ch" href="#ch-25">Learning in the Loop</a>
+                            <a class="bd-ch" href="#ch-26">Capstone: A Complete Autonomous Robot</a>
                         </aside>
 
                         <!-- ── main ── -->
                         <main>
                             <section id="overview" class="bd-hero" data-reveal style="scroll-margin-top:110px">
-                                <span class="book-cover bd-cover bc-paper bc-v1"><span class="book-cover-t">Machine Learning Systems in Rust</span></span>
+                                <span class="book-cover bd-cover bc-blue bc-v2"><span class="book-cover-t">Probabilistic Robotics via Rust</span></span>
                                 <div>
-                                    <p class="bd-kicker">SHANNON PRESS · 2025 · 640 PP</p>
+                                    <p class="bd-kicker">SHANNON PRESS · 2026 · 26 CHAPTERS</p>
                                     <h2 class="bd-h2">About this book</h2>
-                            <p class="bd-p">Most ML systems are a Python veneer over infrastructure nobody can audit. This book builds the whole stack — data pipelines, training loops, GPU batching, serving — in Rust, where the failure modes are visible at compile time and the deployment artifact is a single binary.</p>
-                            <p class="bd-p">It is the long-form companion to Shannon&rsquo;s open-source work: every chapter ends in running code, and the systems built across the book compose into a complete training-to-production pipeline.</p>
+                            <p class="bd-p">An interactive book on probabilistic robotics, taught the FCP way — rigorous mathematical Foundations, Conceptual understanding through simulations you can manipulate, and Practical implementations in Rust.</p>
+                            <p class="bd-p">Twenty-six chapters take Rusty, a differential-drive rover, from its first noisy encoder tick to autonomously exploring and mapping a floorplan it has never seen: Bayes filters, Kalman and particle filters, motion and sensor models, localization, occupancy grids, SLAM as sparse least squares, scan matching, visual-inertial odometry, planning under uncertainty, MPPI, POMDPs, and active SLAM.</p>
                                     <div class="bd-get">
                                         <a class="bd-btn pri" href="#ch-01">START READING →</a>
-                                        <a class="bd-btn" href="#">AMAZON KINDLE ↗</a>
-                                        <a class="bd-btn" href="#">GOOGLE BOOKS ↗</a>
+                                        <a class="bd-btn" href="index.html#contact">REQUEST ACCESS ↗</a>
                                     </div>
                                 </div>
                             </section>
@@ -1229,58 +1244,115 @@
                             <section class="bd-toc" id="contents">
                                 <h2 class="bd-h2" data-reveal>Table of contents</h2>
                         <div class="bd-pt" data-reveal>
-                            <p class="bd-pt-h">PART I — FOUNDATIONS</p>
+                            <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY</p>
                             <ol>
                                 <li>
-                                    <a href="#ch-01"><span>CH.01</span>The Case for a Memory-Safe Stack<em>→</em></a>
+                                    <a href="#ch-01"><span>CH.01</span>The Robot That Doubts — Why Probabilistic Robotics?<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-02"><span>CH.02</span>Tensors and Autograd<em>→</em></a>
+                                    <a href="#ch-02"><span>CH.02</span>Probability: The Language of Uncertainty<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-03"><span>CH.03</span>The Training Loop<em>→</em></a>
+                                    <a href="#ch-03"><span>CH.03</span>The Geometry of Motion: Poses, Frames, and Lie Groups<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-04"><span>CH.04</span>Rusty, Sensors, and the Simulator<em>→</em></a>
                                 </li>
                             </ol>
                         </div>
                         <div class="bd-pt" data-reveal>
-                            <p class="bd-pt-h">PART II — DATA</p>
+                            <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY</p>
                             <ol>
                                 <li>
-                                    <a href="#ch-04"><span>CH.04</span>Pipelines That Do Not Lie<em>→</em></a>
+                                    <a href="#ch-05"><span>CH.05</span>The Bayes Filter: Recursive State Estimation<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-05"><span>CH.05</span>Datasets at Scale<em>→</em></a>
+                                    <a href="#ch-06"><span>CH.06</span>Kalman Filters: The Linear-Gaussian World<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-06"><span>CH.06</span>Feature Stores<em>→</em></a>
+                                    <a href="#ch-07"><span>CH.07</span>Beyond Linearity: EKF, UKF, and Estimation on Manifolds<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-08"><span>CH.08</span>Nonparametric Filters: Histograms and Particles<em>→</em></a>
                                 </li>
                             </ol>
                         </div>
                         <div class="bd-pt" data-reveal>
-                            <p class="bd-pt-h">PART III — COMPUTE</p>
+                            <p class="bd-pt-h">PART III — PROBABILISTIC MODELS</p>
                             <ol>
                                 <li>
-                                    <a href="#ch-07"><span>CH.07</span>GPU Batching<em>→</em></a>
+                                    <a href="#ch-09"><span>CH.09</span>Probabilistic Motion Models<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-08"><span>CH.08</span>Distributed Training<em>→</em></a>
-                                </li>
-                                <li>
-                                    <a href="#ch-09"><span>CH.09</span>Profiling and Custom Kernels<em>→</em></a>
+                                    <a href="#ch-10"><span>CH.10</span>Probabilistic Sensor Models<em>→</em></a>
                                 </li>
                             </ol>
                         </div>
                         <div class="bd-pt" data-reveal>
-                            <p class="bd-pt-h">PART IV — SERVING</p>
+                            <p class="bd-pt-h">PART IV — LOCALIZATION</p>
                             <ol>
                                 <li>
-                                    <a href="#ch-10"><span>CH.10</span>Inference Servers<em>→</em></a>
+                                    <a href="#ch-11"><span>CH.11</span>Localization I: Tracking with Gaussians<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-11"><span>CH.11</span>Quantisation and Compilation<em>→</em></a>
+                                    <a href="#ch-12"><span>CH.12</span>Localization II: Global Localization with Grids and Particles<em>→</em></a>
+                                </li>
+                            </ol>
+                        </div>
+                        <div class="bd-pt" data-reveal>
+                            <p class="bd-pt-h">PART V — MAPPING AND SLAM</p>
+                            <ol>
+                                <li>
+                                    <a href="#ch-13"><span>CH.13</span>Occupancy Grid Mapping<em>→</em></a>
                                 </li>
                                 <li>
-                                    <a href="#ch-12"><span>CH.12</span>Monitoring Models in Production<em>→</em></a>
+                                    <a href="#ch-14"><span>CH.14</span>The SLAM Problem and EKF SLAM<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-15"><span>CH.15</span>SLAM as Least Squares: Factor Graphs<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-16"><span>CH.16</span>Scan Matching and Pose-Graph SLAM<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-17"><span>CH.17</span>FastSLAM and Rao-Blackwellization<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-18"><span>CH.18</span>Visual and Visual-Inertial SLAM<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-19"><span>CH.19</span>Modern Map Representations<em>→</em></a>
+                                </li>
+                            </ol>
+                        </div>
+                        <div class="bd-pt" data-reveal>
+                            <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY</p>
+                            <ol>
+                                <li>
+                                    <a href="#ch-20"><span>CH.20</span>Motion Planning: From Geometry to Probability<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-21"><span>CH.21</span>Decision Making I: MDPs and Value Iteration<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-22"><span>CH.22</span>Decision Making II: POMDPs and Belief-Space Planning<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-23"><span>CH.23</span>Stochastic Model Predictive Control: MPPI and Friends<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-24"><span>CH.24</span>Exploration and Active SLAM<em>→</em></a>
+                                </li>
+                            </ol>
+                        </div>
+                        <div class="bd-pt" data-reveal>
+                            <p class="bd-pt-h">PART VII — FRONTIERS AND INTEGRATION</p>
+                            <ol>
+                                <li>
+                                    <a href="#ch-25"><span>CH.25</span>Learning in the Loop<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#ch-26"><span>CH.26</span>Capstone: A Complete Autonomous Robot<em>→</em></a>
                                 </li>
                             </ol>
                         </div>
@@ -1289,148 +1361,172 @@
                             <!-- ── chapters — one page, anchored sections ── -->
                             <p data-reveal style="margin-top:46px"><span class="cd-draft">DRAFT — PLACEHOLDER COPY</span></p>
                             <section class="bd-chsec" id="ch-01" data-reveal>
-                                <p class="bd-pt-h">PART I — FOUNDATIONS · CH.01</p>
-                                <h2 class="bd-h2">The Case for a Memory-Safe Stack</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>The Case for a Memory-Safe Stack</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.01</p>
+                                <h2 class="bd-h2">The Robot That Doubts — Why Probabilistic Robotics?</h2>
+                                <p class="bd-p">The five sources of uncertainty; a single best guess vs. a belief; the hallway thought experiment run live; the probabilistic paradigm's implications; tour of the book, the FCP method, and Rusty.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> Reader environment setup; the workspace skeleton; first <code>cargo run</code>.</p>
                             </section>
                             <section class="bd-chsec" id="ch-02" data-reveal>
-                                <p class="bd-pt-h">PART I — FOUNDATIONS · CH.02</p>
-                                <h2 class="bd-h2">Tensors and Autograd</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Tensors and Autograd</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.02</p>
+                                <h2 class="bd-h2">Probability: The Language of Uncertainty</h2>
+                                <p class="bd-p">Random variables, joint/conditional probability, Bayes rule (with background knowledge), independence, expectation, covariance, entropy and information; the Gaussian in 1D and nD, moments vs. canonical form; sampling as representation.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>rand_distr</code>/<code>statrs</code>/<code>nalgebra</code>: sampling, densities, a <code>MultivariateNormal</code> you understand; seeded reproducibility discipline.</p>
                             </section>
                             <section class="bd-chsec" id="ch-03" data-reveal>
-                                <p class="bd-pt-h">PART I — FOUNDATIONS · CH.03</p>
-                                <h2 class="bd-h2">The Training Loop</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>The Training Loop</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.03</p>
+                                <h2 class="bd-h2">The Geometry of Motion: Poses, Frames, and Lie Groups</h2>
+                                <p class="bd-p">Frames and rotation matrices; homogeneous transforms; SO(2)/SE(2) fully worked; SO(3)/SE(3), quaternions, axis-angle; exponential/log maps, twists and screws; why "state ⊞ increment" needs ⊞/⊟; uncertainty on manifolds (preview of banana distributions).</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>nalgebra</code> <code>Isometry2/3</code>, <code>UnitQuaternion</code>; hand-rolled <code>SE2</code> type with <code>exp/log/adjoint</code>; <code>sophus</code> for 3D; compile-time frame-safety via newtypes.</p>
                             </section>
                             <section class="bd-chsec" id="ch-04" data-reveal>
-                                <p class="bd-pt-h">PART II — DATA · CH.04</p>
-                                <h2 class="bd-h2">Pipelines That Do Not Lie</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Pipelines That Do Not Lie</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.04</p>
+                                <h2 class="bd-h2">Rusty, Sensors, and the Simulator</h2>
+                                <p class="bd-p">Differential-drive kinematics and wheel odometry from encoder ticks; sensor taxonomy grounded in real devices (encoders, IMU, sonar, LiDAR physics, cameras); noise phenomenology measured from the simulator; building the book's lab: the Hallway and Apartment worlds, ray-cast LiDAR via <code>parry2d</code>, fixed-seed determinism; anatomy of a book widget (<code>eframe</code> + WASM).</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>sim</code> crate: <code>World</code>, <code>Robot</code>, <code>Lidar</code>, <code>Encoders</code>; the widget framework skeleton every later chapter reuses.</p>
                             </section>
                             <section class="bd-chsec" id="ch-05" data-reveal>
-                                <p class="bd-pt-h">PART II — DATA · CH.05</p>
-                                <h2 class="bd-h2">Datasets at Scale</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Datasets at Scale</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.05</p>
+                                <h2 class="bd-h2">The Bayes Filter: Recursive State Estimation</h2>
+                                <p class="bd-p">States, completeness, and the Markov assumption; controls vs. measurements as two data streams; beliefs; the Bayes filter recursion derived by induction; "sensing sharpens, moving smears"; representation/computation trade-offs — the family tree of every filter to come.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>trait BayesFilter { fn predict(&mut self, u); fn correct(&mut self, z); }</code> — the trait the whole book implements; discrete hallway filter as first impl; unit test reproduces the chapter's 3-step numeric worked example.</p>
                             </section>
                             <section class="bd-chsec" id="ch-06" data-reveal>
-                                <p class="bd-pt-h">PART II — DATA · CH.06</p>
-                                <h2 class="bd-h2">Feature Stores</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Feature Stores</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.06</p>
+                                <h2 class="bd-h2">Kalman Filters: The Linear-Gaussian World</h2>
+                                <p class="bd-p">Linear-Gaussian systems; the KF derived by completing the square; the Kalman gain as precision- weighted trust; the information filter and canonical form duality; matrix inversion lemma; smoothing (RTS) as the first taste of "whole-trajectory" estimation.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>Kf<const N, const U, const M></code> on nalgebra <code>SMatrix</code>; RTS smoother; cross-validation vs <code>adskalman</code>; 1D + 2D tracking labs.</p>
                             </section>
                             <section class="bd-chsec" id="ch-07" data-reveal>
-                                <p class="bd-pt-h">PART III — COMPUTE · CH.07</p>
-                                <h2 class="bd-h2">GPU Batching</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>GPU Batching</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.07</p>
+                                <h2 class="bd-h2">Beyond Linearity: EKF, UKF, and Estimation on Manifolds</h2>
+                                <p class="bd-p">Taylor linearization and its lies; the EKF; the unscented transform and UKF; where 2005 stops and 2026 begins: error-state formulation, ⊞/⊟ retractions, EKF/UKF on SE(2)/SE(3), invariant-EKF intuition; when each filter breaks, demonstrated.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> generic <code>Ekf</code>/<code>Ukf</code> over a <code>Manifold</code> trait; error-state EKF on our <code>SE2</code>; deliberate compile-error showing the type system rejecting a dimension mismatch.</p>
                             </section>
                             <section class="bd-chsec" id="ch-08" data-reveal>
-                                <p class="bd-pt-h">PART III — COMPUTE · CH.08</p>
-                                <h2 class="bd-h2">Distributed Training</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Distributed Training</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.08</p>
+                                <h2 class="bd-h2">Nonparametric Filters: Histograms and Particles</h2>
+                                <p class="bd-p">Discrete Bayes filter; grid decompositions; binary static-state filter in log odds (the occupancy seed); importance sampling from first principles; the particle filter; resampling variance, low- variance/systematic resampling, particle deprivation; KLD-adaptive sample sizes.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>ParticleFilter<S></code> with pluggable proposal/likelihood; low-variance resampler in 15 lines; rayon-parallel weights (native) with the same code single-threaded on WASM.</p>
                             </section>
                             <section class="bd-chsec" id="ch-09" data-reveal>
-                                <p class="bd-pt-h">PART III — COMPUTE · CH.09</p>
-                                <h2 class="bd-h2">Profiling and Custom Kernels</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Profiling and Custom Kernels</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART III — PROBABILISTIC MODELS · CH.09</p>
+                                <h2 class="bd-h2">Probabilistic Motion Models</h2>
+                                <p class="bd-p">Probabilistic kinematics; the velocity model (closed form + sampler, α₁…α₆) derived from arc geometry; the odometry model (δ_rot1, δ_trans, δ_rot2); the banana distribution as truth vs. its Gaussian caricature; map-conditioned motion; on-manifold noise (exponential-coordinate perturbations) as the modern formulation.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>motion</code> module: both models, both variants, property-tested (samples ↔ closed form via KS test); the samplers that power every localization demo to come.</p>
                             </section>
                             <section class="bd-chsec" id="ch-10" data-reveal>
-                                <p class="bd-pt-h">PART IV — SERVING · CH.10</p>
-                                <h2 class="bd-h2">Inference Servers</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Inference Servers</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART III — PROBABILISTIC MODELS · CH.10</p>
+                                <h2 class="bd-h2">Probabilistic Sensor Models</h2>
+                                <p class="bd-p">The beam model as a four-way mixture (hit/short/max/rand) with EM fitting of intrinsics; likelihood fields (and their smoothness advantage); map correlation; feature/landmark models with range-bearing-signature and the correspondence variable c_t; over-confidence from independence assumptions and its mitigations.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>sensor</code> module: <code>BeamModel</code> (with <code>learn_intrinsics</code>), <code>LikelihoodField</code> (precomputed distance transform), <code>LandmarkModel</code>; benchmarked against each other in the Apartment.</p>
                             </section>
                             <section class="bd-chsec" id="ch-11" data-reveal>
-                                <p class="bd-pt-h">PART IV — SERVING · CH.11</p>
-                                <h2 class="bd-h2">Quantisation and Compilation</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Quantisation and Compilation</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART IV — LOCALIZATION · CH.11</p>
+                                <h2 class="bd-h2">Localization I: Tracking with Gaussians</h2>
+                                <p class="bd-p">The localization taxonomy (tracking / global / kidnapped; static / dynamic; passive / active); Markov localization as the Bayes filter with a map; EKF localization with known then unknown correspondences; maximum-likelihood data association, Mahalanobis gating, validation regions; multi-hypothesis tracking as a Gaussian-mixture stopgap.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>EkfLocalizer</code> over the Ch. 7 error-state EKF + Ch. 9/10 models; MHT with pruning as an optional feature flag.</p>
                             </section>
                             <section class="bd-chsec" id="ch-12" data-reveal>
-                                <p class="bd-pt-h">PART IV — SERVING · CH.12</p>
-                                <h2 class="bd-h2">Monitoring Models in Production</h2>
-                                <p class="bd-p">Placeholder copy — the finished text of <em>Monitoring Models in Production</em> will replace
-                                    this section. It is here so the outline can be judged as an outline: every
-                                    chapter answers its link in the sidebar, and the reading flow runs down one
-                                    page instead of hopping between documents.</p>
-                                <p class="bd-p">Each chapter keeps the same scaffold — a short opening, the core
-                                    argument, a worked example, and a hand-off to what follows — so dropping in
-                                    the manuscript means replacing these paragraphs and nothing else.</p>
+                                <p class="bd-pt-h">PART IV — LOCALIZATION · CH.12</p>
+                                <h2 class="bd-h2">Localization II: Global Localization with Grids and Particles</h2>
+                                <p class="bd-p">Grid localization (resolution/precision trade, likelihood pre-caching); Monte Carlo Localization as the particle filter instantiated; Augmented MCL (w_fast/w_slow random-particle recovery) solving the kidnapped-robot problem; dual/mixture proposals; localization among moving people (measurement novelty filtering); the great comparison table, reproduced experimentally.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>Mcl</code> + <code>AugmentedMcl</code> (AMCL — still Nav2's default localizer — built by hand); side-by-side benchmark: EKF vs grid vs MCL on identical logs; this chapter's demo is the book's public demo.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-13" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.13</p>
+                                <h2 class="bd-h2">Occupancy Grid Mapping</h2>
+                                <p class="bd-p">Mapping with known poses; per-cell binary Bayes filters in log odds; inverse sensor models (hand-crafted, then learned from the forward model); multi-sensor fusion; where per-cell independence lies to you, and MAP mapping with forward models as the honest alternative.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>OccGrid</code> with the Ch. 8 binary filter per cell; Bresenham ray updates; live map streaming into egui at 60 fps.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-14" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.14</p>
+                                <h2 class="bd-h2">The SLAM Problem and EKF SLAM</h2>
+                                <p class="bd-p">Online vs. full SLAM; the joint pose-map state; why correlations <em>are</em> the map's value; EKF SLAM with known then unknown correspondence; provisional landmarks and map management; the two fatal flaws — quadratic cost and linearization-locked inconsistency — that motivate everything after.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>EkfSlam</code> with dynamic state growth; instrumented to export the covariance movie the widgets replay.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-15" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.15</p>
+                                <h2 class="bd-h2">SLAM as Least Squares: Factor Graphs</h2>
+                                <p class="bd-p">The modern backbone. Full-SLAM posterior in log form = sum of quadratic constraints = a factor graph; MAP inference as sparse nonlinear least squares; Gauss-Newton and Levenberg-Marquardt; sparsity, variable elimination, and the Schur complement (the EIF "reduce" step, reborn); robust kernels and outlier-immune SLAM; the information-form lineage (EIF/SEIF) told honestly as history whose sparsity insight won via smoothing.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> hand-rolled dense GN/LM on nalgebra → sparse via <code>faer</code>; then the same graph in <code>factrs</code> 0.3 (GTSAM-style typed factors) to show the production path.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-16" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.16</p>
+                                <h2 class="bd-h2">Scan Matching and Pose-Graph SLAM</h2>
+                                <p class="bd-p">Front-end/back-end architecture; ICP (point-to-point, point-to-plane) derived and implemented; NDT; scan-to-map matching; KISS-ICP-style odometry; loop-closure detection and verification; pose-graph SLAM end-to-end — the Cartographer/SLAM-Toolbox recipe, built by hand.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <strong>RustSLAM-2D</strong>: LiDAR odometry (ICP over <code>parry</code>-simulated scans) + pose graph on our Ch. 15 optimizer + occupancy submaps = the book's first complete SLAM system.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-17" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.17</p>
+                                <h2 class="bd-h2">FastSLAM and Rao-Blackwellization</h2>
+                                <p class="bd-p">Factoring the SLAM posterior: sample paths, close maps in closed form; Rao-Blackwellization as a theorem, not a trick; FastSLAM 1.0/2.0 with per-particle landmark EKFs and tree-shared maps; grid-based RBPF (the gmapping recipe) with improved proposals; when particle SLAM still wins.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>FastSlam</code> (landmark version) + grid-RBPF on the Ch. 8 particle machinery; rayon-parallel per-particle maps.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-18" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.18</p>
+                                <h2 class="bd-h2">Visual and Visual-Inertial SLAM</h2>
+                                <p class="bd-p">The camera as a probabilistic sensor: projection factors and reprojection error; two-view geometry in 90 seconds; IMU preintegration as a factor (the Lupton/Forster idea); MSCKF vs. sliding-window smoothing; marginalization and its fill-in (SEIF's lesson resurfacing); ORB-SLAM3 and VINS as <em>systems</em> — architecture described, not dissected.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> bundle-adjust a tiny synthetic scene with our Ch. 15 optimizer + <code>sophus</code> SE(3); factor graph with preintegrated IMU factors in <code>factrs</code>; deliberately smaller P section.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-19" data-reveal>
+                                <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.19</p>
+                                <h2 class="bd-h2">Modern Map Representations</h2>
+                                <p class="bd-p">Beyond flat grids: octrees/OctoMap; TSDF and ESDF fusion <em>as recursive estimation</em> (per-voxel weighted least squares — the Bayes filter in disguise); meshes; distance fields for planning; one principled section on differentiable rendering as a measurement model (NeRF/3DGS mapping) with survey pointers, not system worship.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> 2D TSDF fusion + ESDF via distance transform; <code>three-d</code> for the one 3D showpiece.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-20" data-reveal>
+                                <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.20</p>
+                                <h2 class="bd-h2">Motion Planning: From Geometry to Probability</h2>
+                                <p class="bd-p">Configuration space (via Lynch/Choset); graph search done right (Dijkstra, A<em>, D</em> Lite mention); potential fields and their local minima; sampling-based planning: PRM, RRT, RRT<em> with probabilistic completeness and asymptotic optimality stated precisely; planning on Rusty's real constraints (nonholonomic RRT variants, Dubins/Reeds-Shepp primitives, hybrid-A</em> sketch).</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>planning</code> module on <code>petgraph</code>/<code>pathfinding</code>; RRT* from scratch with <code>parry2d</code> collision; Dubins steering for Rusty.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-21" data-reveal>
+                                <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.21</p>
+                                <h2 class="bd-h2">Decision Making I: MDPs and Value Iteration</h2>
+                                <p class="bd-p">From plans to policies; rewards, discounting, the Bellman equation; value iteration and policy extraction; stochastic shortest paths; the gridworld that refuses to walk straight; policy iteration and asynchronous variants; the bridge: what if state itself is uncertain?</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>mdp</code> module: value/policy iteration over sparse transition models; Rusty navigating with slippery wheels.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-22" data-reveal>
+                                <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.22</p>
+                                <h2 class="bd-h2">Decision Making II: POMDPs and Belief-Space Planning</h2>
+                                <p class="bd-p">The belief MDP; the tiger problem played honestly; α-vectors and piecewise-linear-convex value functions; exact value iteration and why it explodes; point-based methods (PBVI); modern online solvers — POMCP and DESPOT — as the practical path; AMDP/coastal navigation (uncertainty- aware behavior emerging from planning in belief space).</p>
+                                <p class="bd-p"><strong>In Rust:</strong> exact finite-world POMDP solver; POMCP over the book's particle machinery; Rusty choosing to relocalize before committing to a corridor.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-23" data-reveal>
+                                <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.23</p>
+                                <h2 class="bd-h2">Stochastic Model Predictive Control: MPPI and Friends</h2>
+                                <p class="bd-p">Receding-horizon control; DWA as the classical baseline; the path-integral idea: rollouts, costs, exponential weighting — MPPI as importance sampling over controls (the particle filter's twin); constraint handling; when MPPI beats gradient MPC and vice versa.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>Mppi</code> with rayon rollouts (single-thread on WASM, still real-time for 2D Rusty); obstacle costs from the Ch. 19 ESDF; Rusty tracking a path through clutter.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-24" data-reveal>
+                                <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.24</p>
+                                <h2 class="bd-h2">Exploration and Active SLAM</h2>
+                                <p class="bd-p">Where should Rusty go <em>to learn</em>? Information gain and expected entropy reduction; frontier exploration; active localization (choosing motions that disambiguate); active SLAM as decision- making over the Ch. 15 graph (utility = coverage + expected information); stopping criteria; the Placed et al. survey as the map of the field.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> frontier detector + information-gain scorer over <code>OccGrid</code>; greedy explorer; hooks the Ch. 16 SLAM stack — Rusty maps a floorplan it has never seen, autonomously.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-25" data-reveal>
+                                <p class="bd-pt-h">PART VII — FRONTIERS AND INTEGRATION · CH.25</p>
+                                <h2 class="bd-h2">Learning in the Loop</h2>
+                                <p class="bd-p">Machine learning <em>inside</em> the Bayesian frame, not instead of it: learned and calibrated observation models (the Ch. 13 learned-inverse-model idea, modernized); calibration curves; differentiable filters (backprop through the KF/PF); diffusion policies as probabilistic action models; what stays principled and what is still alchemy.</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>candle</code>: train a small learned beam model from simulator data; differentiate through the Ch. 6 KF; honest benchmarks vs. the hand-tuned models.</p>
+                            </section>
+                            <section class="bd-chsec" id="ch-26" data-reveal>
+                                <p class="bd-pt-h">PART VII — FRONTIERS AND INTEGRATION · CH.26</p>
+                                <h2 class="bd-h2">Capstone: A Complete Autonomous Robot</h2>
+                                <p class="bd-p">Everything, integrated and honest: architecture of an autonomy stack (estimation, mapping, planning, control as concurrent tasks); Rusty dropped into an unknown apartment — explores (Ch. 24), SLAMs (Ch. 16), plans (Ch. 20), controls (Ch. 23), replans on surprise; failure modes tour (kidnaps, dynamic obstacles, sensor dropout) with the probabilistic machinery recovering; engineering retrospective: what Rust's type system caught, what it cost, where the ecosystem stands; where to go next (ROS 2 via <code>ros2-rust</code>, real hardware, 3D).</p>
+                                <p class="bd-p"><strong>In Rust:</strong> <code>capstone</code> crate wiring every module of the workspace; the book's closing argument that the whole stack — teaching code included — runs at real-time in the browser.</p>
                             </section>
 
 
                             <!-- ── prev / next ── -->
                             <nav class="bd-pager" data-reveal aria-label="More books">
-                                <a href="book-simulation-first-engineering.html">
-                                    <small>← PREVIOUS BOOK</small>
-                                    <b>Simulation-First Engineering</b>
+                                <a href="book-reinforcement-learning-for-robotics.html">
+                                    <small>← THE OTHER BOOK</small>
+                                    <b>Reinforcement Learning for Robotics</b>
                                 </a>
-                                <a class="nx" href="book-foundations-of-sim-to-real.html">
-                                    <small>NEXT BOOK →</small>
-                                    <b>Foundations of Sim-to-Real</b>
+                                <a class="nx" href="library-books.html">
+                                    <small>ALL BOOKS →</small>
+                                    <b>Back to Library</b>
                                 </a>
                             </nav>
 
@@ -1753,3 +1849,4 @@
 </body>
 
 </html>
+

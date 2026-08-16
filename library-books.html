@@ -197,7 +197,7 @@
 
         /* the bar now covers the top of the viewport, so anchor jumps have to
            stop short of it or every section lands with its heading underneath */
-        #work, #capabilities, #showcase, #library, #ecosystem, #contact { scroll-margin-top: 80px; }
+        #capabilities, #showcase, #library, #ecosystem, #contact { scroll-margin-top: 80px; }
 
 @media (prefers-reduced-motion: reduce) { #nav { transition-duration: .01ms; } }
 
@@ -1175,20 +1175,19 @@
 
 <header id="nav">
         <div class="nav-in">
-            <a href="index-v3.html" class="nav-logo flex items-center shrink-0">
+            <a href="index.html" class="nav-logo flex items-center shrink-0">
                 <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" />
             </a>
             <nav class="nav-links glass-dark rounded-full px-2 py-1.5 flex items-center gap-1 text-[12.5px] text-white/75">
-                <a class="nav-link" href="index-v3.html#work">What we do</a>
-                <a class="nav-link" href="index-v3.html#capabilities">Capabilities</a>
-                <a class="nav-link" href="index-v3.html#showcase">Products</a>
+                <a class="nav-link" href="index.html#capabilities">Capabilities</a>
+                <a class="nav-link" href="index.html#showcase">Products</a>
 
                 <!-- ── Library: nav-link + hover/focus submenu ──
                      The link itself still jumps to the in-page #library section;
                      the submenu is a shortcut straight to each sub-page, so
                      neither path is lost. -->
                 <div class="nav-item" data-nav-item>
-                    <a class="nav-link nav-link-sub" href="index-v3.html#library" aria-haspopup="true" aria-expanded="false">
+                    <a class="nav-link nav-link-sub" href="index.html#library" aria-haspopup="true" aria-expanded="false">
                         Library
                         <svg class="nav-chev" width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
                             <path d="M1 2.5L4 5.5L7 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
@@ -1207,7 +1206,7 @@
                     </div>
                 </div>
 
-                <a class="nav-link" href="index-v3.html#ecosystem">Ecosystem</a>
+                <a class="nav-link" href="index.html#ecosystem">Ecosystem</a>
             </nav>
             <a class="nav-cta" href="#contact">Contact Us <span aria-hidden="true">→</span></a>
         </div>
@@ -1221,12 +1220,12 @@
                 <canvas class="halftone absolute inset-0" data-speed="1.6"></canvas>
                 <div class="lp-banner-in">
                     <p class="lp-crumb">
-                        <a href="index-v3.html">SHANNON</a> /
-                        <a href="index-v3.html#library">LIBRARY</a> /
+                        <a href="index.html">SHANNON</a> /
+                        <a href="index.html#library">LIBRARY</a> /
                         <span class="on">BOOKS</span>
                     </p>
-                    <h1 class="lp-title">Long-form from Shannon &amp; RantAI Press</h1>
-                    <p class="lp-sub">Books written by the Shannon and RantAI teams on Rust, robotics and machine learning — the long-form counterpart to the papers and notes.</p>
+                    <h1 class="lp-title">Long-form from Shannon Press</h1>
+                    <p class="lp-sub">Books written by the Shannon team on Rust and robotics — the long-form counterpart to the papers and notes.</p>
                 </div>
             </div>
 
@@ -1234,62 +1233,26 @@
             <div class="lp-body">
                 <div class="lp-wrap">
                 <div class="lp-bar" data-reveal>
-                    <span>SHANNON &amp; RANTAI PRESS</span>
-                    <span class="lp-count">6 TITLES</span>
+                    <span>SHANNON PRESS</span>
+                    <span class="lp-count">2 TITLES</span>
                 </div>
                 <div class="bk-grid">
                     <article class="bk" data-reveal>
-                        <a href="book-robotics-in-rust.html" class="book-cover bc-ink bc-v1"><span class="book-cover-t">Robotics in Rust</span></a>
+                        <a href="book-probabilistic-robotics-via-rust.html" class="book-cover bc-blue bc-v2"><span class="book-cover-t">Probabilistic Robotics via Rust</span></a>
                         <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-robotics-in-rust.html">Robotics in Rust</a></h2>
+                            <h2 class="bk-t"><a href="book-probabilistic-robotics-via-rust.html">Probabilistic Robotics via Rust</a></h2>
                             <p class="bk-a">Shannon Press</p>
-                            <p class="bk-d">Building robot control software in Rust — from real-time constraints and hardware interfaces through to a full manipulation stack, with the borrow checker as a design tool rather than an obstacle.</p>
-                            <p class="bk-f"><span>2026 · 512 PP</span><a href="book-robotics-in-rust.html">Details ↗</a></p>
+                            <p class="bk-d">An interactive book on probabilistic robotics — Bayes filters, Kalman and particle filters, localization, occupancy grids, and SLAM as sparse least squares — culminating in a rover that maps a floorplan it has never seen.</p>
+                            <p class="bk-f"><span>2026 · 26 CHAPTERS</span><a href="book-probabilistic-robotics-via-rust.html">Details ↗</a></p>
                         </div>
                     </article>
                     <article class="bk" data-reveal>
-                        <a href="book-simulation-first-engineering.html" class="book-cover bc-blue bc-v2"><span class="book-cover-t">Simulation-First Engineering</span></a>
+                        <a href="book-reinforcement-learning-for-robotics.html" class="book-cover bc-ink bc-v3"><span class="book-cover-t">Reinforcement Learning for Robotics</span></a>
                         <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-simulation-first-engineering.html">Simulation-First Engineering</a></h2>
+                            <h2 class="bk-t"><a href="book-reinforcement-learning-for-robotics.html">Reinforcement Learning for Robotics</a></h2>
                             <p class="bk-a">Shannon Press</p>
-                            <p class="bk-d">The method behind the company: rehearse the machine before it exists. Covers scene construction, validation discipline, and how to decide when a simulation is trustworthy enough to build against.</p>
-                            <p class="bk-f"><span>2026 · 384 PP</span><a href="book-simulation-first-engineering.html">Details ↗</a></p>
-                        </div>
-                    </article>
-                    <article class="bk" data-reveal>
-                        <a href="book-machine-learning-systems-in-rust.html" class="book-cover bc-paper bc-v1"><span class="book-cover-t">Machine Learning Systems in Rust</span></a>
-                        <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-machine-learning-systems-in-rust.html">Machine Learning Systems in Rust</a></h2>
-                            <p class="bk-a">RantAI</p>
-                            <p class="bk-d">Training and serving ML systems in a memory-safe stack — data pipelines, GPU batching, and the deployment patterns that survive contact with production.</p>
-                            <p class="bk-f"><span>2025 · 640 PP</span><a href="book-machine-learning-systems-in-rust.html">Details ↗</a></p>
-                        </div>
-                    </article>
-                    <article class="bk" data-reveal>
-                        <a href="book-foundations-of-sim-to-real.html" class="book-cover bc-ink bc-v3"><span class="book-cover-t">Foundations of Sim-to-Real</span></a>
-                        <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-foundations-of-sim-to-real.html">Foundations of Sim-to-Real</a></h2>
-                            <p class="bk-a">Shannon Press</p>
-                            <p class="bk-d">Why policies trained in simulation fail on hardware, and what actually closes the gap. Domain randomisation, system identification, and honest measurement of transfer.</p>
-                            <p class="bk-f"><span>2025 · 448 PP</span><a href="book-foundations-of-sim-to-real.html">Details ↗</a></p>
-                        </div>
-                    </article>
-                    <article class="bk" data-reveal>
-                        <a href="book-the-agentic-machine.html" class="book-cover bc-blue bc-v1"><span class="book-cover-t">The Agentic Machine</span></a>
-                        <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-the-agentic-machine.html">The Agentic Machine</a></h2>
-                            <p class="bk-a">RantAI</p>
-                            <p class="bk-d">Designing agents that act under governance — decision functions, audit trails, and the architecture that keeps autonomy accountable when it touches real systems.</p>
-                            <p class="bk-f"><span>2025 · 296 PP</span><a href="book-the-agentic-machine.html">Details ↗</a></p>
-                        </div>
-                    </article>
-                    <article class="bk" data-reveal>
-                        <a href="book-numerical-methods-for-robotics.html" class="book-cover bc-paper bc-v2"><span class="book-cover-t">Numerical Methods for Robotics</span></a>
-                        <div class="bk-meta">
-                            <h2 class="bk-t"><a href="book-numerical-methods-for-robotics.html">Numerical Methods for Robotics</a></h2>
-                            <p class="bk-a">Shannon Press</p>
-                            <p class="bk-d">The mathematics under the solver: integrators, constraint formulations, and the numerical failure modes that quietly ruin a physics engine.</p>
-                            <p class="bk-f"><span>2024 · 576 PP</span><a href="book-numerical-methods-for-robotics.html">Details ↗</a></p>
+                            <p class="bk-d">Reinforcement learning for robotics the FCP way — full mathematical foundations, interactive simulations, and production Rust, from multi-armed bandits through PPO/SAC to a quadruped that learns to walk.</p>
+                            <p class="bk-f"><span>2026 · 22 CHAPTERS</span><a href="book-reinforcement-learning-for-robotics.html">Details ↗</a></p>
                         </div>
                     </article>
                 </div>
