@@ -878,6 +878,97 @@
         }
         .disc-link:hover { text-decoration-color: #4C7EFF; }
 
+        /* ═══ Redesigned About Shannon — discipline cards ═══ */
+        .disc2-grid { display: grid; gap: 16px; }
+        @media (min-width: 768px) { .disc2-grid { grid-template-columns: 1fr 1fr; } }
+        .disc2-card {
+            position: relative; overflow: hidden;
+            background: #10181b; border-radius: 20px;
+            padding: clamp(28px,4vw,44px);
+            border: 1px solid rgba(255,255,255,.07);
+            transition: transform .45s cubic-bezier(.22,1,.36,1),
+                        box-shadow .45s ease, border-color .45s ease;
+            will-change: transform;
+        }
+        .disc2-card:hover {
+            transform: translateY(-7px);
+            box-shadow: 0 30px 64px rgba(0,0,0,.45), 0 0 0 1px rgba(76,126,255,.22);
+            border-color: rgba(76,126,255,.2);
+        }
+        .disc2-card::before {
+            content: '';
+            position: absolute; inset: -28px;
+            background-image: radial-gradient(circle, rgba(76,126,255,.2) 1.5px, transparent 1.5px);
+            background-size: 28px 28px;
+            animation: disc2-drift 30s linear infinite;
+            pointer-events: none;
+        }
+        @keyframes disc2-drift {
+            from { transform: translate(0,0); }
+            to   { transform: translate(28px,28px); }
+        }
+        .disc2-top-bar {
+            position: absolute; top: 0; left: 0;
+            width: 0; height: 2px;
+            background: linear-gradient(90deg, #4C7EFF, #8FAEFF 60%, transparent);
+            transition: width 1s cubic-bezier(.22,1,.36,1);
+            pointer-events: none; z-index: 2;
+        }
+        .disc2-card.abt-card-in .disc2-top-bar { width: 100%; }
+        .disc2-scan {
+            position: absolute; left: 0; right: 0; top: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(76,126,255,.6), transparent);
+            pointer-events: none; opacity: 0; z-index: 3;
+        }
+        .disc2-bg-num {
+            position: absolute; bottom: -20px; right: 8px;
+            font-size: clamp(110px,13vw,150px); font-weight: 700;
+            letter-spacing: -.06em; line-height: 1;
+            color: rgba(255,255,255,.03);
+            pointer-events: none; user-select: none; z-index: 0;
+        }
+        .disc2-inner { position: relative; z-index: 1; }
+        .disc2-tag {
+            display: flex; align-items: center; gap: 10px;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 10px; letter-spacing: .2em; color: #8FAEFF;
+        }
+        .disc2-tag-line { display: block; width: 22px; height: 1px; background: #4C7EFF; flex-shrink: 0; }
+        .disc2-num {
+            display: block; font-size: clamp(38px,4.5vw,56px); font-weight: 700;
+            letter-spacing: -.04em; line-height: .85; color: #4C7EFF;
+            margin-top: 20px; font-variant-numeric: tabular-nums;
+        }
+        .disc2-h3 {
+            font-size: clamp(18px,2vw,23px); font-weight: 600;
+            color: #fff; letter-spacing: -.018em; line-height: 1.3; margin-top: 14px;
+        }
+        .disc2-p {
+            font-size: 13.5px; line-height: 1.72;
+            color: rgba(255,255,255,.5); margin-top: 12px; max-width: 44ch;
+        }
+        .disc2-list { list-style: none; margin-top: 24px; display: flex; flex-direction: column; gap: 11px; }
+        .disc2-list li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: rgba(255,255,255,.72); }
+        .disc2-dot {
+            width: 5px; height: 5px; border-radius: 50%;
+            background: #4C7EFF; flex-shrink: 0; margin-top: 5px; opacity: .8;
+        }
+        .disc2-cta {
+            display: inline-flex; align-items: center; gap: 7px;
+            margin-top: 30px; padding: 9px 20px; border-radius: 999px;
+            border: 1px solid rgba(76,126,255,.35); color: #8FAEFF;
+            font-size: 13px; font-weight: 500; text-decoration: none;
+            transition: background .28s, border-color .28s, color .28s, gap .28s;
+        }
+        .disc2-cta:hover { background: #4C7EFF; border-color: #4C7EFF; color: #fff; gap: 11px; }
+        .disc2-hdr-line {
+            display: block; height: 2px; margin-top: 6px; width: 0;
+            background: linear-gradient(90deg, #4C7EFF, transparent);
+            transition: width 1.2s cubic-bezier(.22,1,.36,1);
+        }
+        .disc2-hdr-line.abt-line-in { width: 200px; }
+
         /* ═══ geometric capability marks ═══ */
         .cap-mark { display: block; width: 60px; height: 60px; color: #4C7EFF; margin-bottom: 15px; }
 
@@ -1240,42 +1331,56 @@
             </div>
 
             <!-- ═══════════ WHITE HEADLINE BODY ═══════════ -->
-            <div class="bg-white px-6 py-14 md:py-24">
+            <!-- ═══════════ ABOUT SHANNON ═══════════ -->
+            <div class="bg-white px-6 py-16 md:py-28">
                 <div class="max-w-[1240px] mx-auto">
-
-                <!-- two main focus areas -->
-                <div class="sec-head">
-                    <div class="flex items-baseline justify-between mb-8" data-reveal>
-                        <h2 class="text-2xl md:text-3xl font-medium tracking-tight">About Shannon</h2>
-                        <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
-                    </div>
-                    <div class="disc-grid" data-reveal>
-                        <div class="disc-col-a">
-                            <span class="disc-num">01</span>
-                            <p class="disc-tag">ROBOTICS</p>
-                            <h3 class="disc-h3">Machines that perceive, learn, and act.</h3>
-                            <p class="disc-p">We engineer intelligent robotic systems from simulation to deployment — spanning simulation, motion, perception, mapping, reinforcement learning, and autonomous behavior.</p>
-                            <ul class="disc-list">
-                                <li><span>—</span> Simulation & Digital Environments</li>
-                                <li><span>—</span> Reinforcement Learning & Autonomous Systems</li>
-                                <li><span>—</span> Robotic Perception, Mapping & Control</li>
-                            </ul>
-                            <a href="#showcase" class="disc-link">Explore robotics →</a>
+                    <!-- header -->
+                    <div class="flex items-start justify-between mb-10" id="abt-section-hdr">
+                        <div>
+                            <h2 class="text-2xl md:text-3xl font-medium tracking-tight">About Shannon</h2>
+                            <span class="disc2-hdr-line" id="disc2-hdr-line"></span>
                         </div>
-                        <div class="disc-col-b">
-                            <span class="disc-num">02</span>
-                            <p class="disc-tag">SOFTWARE DEVELOPMENT</p>
-                            <h3 class="disc-h3">Software built around real problems.</h3>
-                            <p class="disc-p">We design and develop software systems that turn complex workflows, data, and ideas into products people can actually use — from custom applications and enterprise platforms to AI-enabled products and automation.</p>
-                            <ul class="disc-list">
-                                <li><span>—</span> Custom Software & Web Application Engineering</li>
-                                <li><span>—</span> AI-Powered Applications & Automation</li>
-                                <li><span>—</span> Data, Platform & Enterprise Systems</li>
-                            </ul>
-                            <a href="#showcase" class="disc-link">Explore software →</a>
+                        <span class="font-mono text-[10px] tracking-[0.2em] text-accent mt-1.5">FOCUS 01 — 02</span>
+                    </div>
+                    <!-- discipline cards -->
+                    <div class="disc2-grid">
+                        <!-- 01 Robotics -->
+                        <div class="disc2-card" data-abt-card="1">
+                            <div class="disc2-top-bar"></div>
+                            <div class="disc2-scan"></div>
+                            <span class="disc2-bg-num">01</span>
+                            <div class="disc2-inner">
+                                <p class="disc2-tag"><span class="disc2-tag-line"></span>ROBOTICS</p>
+                                <span class="disc2-num">01</span>
+                                <h3 class="disc2-h3">Machines that perceive, learn, and act.</h3>
+                                <p class="disc2-p">We engineer intelligent robotic systems from simulation to deployment — spanning simulation, motion, perception, mapping, reinforcement learning, and autonomous behavior.</p>
+                                <ul class="disc2-list">
+                                    <li><span class="disc2-dot"></span>Simulation &amp; Digital Environments</li>
+                                    <li><span class="disc2-dot"></span>Reinforcement Learning &amp; Autonomous Systems</li>
+                                    <li><span class="disc2-dot"></span>Robotic Perception, Mapping &amp; Control</li>
+                                </ul>
+                                <a href="#showcase" class="disc2-cta">Explore robotics →</a>
+                            </div>
+                        </div>
+                        <!-- 02 Software Development -->
+                        <div class="disc2-card" data-abt-card="2">
+                            <div class="disc2-top-bar"></div>
+                            <div class="disc2-scan"></div>
+                            <span class="disc2-bg-num">02</span>
+                            <div class="disc2-inner">
+                                <p class="disc2-tag"><span class="disc2-tag-line"></span>SOFTWARE DEVELOPMENT</p>
+                                <span class="disc2-num">02</span>
+                                <h3 class="disc2-h3">Software built around real problems.</h3>
+                                <p class="disc2-p">We design and develop software systems that turn complex workflows, data, and ideas into products people can actually use — from custom applications and enterprise platforms to AI-enabled products and automation.</p>
+                                <ul class="disc2-list">
+                                    <li><span class="disc2-dot"></span>Custom Software &amp; Web Application Engineering</li>
+                                    <li><span class="disc2-dot"></span>AI-Powered Applications &amp; Automation</li>
+                                    <li><span class="disc2-dot"></span>Data, Platform &amp; Enterprise Systems</li>
+                                </ul>
+                                <a href="#showcase" class="disc2-cta">Explore software →</a>
+                            </div>
                         </div>
                     </div>
-                </div>
                 </div>
             </div>
 
@@ -2023,6 +2128,39 @@
                 scrollTrigger: { trigger: el, start: "top 90%" }
             });
         });
+
+        /* ---------- About Shannon card animations ---------- */
+        (function () {
+            const hdrLine = document.getElementById("disc2-hdr-line");
+            if (hdrLine) {
+                ScrollTrigger.create({
+                    trigger: "#abt-section-hdr", start: "top 88%", once: true,
+                    onEnter: () => hdrLine.classList.add("abt-line-in")
+                });
+            }
+            document.querySelectorAll("[data-abt-card]").forEach((card, i) => {
+                const delay = i * 0.14;
+                const scanEl = card.querySelector(".disc2-scan");
+                const listItems = card.querySelectorAll(".disc2-list li");
+                ScrollTrigger.create({
+                    trigger: card, start: "top 85%", once: true,
+                    onEnter: () => {
+                        gsap.fromTo(card, { y: 36, opacity: 0 },
+                            { y: 0, opacity: 1, duration: .75, ease: "power2.out", delay });
+                        setTimeout(() => card.classList.add("abt-card-in"), delay * 1000 + 250);
+                        if (scanEl) {
+                            gsap.fromTo(scanEl,
+                                { top: 0, opacity: 1 },
+                                { top: "100%", opacity: 0, duration: 1.2,
+                                  ease: "power1.inOut", delay: delay + .2 });
+                        }
+                        gsap.fromTo(listItems, { x: -16, opacity: 0 },
+                            { x: 0, opacity: 1, duration: .5, ease: "power2.out",
+                              stagger: .1, delay: delay + .4 });
+                    }
+                });
+            });
+        })();
 
         /* ---------- capability tabs ---------- */
         (function () {
