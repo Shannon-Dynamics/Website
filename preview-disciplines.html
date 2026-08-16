@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Two disciplines, one company — motion previews</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: { slatebg: "#1b2529", graphite: "#10181b", accent: "#4C7EFF" },
+                    fontFamily: { sans: ["Inter", "sans-serif"], mono: ["JetBrains Mono", "monospace"] }
+                }
+            }
+        };
+    </script>
+    <style type="text/tailwindcss">
+        html { background: #fff; }
+        body { font-family: "Inter", sans-serif; color: #10181b; }
+        .halftone { display: block; width: 100%; height: 100%; }
+        .rule { border-top: 1px solid rgba(16, 24, 27, .12); }
+        [data-reveal] { opacity: 0; }
+
+        /* ── preview chrome (not part of the real section) ── */
+        .demo-head { background: #10181b; color: #fff; }
+        .demo-key {
+            font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em;
+            color: #4C7EFF;
+        }
+        .demo-note { font-size: 12.5px; line-height: 1.65; color: rgba(16,24,27,.6); }
+
+        /* ── idea 2: converging seam ── */
+        .seam-grid { position: relative; }
+        .seam-line {
+            position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+            background: #4C7EFF; transform: translateX(-.5px) scaleY(0); transform-origin: 50% 0;
+            opacity: .9; pointer-events: none; z-index: 5;
+        }
+        /* sits at the band/body joint — the one horizontal band of dead space
+           that exists on BOTH cards, so it never lands on a heading */
+        .seam-tag {
+            position: absolute; top: 128px; left: 50%; transform: translate(-50%, -50%);
+            background: #fff; border: 1px solid rgba(76,126,255,.35); border-radius: 9999px;
+            padding: 5px 13px; white-space: nowrap; opacity: 0; z-index: 6;
+            font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .18em; color: #4C7EFF;
+        }
+
+        /* ── idea 3: handoff pulse ── */
+        .link-lane { position: relative; }
+        .link-wire {
+            position: absolute; top: 50%; left: 6px; right: 6px; height: 1px;
+            background: repeating-linear-gradient(90deg, rgba(16,24,27,.22) 0 3px, transparent 3px 7px);
+        }
+        .link-dot {
+            position: absolute; top: 50%; left: 0; width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px;
+            border-radius: 9999px; background: #4C7EFF; opacity: 0;
+            box-shadow: 0 0 0 4px rgba(76,126,255,.16);
+        }
+        .disc-card { transition: border-color .45s ease; }
+        .disc-card.is-lit { border-color: rgba(76,126,255,.55); }
+
+        @media (prefers-reduced-motion: reduce) {
+            [data-reveal] { opacity: 1; }
+        }
+    </style>
+</head>
+
+<body class="antialiased">
+
+    <div class="max-w-[1240px] mx-auto px-6 py-10">
+        <p class="demo-key">SHANNON DYNAMICS — MOTION PREVIEW</p>
+        <h1 class="text-3xl font-medium tracking-tight mt-2">“Two disciplines, one company” — four motion directions</h1>
+        <p class="demo-note mt-3 max-w-2xl">Scroll slowly. Ideas 2 and 4 are scroll-scrubbed, so they play as the section passes through the
+            viewport — scroll back up to replay. Idea 3 responds to hover. Nothing here is wired into index-v3.html yet.</p>
+    </div>
+
+    <!-- ════════════════ IDEA 1 — SHARED DOT FIELD ════════════════ -->
+    <section class="px-6 pt-12" data-demo="1">
+        <div class="max-w-[1240px] mx-auto">
+            <div class="demo-head rounded-xl px-5 py-3.5 mb-8">
+                <p class="demo-key">IDEA 01</p>
+                <p class="text-[15px] font-medium mt-1">Shared dot field — one texture, two windows</p>
+                <p class="text-[12.5px] text-white/55 mt-1">Both header bands sample the <em>same</em> global halftone field, offset by their
+                    position on the page. The wave pattern runs unbroken across the gap — two panels, visibly one substrate.</p>
+            </div>
+
+            <div class="rule pt-12">
+                <div class="flex items-baseline justify-between mb-8">
+                    <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
+                </div>
+                <div class="grid md:grid-cols-2 gap-5">
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="2" data-field="shared" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">01</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">MACHINES THAT MOVE.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Robotics Simulation</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the simulator →</a>
+                        </div>
+                    </div>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="2" data-field="shared" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">02</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">SOFTWARE THAT THINKS.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Software Development</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the systems →</a>
+                        </div>
+                    </div>
+                </div>
+                <p class="demo-note mt-5 font-mono text-[10px] tracking-[0.18em] text-slatebg/35">↑ COMPARE: BELOW IS TODAY’S VERSION — TWO INDEPENDENT FIELDS, DIFFERENT SPEED AND SCALE</p>
+                <div class="grid md:grid-cols-2 gap-5 mt-3 opacity-70">
+                    <div class="h-24 bg-graphite relative rounded-xl overflow-hidden">
+                        <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="1.8" data-lens="off"></canvas>
+                    </div>
+                    <div class="h-24 bg-graphite relative rounded-xl overflow-hidden">
+                        <canvas class="halftone absolute inset-0" data-speed=".9" data-scale="2.6" data-lens="off"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ════════════════ IDEA 2 — CONVERGING SEAM ════════════════ -->
+    <section class="px-6 pt-24" data-demo="2">
+        <div class="max-w-[1240px] mx-auto">
+            <div class="demo-head rounded-xl px-5 py-3.5 mb-8">
+                <p class="demo-key">IDEA 02</p>
+                <p class="text-[15px] font-medium mt-1">The converging seam — scroll-driven merge</p>
+                <p class="text-[12.5px] text-white/55 mt-1">The two cards enter apart and close until their edges meet flush. At contact an accent
+                    hairline draws down the seam and <span class="font-mono">ONE ENGINEERING CORE</span> fades in. The motion performs the headline.</p>
+            </div>
+
+            <div class="rule pt-12">
+                <div class="flex items-baseline justify-between mb-8">
+                    <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
+                </div>
+                <div class="seam-grid grid md:grid-cols-2 gap-0" id="seam-grid">
+                    <span class="seam-line" id="seam-line"></span>
+                    <span class="seam-tag" id="seam-tag">ONE ENGINEERING CORE</span>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" id="seam-a">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="1.8" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">01</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">MACHINES THAT MOVE.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Robotics Simulation</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the simulator →</a>
+                        </div>
+                    </div>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" id="seam-b">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".9" data-scale="2.6" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">02</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">SOFTWARE THAT THINKS.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Software Development</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the systems →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ════════════════ IDEA 3 — HANDOFF PULSE ════════════════ -->
+    <section class="px-6 pt-24" data-demo="3">
+        <div class="max-w-[1240px] mx-auto">
+            <div class="demo-head rounded-xl px-5 py-3.5 mb-8">
+                <p class="demo-key">IDEA 03</p>
+                <p class="text-[15px] font-medium mt-1">Handoff pulse — hover-triggered, not ambient</p>
+                <p class="text-[12.5px] text-white/55 mt-1"><strong>Hover either card.</strong> An accent pulse crosses the lane into the other one and
+                    lights its border — the feedback loop between the disciplines. Nothing loops on its own.</p>
+            </div>
+
+            <div class="rule pt-12">
+                <div class="flex items-baseline justify-between mb-8">
+                    <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
+                </div>
+                <div class="grid md:grid-cols-[1fr_56px_1fr] gap-0" id="pulse-grid">
+                    <div class="disc-card border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" data-side="a">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="1.8" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">01</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">MACHINES THAT MOVE.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Robotics Simulation</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the simulator →</a>
+                        </div>
+                    </div>
+                    <div class="link-lane hidden md:block">
+                        <span class="link-wire"></span>
+                        <span class="link-dot" id="pulse-dot"></span>
+                    </div>
+                    <div class="disc-card border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" data-side="b">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".9" data-scale="2.6" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">02</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">SOFTWARE THAT THINKS.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Software Development</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the systems →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ════════════════ IDEA 4 — COUNTER-WEIGHTED NUMERALS ════════════════ -->
+    <section class="px-6 pt-24 pb-32" data-demo="4">
+        <div class="max-w-[1240px] mx-auto">
+            <div class="demo-head rounded-xl px-5 py-3.5 mb-8">
+                <p class="demo-key">IDEA 04</p>
+                <p class="text-[15px] font-medium mt-1">Counter-weighted numerals</p>
+                <p class="text-[12.5px] text-white/55 mt-1">The ghost <span class="font-mono">01</span> / <span class="font-mono">02</span> scrub in
+                    opposite directions as you scroll and level exactly when the section is centred. Polish, not a hook — meant to ride along with another idea.</p>
+            </div>
+
+            <div class="rule pt-12">
+                <div class="flex items-baseline justify-between mb-8">
+                    <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
+                </div>
+                <div class="grid md:grid-cols-2 gap-5" id="numeral-grid">
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="1.8" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none" data-numeral="up">01</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">MACHINES THAT MOVE.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Robotics Simulation</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the simulator →</a>
+                        </div>
+                    </div>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".9" data-scale="2.6" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none" data-numeral="down">02</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">SOFTWARE THAT THINKS.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Software Development</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the systems →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ════════════════ 02 + 01 COMBINED — RECOMMENDED ════════════════ -->
+    <section class="px-6 pb-40" data-demo="5">
+        <div class="max-w-[1240px] mx-auto">
+            <div class="demo-head rounded-xl px-5 py-3.5 mb-8" style="background:#4C7EFF">
+                <p class="demo-key" style="color:rgba(255,255,255,.75)">RECOMMENDED — 02 + 01</p>
+                <p class="text-[15px] font-medium mt-1">Converging seam over a shared dot field</p>
+                <p class="text-[12.5px] text-white/75 mt-1">The same merge, but both bands now sample one field. When the cards meet, the dot
+                    pattern lines up across the seam — so the panel doesn’t just look joined, it looks like it was always one surface that had been cut.</p>
+            </div>
+
+            <div class="rule pt-12">
+                <div class="flex items-baseline justify-between mb-8">
+                    <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
+                </div>
+                <div class="seam-grid grid md:grid-cols-2 gap-0" id="combo-grid">
+                    <span class="seam-line" id="combo-line"></span>
+                    <span class="seam-tag" id="combo-tag">ONE ENGINEERING CORE</span>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" id="combo-a">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="2" data-field="shared" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">01</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">MACHINES THAT MOVE.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Robotics Simulation</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the simulator →</a>
+                        </div>
+                    </div>
+                    <div class="border border-slatebg/15 rounded-2xl overflow-hidden flex flex-col" id="combo-b">
+                        <div class="h-32 bg-graphite relative">
+                            <canvas class="halftone absolute inset-0" data-speed=".6" data-scale="2" data-field="shared" data-lens="off"></canvas>
+                            <span class="absolute right-5 bottom-3 text-white/25 text-5xl font-semibold select-none">02</span>
+                            <span class="absolute left-5 bottom-3 font-mono text-[10px] tracking-[0.2em] text-white/70">SOFTWARE THAT THINKS.</span>
+                        </div>
+                        <div class="p-7 md:p-8 flex flex-col flex-1">
+                            <h3 class="text-xl md:text-2xl font-semibold tracking-tight">Software Development</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-3">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
+                            <a href="#" class="mt-7 text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 self-start">Explore the systems →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+    <script>
+        gsap.registerPlugin(ScrollTrigger);
+        const REDUCE = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        /* ═══ IDEA 2 — converging seam (also drives the 02+01 combo) ═══ */
+        function buildSeam(gridId, aId, bId, lineId, tagId) {
+            const grid = document.getElementById(gridId);
+            if (!grid) return;
+            const a = document.getElementById(aId), b = document.getElementById(bId);
+            const line = document.getElementById(lineId), tag = document.getElementById(tagId);
+            const GAP = 34;                                  // half-gap each card starts at
+            if (REDUCE) { gsap.set([line], { scaleY: 1 }); gsap.set(tag, { opacity: 1 }); return; }
+
+            gsap.timeline({
+                scrollTrigger: { trigger: grid, start: "top 88%", end: "top 34%", scrub: .6 }
+            })
+                .fromTo(a, { x: -GAP }, { x: 0, ease: "none" }, 0)
+                .fromTo(b, { x: GAP }, { x: 0, ease: "none" }, 0)
+                // square off the inner corners and dissolve the facing borders, or the
+                // end state reads as "two cards touching" instead of one panel
+                .fromTo(a, { borderTopRightRadius: 16, borderBottomRightRadius: 16 },
+                    { borderTopRightRadius: 0, borderBottomRightRadius: 0, ease: "none" }, 0)
+                .fromTo(b, { borderTopLeftRadius: 16, borderBottomLeftRadius: 16 },
+                    { borderTopLeftRadius: 0, borderBottomLeftRadius: 0, ease: "none" }, 0)
+                .to(a, { borderRightColor: "rgba(27,37,41,0)", ease: "none" }, .45)
+                .to(b, { borderLeftColor: "rgba(27,37,41,0)", ease: "none" }, .45)
+                .fromTo(line, { scaleY: 0 }, { scaleY: 1, ease: "none" }, .55)
+                .fromTo(tag, { opacity: 0, y: 6 }, { opacity: 1, y: 0, ease: "none" }, .78);
+        }
+        buildSeam("seam-grid", "seam-a", "seam-b", "seam-line", "seam-tag");
+        buildSeam("combo-grid", "combo-a", "combo-b", "combo-line", "combo-tag");
+
+        /* ═══ IDEA 3 — handoff pulse ═════════════════════════════════ */
+        (function () {
+            const grid = document.getElementById("pulse-grid");
+            if (!grid || REDUCE) return;
+            const dot = document.getElementById("pulse-dot");
+            const cards = [...grid.querySelectorAll(".disc-card")];
+            let tl;
+            cards.forEach(card => {
+                card.addEventListener("mouseenter", () => {
+                    const other = cards.find(c => c !== card);
+                    const fromA = card.dataset.side === "a";
+                    other.classList.add("is-lit");
+                    tl && tl.kill();
+                    tl = gsap.timeline({ onComplete: () => gsap.to(dot, { opacity: 0, duration: .2 }) })
+                        .fromTo(dot,
+                            { left: fromA ? "0%" : "100%", opacity: 0, scale: .6 },
+                            { left: fromA ? "100%" : "0%", opacity: 1, scale: 1, duration: .62, ease: "power2.inOut" });
+                });
+                card.addEventListener("mouseleave", () => {
+                    cards.forEach(c => c.classList.remove("is-lit"));
+                });
+            });
+        })();
+
+        /* ═══ IDEA 4 — counter-weighted numerals ═════════════════════ */
+        (function () {
+            const grid = document.getElementById("numeral-grid");
+            if (!grid || REDUCE) return;
+            grid.querySelectorAll("[data-numeral]").forEach(n => {
+                const dir = n.dataset.numeral === "up" ? -1 : 1;
+                gsap.fromTo(n, { y: 20 * dir }, {
+                    y: -20 * dir, ease: "none",
+                    scrollTrigger: { trigger: grid, start: "top 92%", end: "bottom 20%", scrub: .5 }
+                });
+            });
+        })();
+
+        /* ═══ halftone texture (lifted from index-v3.html) ═══════════
+           data-field="shared" makes the canvas sample ONE global field
+           using its own page position, so neighbouring canvases line up. */
+        document.querySelectorAll(".halftone").forEach(canvas => {
+            const ctx = canvas.getContext("2d");
+            const speed = +canvas.dataset.speed || 1;
+            const scale = +canvas.dataset.scale || 1;
+            const shared = canvas.dataset.field === "shared";
+            const GAP = 7;
+            let W, H, ox = 0, oy = 0;
+            function resize() {
+                const r = canvas.getBoundingClientRect();
+                if (canvas.width !== Math.ceil(r.width) || canvas.height !== Math.ceil(r.height)) {
+                    W = canvas.width = Math.ceil(r.width);
+                    H = canvas.height = Math.ceil(r.height);
+                }
+                if (shared) { ox = r.left + scrollX; oy = r.top + scrollY; }
+            }
+            let t = shared ? 0 : Math.random() * 100, frame = 0;
+            function draw() {
+                requestAnimationFrame(draw);
+                if (frame++ % 2) return;
+                resize();
+                if (!W) return;
+                t += .012 * speed;
+                ctx.fillStyle = "#10181b";
+                ctx.fillRect(0, 0, W, H);
+                ctx.fillStyle = "#8094BC";
+                for (let y = GAP / 2; y < H; y += GAP) {
+                    for (let x = GAP / 2; x < W; x += GAP) {
+                        const gx = x + ox, gy = y + oy;      // global coords when shared
+                        const w1 = Math.sin(gx * .011 * scale + t) * Math.sin(gy * .017 * scale - t * .8);
+                        const w2 = Math.sin((gx + gy) * .006 * scale + t * .6);
+                        const v = (w1 + w2 + 2) / 4;
+                        const r = v * v * (GAP * .48);
+                        if (r < .3) continue;
+                        ctx.globalAlpha = .16 + v * .5;
+                        ctx.beginPath();
+                        ctx.arc(x, y, Math.min(r, GAP * .6), 0, 6.2832);
+                        ctx.fill();
+                    }
+                }
+                ctx.globalAlpha = 1;
+            }
+            draw();
+        });
+    </script>
+</body>
+
+</html>

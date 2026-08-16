@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Shannon Dynamics — The Proving Ground of Intelligent Machines</title>
+    <meta name="description" content="Shannon is the robotics simulation platform — design, simulate, train, and deploy machines before the first bolt is tightened." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;0,800&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        ink: "#0a1f3c",
+                        sky2: "#bcd9f2",
+                        sky3: "#7db8e8",
+                        frame: "#cfe3f5"
+                    },
+                    fontFamily: {
+                        mono: ["JetBrains Mono", "monospace"],
+                        serif: ["Instrument Serif", "serif"]
+                    }
+                }
+            }
+        };
+    </script>
+    <style type="text/tailwindcss">
+        html { background: #cfe3f5; }
+        body { font-family: "JetBrains Mono", monospace; color: #0a1f3c; }
+        ::selection { background: rgba(10, 31, 60, .18); }
+
+        .sky-panel {
+            background:
+                radial-gradient(ellipse 70% 50% at 30% 20%, rgba(255, 255, 255, .55), transparent 60%),
+                radial-gradient(ellipse 60% 45% at 75% 70%, rgba(255, 255, 255, .35), transparent 65%),
+                linear-gradient(165deg, #a8cff0 0%, #6faee4 45%, #4a90d9 100%);
+        }
+        .glass-card {
+            background: rgba(255, 255, 255, .32);
+            backdrop-filter: blur(14px) saturate(140%);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, .55);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 10px 32px -14px rgba(10, 31, 60, .35);
+        }
+        /* pixel dither strip (checkerboard) */
+        .dither {
+            background-image:
+                linear-gradient(45deg, rgba(10,31,60,.16) 25%, transparent 25%, transparent 75%, rgba(10,31,60,.16) 75%),
+                linear-gradient(45deg, rgba(10,31,60,.16) 25%, transparent 25%, transparent 75%, rgba(10,31,60,.16) 75%);
+            background-size: 8px 8px;
+            background-position: 0 0, 4px 4px;
+        }
+        /* stair-step pixel corners */
+        .px-corner { position: relative; }
+        .px-corner::before, .px-corner::after {
+            content: ''; position: absolute; width: 6px; height: 6px; background: #0a1f3c;
+        }
+        .px-corner::before { top: 0; left: 0; box-shadow: 6px 0 0 rgba(10,31,60,.45), 0 6px 0 rgba(10,31,60,.45); }
+        .px-corner::after { bottom: 0; right: 0; box-shadow: -6px 0 0 rgba(10,31,60,.45), 0 -6px 0 rgba(10,31,60,.45); }
+        .btn-ink {
+            background: #0a1f3c; color: #fff;
+            transition: transform .2s ease, box-shadow .2s ease;
+        }
+        .btn-ink:hover { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 rgba(10, 31, 60, .35); }
+        .btn-ghost {
+            border: 1px solid rgba(10, 31, 60, .35);
+            transition: transform .2s ease, box-shadow .2s ease, background .2s;
+        }
+        .btn-ghost:hover { background: rgba(255,255,255,.6); transform: translate(-2px, -2px); box-shadow: 4px 4px 0 rgba(10, 31, 60, .2); }
+        #ascii-sky {
+            font-size: 11px; line-height: 13px; letter-spacing: 2px;
+            color: rgba(255, 255, 255, .8); user-select: none;
+        }
+        #pixel-bot { image-rendering: pixelated; animation: bob 4s ease-in-out infinite; }
+        @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+        .float-slow { animation: floaty 6s ease-in-out infinite alternate; }
+        @keyframes floaty { from { transform: translateY(-6px); } to { transform: translateY(8px); } }
+        .marquee-track { display: flex; gap: 0; width: max-content; animation: marquee 28s linear infinite; }
+        @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+        [data-reveal] { opacity: 0; }
+        .num { font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+
+<body class="bg-frame antialiased overflow-x-hidden">
+
+    <div class="max-w-[1400px] mx-auto px-3 md:px-6 py-4">
+        <!-- ═══════════ SPLIT NAV ═══════════ -->
+        <header id="nav" class="grid md:grid-cols-[1fr_1.4fr] gap-1 rounded-t-2xl overflow-hidden sticky top-3 z-50">
+            <div class="bg-white flex items-center justify-between px-6 py-4">
+                <a href="#" class="flex items-center gap-3">
+                    <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" style="filter: invert(1) brightness(.25)" />
+                </a>
+                <span class="text-lg tracking-widest select-none" aria-hidden="true">▚▞</span>
+            </div>
+            <nav class="glass-card !rounded-none flex items-center justify-end md:justify-between px-4 md:px-6 py-3 text-[11px] tracking-[0.15em]">
+                <div class="hidden md:flex items-center gap-6">
+                    <a class="hover:underline underline-offset-4" href="#platform">PLATFORM</a>
+                    <a class="hover:underline underline-offset-4" href="#systems">SYSTEMS</a>
+                    <a class="hover:underline underline-offset-4" href="#pipeline">PIPELINE</a>
+                    <a class="hover:underline underline-offset-4" href="#contact">CONTACT</a>
+                </div>
+                <a href="#contact" class="btn-ink px-4 py-2 text-[11px] tracking-[0.15em]">BOOK A DEMO</a>
+            </nav>
+        </header>
+
+        <!-- ═══════════ SPLIT HERO ═══════════ -->
+        <section class="grid lg:grid-cols-[1fr_1.4fr] gap-1">
+            <!-- left: white editorial panel -->
+            <div class="bg-white px-8 md:px-12 py-16 md:py-24 flex flex-col rounded-bl-2xl">
+                <div class="my-auto text-center" id="hero-copy">
+                    <p class="tracking-[0.5em] text-ink/60 mb-8" aria-hidden="true">▪ ▪ ▪</p>
+                    <h1 class="text-3xl md:text-[2.6rem] leading-[1.15] font-bold tracking-tight">
+                        THE PROVING<br />
+                        <span class="font-serif italic font-normal text-4xl md:text-[3.2rem] tracking-normal">ground of</span><br />
+                        INTELLIGENT<br />MACHINES
+                    </h1>
+                    <p class="mt-7 max-w-xs mx-auto text-[12px] leading-6 text-ink/70">
+                        Shannon is the robotics simulation platform — design, simulate,
+                        train, and deploy machines before the first bolt is tightened.
+                    </p>
+                    <div class="mt-9 flex items-center justify-center gap-3">
+                        <a href="#contact" class="btn-ink px-6 py-3.5 text-[11px] tracking-[0.2em]">BOOK A DEMO</a>
+                        <a href="#platform" class="btn-ghost px-6 py-3.5 text-[11px] tracking-[0.2em]">EXPLORE ↓</a>
+                    </div>
+                </div>
+                <div class="mt-14 pt-8 border-t border-ink/10 text-center">
+                    <p class="text-[9px] tracking-[0.3em] text-ink/50 mb-4">TRUSTED ACROSS THE BOHR LABS NETWORK</p>
+                    <div class="flex flex-wrap items-center justify-center gap-x-7 gap-y-2 text-[11px] font-bold tracking-[0.2em] text-ink/45">
+                        <span>BOHR LABS</span><span>DIRAC</span><span>GAUSSIAN</span><span>RANTAI</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- right: sky panel with ASCII shimmer + pixel robot + glass chips -->
+            <div class="sky-panel relative overflow-hidden rounded-br-2xl min-h-[520px] lg:min-h-0">
+                <pre id="ascii-sky" class="absolute inset-0 p-6 overflow-hidden" aria-hidden="true"></pre>
+
+                <div class="absolute inset-0 flex items-center justify-center">
+                    <canvas id="pixel-bot" width="24" height="26" class="w-[240px] md:w-[300px] h-auto drop-shadow-[0_24px_40px_rgba(10,31,60,.35)]"></canvas>
+                </div>
+
+                <div class="glass-card rounded-xl px-5 py-4 absolute left-6 bottom-8 max-w-[240px] float-slow" data-reveal>
+                    <p class="text-[10px] tracking-[0.25em] font-bold">SIM-TO-REAL GAP</p>
+                    <p class="num text-3xl font-extrabold mt-1">2.1%</p>
+                    <p class="text-[10px] leading-5 text-ink/70 mt-1">Policies trained in Shannon walk out of the lab on day one.</p>
+                </div>
+                <div class="glass-card rounded-xl px-5 py-3.5 absolute right-6 top-8 float-slow" style="animation-delay:-3s" data-reveal>
+                    <p class="text-[10px] tracking-[0.25em] font-bold">ENVS × 256</p>
+                    <p class="text-[10px] text-ink/70 mt-1">parallel · deterministic · 0.5ms</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ DITHER MARQUEE DIVIDER ═══════════ -->
+        <div class="dither mt-1 rounded-md overflow-hidden">
+            <div class="bg-white/70 backdrop-blur-sm py-2.5 overflow-hidden">
+                <div class="marquee-track text-[10px] tracking-[0.35em] text-ink/70">
+                    <span>&nbsp;DESIGN ▚ SIMULATE ▚ TRAIN ▚ VALIDATE ▚ DEPLOY ▚ REPEAT ▚&nbsp;</span>
+                    <span>&nbsp;DESIGN ▚ SIMULATE ▚ TRAIN ▚ VALIDATE ▚ DEPLOY ▚ REPEAT ▚&nbsp;</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════ [01] PLATFORM ═══════════ -->
+        <section id="platform" class="bg-white rounded-2xl mt-3 px-8 md:px-14 py-20">
+            <div class="max-w-5xl mx-auto">
+                <div class="text-center mb-14" data-reveal>
+                    <p class="text-[10px] tracking-[0.4em] text-ink/50">[ 01 · PLATFORM ]</p>
+                    <h2 class="mt-5 text-3xl md:text-4xl font-bold tracking-tight leading-tight">
+                        EVERY MACHINE IS<br /><span class="font-serif italic font-normal text-4xl md:text-[2.9rem]">born digital</span>
+                    </h2>
+                </div>
+                <div class="grid md:grid-cols-3 gap-4">
+                    <div class="px-corner bg-sky2/40 p-7" data-reveal>
+                        <p class="text-2xl mb-4" aria-hidden="true">▚</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em]">PHYSICS-FIRST FIDELITY</h3>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/70">Deterministic rigid-body dynamics and contact-rich manipulation, validated against real benchmarks at every release.</p>
+                    </div>
+                    <div class="px-corner bg-sky2/40 p-7" data-reveal>
+                        <p class="text-2xl mb-4" aria-hidden="true">▞</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em]">RUST-POWERED CORE</h3>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/70">Thousands of GPU-batched environments per node on a memory-safe engine shared across the Bohr Labs stack.</p>
+                    </div>
+                    <div class="px-corner bg-sky2/40 p-7" data-reveal>
+                        <p class="text-2xl mb-4" aria-hidden="true">▟</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em]">SIM-TO-REAL TRANSFER</h3>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/70">Domain randomization pipelines that shrink the reality gap to a rounding error.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ [02] SYSTEMS ═══════════ -->
+        <section id="systems" class="sky-panel rounded-2xl mt-3 px-8 md:px-14 py-20 relative overflow-hidden">
+            <div class="max-w-5xl mx-auto relative">
+                <div class="text-center mb-14" data-reveal>
+                    <p class="text-[10px] tracking-[0.4em] text-ink/60">[ 02 · SYSTEMS ]</p>
+                    <h2 class="mt-5 text-3xl md:text-4xl font-bold tracking-tight leading-tight text-ink">
+                        MACHINES, AND THE<br /><span class="font-serif italic font-normal text-4xl md:text-[2.9rem]">minds that run them</span>
+                    </h2>
+                </div>
+                <div class="grid md:grid-cols-2 gap-4">
+                    <div class="glass-card rounded-xl p-7" data-reveal>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[13px] font-bold tracking-[0.15em]">SHANNON SIM</h3>
+                            <span class="dither text-[9px] tracking-[0.2em] px-2 py-1 bg-white/60">FLAGSHIP</span>
+                        </div>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/75">The robotics simulator beneath every Shannon invention — physics-accurate worlds where machines are born digital.</p>
+                    </div>
+                    <div class="glass-card rounded-xl p-7" data-reveal>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[13px] font-bold tracking-[0.15em]">SHANNON SENTINEL</h3>
+                            <span class="text-[9px] tracking-[0.2em] px-2 py-1 bg-white/60">ACTIVE</span>
+                        </div>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/75">An agentic SOC — AI agents that triage, investigate, and report with governed autonomy, around the clock.</p>
+                    </div>
+                    <div class="glass-card rounded-xl p-7" data-reveal>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[13px] font-bold tracking-[0.15em]">SHANNON SCOUT</h3>
+                            <span class="text-[9px] tracking-[0.2em] px-2 py-1 bg-white/60">BETA</span>
+                        </div>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/75">An always-on reconnaissance agent that maps your digital terrain — before problems find you.</p>
+                    </div>
+                    <div class="glass-card rounded-xl p-7" data-reveal>
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[13px] font-bold tracking-[0.15em]">SHANNON FACTORY</h3>
+                            <span class="text-[9px] tracking-[0.2em] px-2 py-1 bg-white/60">R&amp;D</span>
+                        </div>
+                        <p class="mt-3 text-[12px] leading-6 text-ink/75">An autonomous software factory — software manufactured like paperclips off the line.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ STATS BAND ═══════════ -->
+        <section class="bg-white rounded-2xl mt-3 px-8 py-12">
+            <div class="max-w-4xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
+                <div data-reveal>
+                    <p class="num text-3xl font-extrabold"><span class="counter" data-target="4200000" data-format="m">0</span></p>
+                    <p class="text-[9px] tracking-[0.25em] text-ink/50 mt-2">RL EPISODES / DAY</p>
+                </div>
+                <div data-reveal>
+                    <p class="num text-3xl font-extrabold"><span class="counter" data-target="47">0</span></p>
+                    <p class="text-[9px] tracking-[0.25em] text-ink/50 mt-2">DIGITAL TWINS</p>
+                </div>
+                <div data-reveal>
+                    <p class="num text-3xl font-extrabold"><span class="counter" data-target="21" data-format="pct10">0</span></p>
+                    <p class="text-[9px] tracking-[0.25em] text-ink/50 mt-2">SIM-TO-REAL GAP</p>
+                </div>
+                <div data-reveal>
+                    <p class="num text-3xl font-extrabold">0.5<span class="text-ink/50">MS</span></p>
+                    <p class="text-[9px] tracking-[0.25em] text-ink/50 mt-2">PHYSICS STEP</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ [03] PIPELINE ═══════════ -->
+        <section id="pipeline" class="bg-white rounded-2xl mt-3 px-8 md:px-14 py-20">
+            <div class="max-w-4xl mx-auto text-center">
+                <p class="text-[10px] tracking-[0.4em] text-ink/50" data-reveal>[ 03 · PIPELINE ]</p>
+                <h2 class="mt-5 text-3xl md:text-4xl font-bold tracking-tight" data-reveal>
+                    ONE LOOP, <span class="font-serif italic font-normal">endlessly rehearsed</span>
+                </h2>
+                <div class="mt-12 grid md:grid-cols-4 gap-4 text-left" data-reveal>
+                    <div class="border border-ink/15 p-5">
+                        <p class="text-[10px] text-ink/50">[ A ]</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em] mt-2">DESIGN</h3>
+                        <p class="mt-2 text-[11px] leading-5 text-ink/70">Import CAD or URDF, compose validated worlds.</p>
+                    </div>
+                    <div class="border border-ink/15 p-5">
+                        <p class="text-[10px] text-ink/50">[ B ]</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em] mt-2">SIMULATE</h3>
+                        <p class="mt-2 text-[11px] leading-5 text-ink/70">Thousands of parallel physics environments.</p>
+                    </div>
+                    <div class="border border-ink/15 p-5">
+                        <p class="text-[10px] text-ink/50">[ C ]</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em] mt-2">TRAIN</h3>
+                        <p class="mt-2 text-[11px] leading-5 text-ink/70">RL and imitation tuned for sim-to-real.</p>
+                    </div>
+                    <div class="border border-ink/15 p-5 dither">
+                        <p class="text-[10px] text-ink/60">[ D ]</p>
+                        <h3 class="text-[13px] font-bold tracking-[0.15em] mt-2">DEPLOY</h3>
+                        <p class="mt-2 text-[11px] leading-5 text-ink/70">Validated policies ship to physical fleets.</p>
+                    </div>
+                </div>
+                <p class="mt-10 text-[11px] tracking-[0.3em] text-ink/45" data-reveal>A ─▶ B ─▶ C ─▶ D ─▶ A</p>
+            </div>
+        </section>
+
+        <!-- ═══════════ CTA ═══════════ -->
+        <section id="contact" class="sky-panel rounded-2xl mt-3 px-8 py-20 relative overflow-hidden">
+            <pre class="ascii-mini absolute inset-0 p-6 overflow-hidden text-[10px] leading-[12px] tracking-[2px] text-white/50" aria-hidden="true"></pre>
+            <div class="relative max-w-xl mx-auto text-center glass-card rounded-2xl px-8 py-12" data-reveal>
+                <p class="text-[10px] tracking-[0.4em] text-ink/60">[ CONTACT ]</p>
+                <h2 class="mt-4 text-2xl md:text-3xl font-bold tracking-tight leading-snug">
+                    BUILD YOUR ROBOT<br /><span class="font-serif italic font-normal text-3xl md:text-4xl">in simulation first</span>
+                </h2>
+                <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+                    <a href="mailto:office@shannon.id" class="btn-ink px-6 py-3.5 text-[11px] tracking-[0.2em]">OFFICE@SHANNON.ID</a>
+                    <a href="https://bohrlabs.id" target="_blank" rel="noopener" class="btn-ghost bg-white/50 px-6 py-3.5 text-[11px] tracking-[0.2em]">BOHR LABS ↗</a>
+                </div>
+                <p class="mt-7 text-[9px] tracking-[0.25em] text-ink/55">RESPONSE &lt; 48H · A BOHR LABS COMPANY</p>
+            </div>
+        </section>
+
+        <!-- ═══════════ FOOTER ═══════════ -->
+        <footer class="flex flex-col md:flex-row items-center justify-between gap-3 px-6 py-8 text-[9px] tracking-[0.25em] text-ink/50">
+            <span>© 2026 SHANNON DYNAMICS</span>
+            <span aria-hidden="true">▚▞▚▞</span>
+            <div class="flex gap-6">
+                <a class="hover:underline underline-offset-4" href="#">PRIVACY</a>
+                <a class="hover:underline underline-offset-4" href="#">TERMS</a>
+                <a class="hover:underline underline-offset-4" href="https://bohrlabs.id">BOHR LABS</a>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ═══════════ SCRIPTS ═══════════ -->
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
+
+    <script>
+        /* ---------- smooth scroll ---------- */
+        const lenis = new Lenis({ lerp: 0.1 });
+        function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
+        requestAnimationFrame(raf);
+        gsap.registerPlugin(ScrollTrigger);
+        lenis.on('scroll', () => ScrollTrigger.update());
+
+        /* ---------- entrance + reveals ---------- */
+        gsap.from("#hero-copy > *", { y: 22, opacity: 0, stagger: .1, duration: .8, ease: "power2.out", delay: .15 });
+        document.querySelectorAll("[data-reveal]").forEach(el => {
+            gsap.fromTo(el, { y: 26, opacity: 0 }, {
+                y: 0, opacity: 1, duration: .7, ease: "power2.out",
+                scrollTrigger: { trigger: el, start: "top 88%" }
+            });
+        });
+
+        /* ---------- counters ---------- */
+        document.querySelectorAll(".counter").forEach(el => {
+            const target = +el.dataset.target, fmt = el.dataset.format;
+            const render = v => {
+                if (fmt === "m") el.textContent = (v / 1e6).toFixed(1) + "M";
+                else if (fmt === "pct10") el.textContent = (v / 10).toFixed(1) + "%";
+                else el.textContent = Math.round(v);
+            };
+            ScrollTrigger.create({
+                trigger: el, start: "top 92%", once: true,
+                onEnter: () => {
+                    const s = { v: 0 };
+                    gsap.to(s, { v: target, duration: 1.4, ease: "power2.out", onUpdate: () => render(s.v) });
+                }
+            });
+        });
+
+        /* ---------- shimmering ASCII sky ---------- */
+        (function () {
+            const CHARS = "  ····::::++▚▞##  ".split("");
+            function fill(el, cols, rows) {
+                let grid = [];
+                for (let r = 0; r < rows; r++) {
+                    let line = "";
+                    for (let c = 0; c < cols; c++) line += CHARS[(Math.random() * CHARS.length) | 0];
+                    grid.push(line);
+                }
+                el.textContent = grid.join("\n");
+                return grid;
+            }
+            document.querySelectorAll("#ascii-sky, .ascii-mini").forEach(el => {
+                const cols = 90, rows = 50;
+                let grid = fill(el, cols, rows);
+                setInterval(() => {
+                    for (let i = 0; i < 60; i++) {
+                        const r = (Math.random() * rows) | 0, c = (Math.random() * cols) | 0;
+                        const line = grid[r];
+                        grid[r] = line.slice(0, c) + CHARS[(Math.random() * CHARS.length) | 0] + line.slice(c + 1);
+                    }
+                    el.textContent = grid.join("\n");
+                }, 140);
+            });
+        })();
+
+        /* ---------- pixel-art robot on canvas ---------- */
+        (function () {
+            const canvas = document.getElementById("pixel-bot");
+            const ctx = canvas.getContext("2d");
+            // palette: O outline · S steel · D dark steel · V visor · C cyan · W white sheen
+            const COLORS = { O: "#0a1f3c", S: "#dfe9f5", D: "#9fb4cf", V: "#132b4f", C: "#39c6ff", W: "#ffffff" };
+            const MAP = [
+                "........................",
+                "...........CC...........",
+                "...........OO...........",
+                ".....OOOOOOOOOOOOOO.....",
+                ".....OSSSSSSSSSSSSSO....",
+                ".....OSWWSSSSSSSSSSO....",
+                ".....OSVVVVVVVVVVVSO....",
+                ".....OSVCCVVVVVCCVSO....",
+                ".....OSVVVVVVVVVVVSO....",
+                ".....OSSSSSSSSSSSSSO....",
+                ".....OOOOOOOOOOOOOO.....",
+                "........ODDDDO..........",
+                "..OOOOOOOOOOOOOOOOOOO...",
+                "..OSSSSSSSSSSSSSSSSSO...",
+                "..OSWWSSSSSSSSSSSSSSO...",
+                "..OSSSSSDCCCCDSSSSSSO...",
+                "..OSSSSSDCCCCDSSSSSSO...",
+                "..OSSSSSSSSSSSSSSSSSO...",
+                "..OSSSSSSSSSSSSSSSSSO...",
+                "..OOOOOOOOOOOOOOOOOOO...",
+                "....ODDO........ODDO....",
+                "....ODDO........ODDO....",
+                "....OOOO........OOOO....",
+                "........................",
+                "........................",
+                "........................"
+            ];
+            function draw(eyesOn) {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                MAP.forEach((row, y) => {
+                    [...row].forEach((ch, x) => {
+                        if (ch === ".") return;
+                        let color = COLORS[ch] || COLORS.O;
+                        if (ch === "C" && !eyesOn && y >= 6 && y <= 8) color = COLORS.V;
+                        ctx.fillStyle = color;
+                        ctx.fillRect(x, y, 1, 1);
+                    });
+                });
+            }
+            draw(true);
+            // blink every ~3.2s
+            setInterval(() => { draw(false); setTimeout(() => draw(true), 160); }, 3200);
+        })();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Shannon Dynamics — Simulated Machines. Certain Reality.</title>
+    <meta name="description" content="Shannon is the proving ground for intelligent machines — simulated, trained, and validated before they exist." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script id="tailwind-config">
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        coal: "#0a0b0d",
+                        plate: "#0e1013",
+                        icy: "#a5c8e8",
+                        steelblue: "#4a7fbe"
+                    },
+                    fontFamily: {
+                        sans: ["Inter", "sans-serif"],
+                        mono: ["JetBrains Mono", "monospace"]
+                    }
+                }
+            }
+        };
+    </script>
+    <style type="text/tailwindcss">
+        html { background: #0a0b0d; }
+        body { font-family: "Inter", sans-serif; color: #e8eaee; }
+        ::selection { background: rgba(165, 200, 232, .25); }
+
+        .hairline { border-color: rgba(255, 255, 255, .09); }
+        .plate-frame {
+            background:
+                radial-gradient(ellipse 70% 55% at 65% 40%, rgba(74, 127, 190, .10), transparent 60%),
+                linear-gradient(170deg, #101216 0%, #0a0b0d 60%);
+            border: 1px solid rgba(255, 255, 255, .09);
+        }
+        .cross { position: absolute; width: 13px; height: 13px; pointer-events: none; }
+        .cross::before, .cross::after { content: ''; position: absolute; background: rgba(255, 255, 255, .28); }
+        .cross::before { left: 6px; top: 0; width: 1px; height: 13px; }
+        .cross::after { left: 0; top: 6px; width: 13px; height: 1px; }
+        .anno { position: absolute; font-family: "JetBrains Mono", monospace; }
+        .anno .tag { font-size: 10px; letter-spacing: .18em; color: #cfe0f2; }
+        .anno .desc { font-size: 9px; line-height: 1.6; letter-spacing: .06em; color: #7c8288; max-width: 170px; }
+        .leader-h { height: 1px; background: rgba(207, 224, 242, .35); }
+        .leader-v { width: 1px; background: rgba(207, 224, 242, .35); }
+        .chip {
+            background: #4a7fbe; color: #0a0b0d;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 9px; letter-spacing: .18em; padding: 3px 8px;
+        }
+        .btn-outline {
+            border: 1px solid rgba(207, 224, 242, .4);
+            font-family: "JetBrains Mono", monospace;
+            font-size: 10px; letter-spacing: .2em;
+            transition: background .25s, border-color .25s;
+        }
+        .btn-outline:hover { background: rgba(165, 200, 232, .1); border-color: rgba(207, 224, 242, .8); }
+        .index-row { border-top: 1px solid rgba(255, 255, 255, .09); transition: background .3s; }
+        .index-row:last-child { border-bottom: 1px solid rgba(255, 255, 255, .09); }
+        .index-row:hover { background: rgba(165, 200, 232, .04); }
+        .blink { animation: blink 1.2s step-end infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+        [data-reveal] { opacity: 0; }
+        .num { font-variant-numeric: tabular-nums; }
+    </style>
+
+    <!-- ═══ legibility over the hologram ═══
+         Plain <style> on purpose: the sheet above is type="text/tailwindcss"
+         and the CDN compiler silently dropped these rules. Hand-written
+         overrides belong here. -->
+    <style>
+        /* The X-ray render swings up to ~rgb(195,220,250) under these labels,
+           leaving them near 1:1. The division cards below already solve it with
+           a coal panel — the annotations now use the same device. */
+        .anno {
+            background: rgba(10, 11, 13, .66);
+            -webkit-backdrop-filter: blur(7px);
+            backdrop-filter: blur(7px);
+            border: 1px solid rgba(255, 255, 255, .09);
+            padding: 9px 12px 10px;
+        }
+        .anno .desc { color: #aab3bd; }
+        /* soft local scrim so the headline clears 3:1 on the brightest frame;
+           the z-index makes a stacking context so ::before cannot fall behind
+           the canvas */
+        #hero-copy { z-index: 1; }
+        #hero-copy::before {
+            content: ''; position: absolute; inset: -22px -34px -18px -26px;
+            z-index: -1; pointer-events: none;
+            background: radial-gradient(ellipse 80% 84% at 32% 50%,
+                        rgba(8,9,11,.9), rgba(8,9,11,.58) 54%, transparent 84%);
+        }
+        /* the hero CTA sits on the render too */
+        .btn-outline.absolute {
+            background: rgba(10, 11, 13, .6);
+            -webkit-backdrop-filter: blur(6px);
+            backdrop-filter: blur(6px);
+        }
+    </style>
+</head>
+
+<body class="bg-coal antialiased overflow-x-hidden">
+
+    <div class="max-w-[1500px] mx-auto px-3 md:px-8 py-6">
+
+        <!-- ═══════════ TELEMETRY NAV ═══════════ -->
+        <header id="nav" class="flex flex-wrap items-center justify-between gap-y-2 pb-5 border-b hairline font-mono text-[10px] tracking-[0.15em]">
+            <a href="#" class="flex items-center">
+                <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" />
+            </a>
+            <nav class="hidden md:flex items-center gap-7 text-white/55">
+                <a class="hover:text-white transition-colors" href="#platform">01. PLATFORM</a>
+                <a class="hover:text-white transition-colors" href="#systems">03. SYSTEMS</a>
+                <a class="hover:text-white transition-colors" href="#pipeline">04. PIPELINE</a>
+                <a class="hover:text-white transition-colors" href="#archive">06. ARCHIVE</a>
+                <a class="hover:text-white transition-colors" href="#contact">08. CONTACT</a>
+            </nav>
+            <div class="flex items-center gap-5 text-white/55">
+                <span class="hidden sm:inline">SIM_CORE v3.2 <span class="text-icy">[CONNECTED]</span></span>
+                <span>STATUS: <span class="chip">PROVING_GROUND</span></span>
+            </div>
+        </header>
+
+        <!-- ═══════════ SPECIMEN PLATE HERO ═══════════ -->
+        <section class="plate-frame relative mt-6 rounded-sm overflow-hidden" style="min-height: 78vh">
+            <!-- hairline quadrant grid + crosses -->
+            <div class="absolute inset-x-0 top-1/2 h-px bg-white/[.05] pointer-events-none"></div>
+            <div class="absolute inset-y-0 left-1/2 w-px bg-white/[.05] pointer-events-none"></div>
+            <div class="cross" style="left: calc(25% - 6px); top: calc(50% - 6px)"></div>
+            <div class="cross" style="left: calc(75% - 6px); top: calc(50% - 6px)"></div>
+            <div class="cross" style="left: calc(50% - 6px); top: calc(25% - 6px)"></div>
+            <div class="cross" style="left: calc(50% - 6px); top: calc(75% - 6px)"></div>
+
+            <!-- ghost arm hologram -->
+            <canvas id="xray-canvas" class="absolute inset-0 w-full h-full"></canvas>
+
+            <!-- headline -->
+            <div id="hero-copy" class="absolute left-7 md:left-12 top-10 md:top-16 max-w-md">
+                <h1 class="text-3xl md:text-5xl font-medium leading-[1.12] tracking-tight">
+                    Simulated Machines.<br />Certain Reality.
+                </h1>
+            </div>
+
+            <!-- two divisions -->
+            <div class="absolute left-7 md:left-12 top-44 md:top-60 flex flex-col gap-2.5 max-w-[300px]">
+                <div class="border hairline bg-coal/55 backdrop-blur-sm px-4 py-3.5" data-reveal>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-icy">[ DIV.01 — ROBOTICS &amp; SIMULATION ]</p>
+                    <p class="text-[15px] font-medium mt-1.5">Machines that move.</p>
+                    <p class="text-[11px] leading-5 text-white/55 mt-1">Robots designed, trained, and validated in physics-accurate worlds.</p>
+                </div>
+                <div class="border hairline bg-coal/55 backdrop-blur-sm px-4 py-3.5" data-reveal>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-icy">[ DIV.02 — AUTONOMOUS SOFTWARE ]</p>
+                    <p class="text-[15px] font-medium mt-1.5">Software that thinks.</p>
+                    <p class="text-[11px] leading-5 text-white/55 mt-1">Security, reconnaissance, and software factories with governed autonomy.</p>
+                </div>
+            </div>
+
+            <!-- specimen annotations -->
+            <div class="anno hidden lg:block" style="left: 36%; top: 26%" data-reveal>
+                <p class="tag">[ MANIPULATOR_06X ]</p>
+                <p class="desc mt-1.5">Six-axis policy trained on 4.2M simulated episodes.</p>
+                <div class="leader-h absolute left-full top-2 w-14"></div>
+            </div>
+            <div class="anno hidden lg:block" style="right: 14%; top: 26%" data-reveal>
+                <div class="leader-h absolute right-full top-2 w-14"></div>
+                <p class="tag">[ SENSOR_FIELD ]</p>
+                <p class="desc mt-1.5">Ray-traced LiDAR and depth rigs with calibrated noise.</p>
+            </div>
+            <div class="anno hidden lg:block" style="right: 18%; bottom: 24%" data-reveal>
+                <div class="leader-h absolute right-full top-2 w-16"></div>
+                <p class="tag">[ SIM_CORE ]</p>
+                <p class="desc mt-1.5">Rust engine · 0.5ms deterministic physics step.</p>
+            </div>
+
+            <!-- bottom-left CTA -->
+            <a href="#platform" class="btn-outline absolute left-7 md:left-12 bottom-8 px-5 py-3 text-icy" data-reveal>
+                ✦ EXPLORE THE SIMULATOR
+            </a>
+
+            <!-- bottom-right statement card -->
+            <div class="absolute right-7 md:right-12 bottom-8 max-w-[250px] hidden sm:block" data-reveal>
+                <span class="chip">NOT A FACTORY — A PROVING GROUND</span>
+                <div class="border hairline bg-coal/60 backdrop-blur-sm p-4 mt-1.5">
+                    <p class="text-[11px] leading-5 text-white/65">
+                        Shannon rehearses the complexity of the physical world
+                        so your machines arrive already trained.
+                    </p>
+                    <p class="font-mono text-[9px] tracking-[0.18em] text-icy/80 mt-3 hover:text-icy cursor-pointer">VIEW_SIM_TRANSCRIPT →</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 01 PLATFORM — fact sheet ═══════════ -->
+        <section id="platform" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">01. PLATFORM_INDEX</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">FACT_SHEET // 2026</span>
+            </div>
+            <div>
+                <div class="index-row grid md:grid-cols-[220px_1fr_auto] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-icy pt-1">PHYSICS_FIDELITY</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Deterministic rigid-body dynamics and contact-rich manipulation, validated against real-world benchmarks at every release.</p>
+                    <span class="font-mono text-[10px] text-white/35 pt-1">/01</span>
+                </div>
+                <div class="index-row grid md:grid-cols-[220px_1fr_auto] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-icy pt-1">RUST_CORE</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Thousands of GPU-batched environments per node on a memory-safe engine shared across the Bohr Labs stack.</p>
+                    <span class="font-mono text-[10px] text-white/35 pt-1">/02</span>
+                </div>
+                <div class="index-row grid md:grid-cols-[220px_1fr_auto] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-icy pt-1">SIM_TO_REAL</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Domain randomization pipelines shrink the reality gap to 2.1% — policies walk out of the lab on day one.</p>
+                    <span class="font-mono text-[10px] text-white/35 pt-1">/03</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 02 CAPABILITIES — matrix ═══════════ -->
+        <section id="capabilities" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">02. CAPABILITY_MATRIX</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">6 MODULES</span>
+            </div>
+            <div class="plate-frame rounded-sm grid md:grid-cols-3 divide-y md:divide-y-0 divide-white/[.07]" data-reveal>
+                <div class="p-7 md:border-r border-white/[.07]">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">PHYSICS_ENGINE</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Contact-rich dynamics and soft-body simulation at real-time-plus speeds.</p>
+                </div>
+                <div class="p-7 md:border-r border-white/[.07]">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">SENSOR_SIM</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Ray-traced LiDAR, depth cameras, and IMUs with calibrated noise models.</p>
+                </div>
+                <div class="p-7">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">DIGITAL_TWIN</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Mirror physical fleets in real time — replay incidents, predict wear.</p>
+                </div>
+                <div class="p-7 md:border-r border-t border-white/[.07]">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">RL_FARM</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Massively parallel reinforcement learning with curriculum scheduling.</p>
+                </div>
+                <div class="p-7 md:border-r border-t border-white/[.07]">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">FLEET_OPS</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Staged policy rollouts to heterogeneous fleets with instant rollback.</p>
+                </div>
+                <div class="p-7 border-t border-white/[.07]">
+                    <p class="font-mono text-[10px] tracking-[0.2em] text-icy">HIL_BRIDGE</p>
+                    <p class="mt-3 text-[12px] leading-6 text-white/60">Real controllers in virtual worlds for certification-grade validation.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 03 SYSTEMS — holdings table ═══════════ -->
+        <section id="systems" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">03. SYSTEMS_LEDGER</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">4 ENTRIES</span>
+            </div>
+            <div>
+                <div class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_120px] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Shannon Sim</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">The robotics simulator beneath every Shannon invention — machines born digital.</p>
+                    <span class="font-mono text-[9px] tracking-[0.2em] text-right"><span class="chip">FLAGSHIP</span></span>
+                </div>
+                <div class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_120px] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Shannon Sentinel</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">Agentic security operations — triage, investigation, and reporting under governed autonomy.</p>
+                    <span class="font-mono text-[9px] tracking-[0.2em] text-icy text-right">ACTIVE</span>
+                </div>
+                <div class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_120px] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Shannon Scout</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">Always-on reconnaissance — maps your digital terrain before problems find you.</p>
+                    <span class="font-mono text-[9px] tracking-[0.2em] text-white/50 text-right">BETA</span>
+                </div>
+                <div class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_120px] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Shannon Factory</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">An autonomous software factory — systems assembled, tested, and shipped off the line.</p>
+                    <span class="font-mono text-[9px] tracking-[0.2em] text-white/35 text-right">R&amp;D</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 04 PIPELINE ═══════════ -->
+        <section id="pipeline" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">04. PIPELINE</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">A → B → C → D → A</span>
+            </div>
+            <div>
+                <div class="index-row grid md:grid-cols-[120px_220px_1fr] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-white/35 pt-0.5">PHASE_A</span>
+                    <span class="font-mono text-[11px] tracking-[0.2em] text-icy pt-0.5">DESIGN</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Import CAD or URDF, compose worlds from a library of physically-validated assets.</p>
+                </div>
+                <div class="index-row grid md:grid-cols-[120px_220px_1fr] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-white/35 pt-0.5">PHASE_B</span>
+                    <span class="font-mono text-[11px] tracking-[0.2em] text-icy pt-0.5">SIMULATE</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Run thousands of parallel physics environments with sensor-accurate feedback loops.</p>
+                </div>
+                <div class="index-row grid md:grid-cols-[120px_220px_1fr] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-white/35 pt-0.5">PHASE_C</span>
+                    <span class="font-mono text-[11px] tracking-[0.2em] text-icy pt-0.5">TRAIN</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Reinforcement and imitation learning pipelines tuned for sim-to-real transfer.</p>
+                </div>
+                <div class="index-row grid md:grid-cols-[120px_220px_1fr] gap-3 md:gap-10 py-6 px-2" data-reveal>
+                    <span class="font-mono text-[10px] tracking-[0.2em] text-white/35 pt-0.5">PHASE_D</span>
+                    <span class="font-mono text-[11px] tracking-[0.2em] text-icy pt-0.5">DEPLOY</span>
+                    <p class="text-[13px] leading-6 text-white/70 max-w-xl">Ship validated policies to physical fleets — and keep their digital twins in sync.</p>
+                </div>
+            </div>
+            <p class="mt-14 max-w-2xl mx-auto text-center text-lg md:text-xl font-light leading-relaxed text-white/80" data-reveal>
+                "The most expensive place to discover a design flaw is the real world.
+                <span class="text-icy">Shannon makes it the cheapest.</span>"
+            </p>
+            <p class="mt-4 text-center font-mono text-[9px] tracking-[0.28em] text-white/35" data-reveal>— ENGINEERING_PRINCIPLE_01</p>
+        </section>
+
+        <!-- ═══════════ 05 NETWORK ═══════════ -->
+        <section id="network" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">05. NETWORK</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">BOHR_LABS // FAMILY</span>
+            </div>
+            <div>
+                <a href="https://bohrlabs.id" target="_blank" rel="noopener" class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_auto] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Bohr Labs</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">Deep-tech venture builder — the hub of the network.</p>
+                    <span class="font-mono text-[10px] text-icy">HUB ↗</span>
+                </a>
+                <a href="https://rantai.dev" target="_blank" rel="noopener" class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_auto] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">RantAI</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">Enterprise-scale agentic AI for diverse use cases.</p>
+                    <span class="font-mono text-[10px] text-white/45">AI_SW ↗</span>
+                </a>
+                <a href="https://gaussian.id" target="_blank" rel="noopener" class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_auto] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Gaussian</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">High-fidelity physics simulation for manufacturing.</p>
+                    <span class="font-mono text-[10px] text-white/45">TWINS ↗</span>
+                </a>
+                <a href="https://dirac.id" target="_blank" rel="noopener" class="index-row grid grid-cols-[1fr_auto] md:grid-cols-[240px_1fr_auto] gap-3 md:gap-10 py-6 px-2 items-center" data-reveal>
+                    <h3 class="text-[15px] font-medium">Dirac</h3>
+                    <p class="hidden md:block text-[12px] leading-6 text-white/60">Intelligent research assistant in quantum computing.</p>
+                    <span class="font-mono text-[10px] text-white/45">QUANTUM ↗</span>
+                </a>
+            </div>
+        </section>
+
+        <!-- ═══════════ 06 ARCHIVE — light plate ═══════════ -->
+        <section id="archive" class="mt-24 md:mt-32">
+            <div class="rounded-sm bg-[#e9edf3] text-[#0a1f3c] px-7 md:px-12 py-14 relative overflow-hidden">
+                <div class="flex items-baseline justify-between mb-8" data-reveal>
+                    <h2 class="font-mono text-[11px] tracking-[0.3em] text-[#0a1f3c]/60">06. ARCHIVE — READING_ROOM</h2>
+                    <span class="font-mono text-[9px] tracking-[0.2em] text-[#0a1f3c]/40">OPEN_ACCESS</span>
+                </div>
+                <div>
+                    <a href="#" class="block border-t border-[#0a1f3c]/15 py-5 px-1 grid grid-cols-[auto_1fr_auto] gap-6 items-center group hover:bg-[#0a1f3c]/[.04] transition-colors" data-reveal>
+                        <span class="font-mono text-[10px] text-[#1d4ed8]">LIB_001</span>
+                        <div>
+                            <h3 class="text-[14px] font-medium">Books</h3>
+                            <p class="text-[11px] text-[#0a1f3c]/60 mt-0.5">Long-form engineering texts — Rust, robotics, and machine learning.</p>
+                        </div>
+                        <span class="font-mono text-[11px] text-[#0a1f3c]/40 group-hover:text-[#1d4ed8] transition-colors">↗</span>
+                    </a>
+                    <a href="#" class="block border-t border-[#0a1f3c]/15 py-5 px-1 grid grid-cols-[auto_1fr_auto] gap-6 items-center group hover:bg-[#0a1f3c]/[.04] transition-colors" data-reveal>
+                        <span class="font-mono text-[10px] text-[#1d4ed8]">LIB_002</span>
+                        <div>
+                            <h3 class="text-[14px] font-medium">Papers &amp; Journals</h3>
+                            <p class="text-[11px] text-[#0a1f3c]/60 mt-0.5">Peer-reviewed research on simulation fidelity and sim-to-real transfer.</p>
+                        </div>
+                        <span class="font-mono text-[11px] text-[#0a1f3c]/40 group-hover:text-[#1d4ed8] transition-colors">↗</span>
+                    </a>
+                    <a href="#" class="block border-t border-b border-[#0a1f3c]/15 py-5 px-1 grid grid-cols-[auto_1fr_auto] gap-6 items-center group hover:bg-[#0a1f3c]/[.04] transition-colors" data-reveal>
+                        <span class="font-mono text-[10px] text-[#1d4ed8]">LIB_003</span>
+                        <div>
+                            <h3 class="text-[14px] font-medium">Platform Documentation &amp; API Reference</h3>
+                            <p class="text-[11px] text-[#0a1f3c]/60 mt-0.5">Guides, manuals, and typed interfaces for every Shannon system.</p>
+                        </div>
+                        <span class="font-mono text-[11px] text-[#0a1f3c]/40 group-hover:text-[#1d4ed8] transition-colors">↗</span>
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 07 TELEMETRY ═══════════ -->
+        <section id="telemetry" class="mt-24 md:mt-32">
+            <div class="flex items-baseline justify-between mb-8" data-reveal>
+                <h2 class="font-mono text-[11px] tracking-[0.3em] text-white/50">07. TELEMETRY</h2>
+                <span class="font-mono text-[9px] tracking-[0.2em] text-white/30">LIVE_FEED <span class="text-icy blink">▮</span></span>
+            </div>
+            <div class="plate-frame rounded-sm grid grid-cols-2 md:grid-cols-4 divide-x divide-white/[.07]">
+                <div class="p-7 text-center" data-reveal>
+                    <p class="num text-3xl font-light"><span class="counter" data-target="4200000" data-format="m">0</span></p>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-white/40 mt-2">RL_EPISODES / DAY</p>
+                </div>
+                <div class="p-7 text-center" data-reveal>
+                    <p class="num text-3xl font-light"><span class="counter" data-target="47">0</span></p>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-white/40 mt-2">DIGITAL_TWINS</p>
+                </div>
+                <div class="p-7 text-center" data-reveal>
+                    <p class="num text-3xl font-light"><span class="counter" data-target="21" data-format="pct10">0</span></p>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-white/40 mt-2">SIM_TO_REAL_GAP</p>
+                </div>
+                <div class="p-7 text-center" data-reveal>
+                    <p class="num text-3xl font-light">0.5<span class="text-white/40">ms</span></p>
+                    <p class="font-mono text-[9px] tracking-[0.22em] text-white/40 mt-2">PHYSICS_STEP</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ═══════════ 04 CONTACT ═══════════ -->
+        <section id="contact" class="mt-24 md:mt-32">
+            <div class="plate-frame rounded-sm relative overflow-hidden px-8 py-16 md:py-20 text-center" data-reveal>
+                <div class="cross" style="left: 14px; top: 14px"></div>
+                <div class="cross" style="right: 14px; bottom: 14px"></div>
+                <img src="src/logo-horizontal-white.png" alt="" class="h-6 w-auto mx-auto mb-5 opacity-75" />
+                <p class="font-mono text-[10px] tracking-[0.3em] text-white/50">08. CONTACT</p>
+                <h2 class="mt-5 text-2xl md:text-4xl font-medium tracking-tight leading-snug">
+                    Rehearse the Machine.<br />Release the Certainty.
+                </h2>
+                <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
+                    <a href="mailto:office@shannon.id" class="btn-outline px-6 py-3.5 text-icy">✦ OFFICE@SHANNON.ID</a>
+                    <a href="https://bohrlabs.id" target="_blank" rel="noopener" class="btn-outline px-6 py-3.5 text-white/60">BOHR_LABS ↗</a>
+                </div>
+                <p class="mt-8 font-mono text-[9px] tracking-[0.25em] text-white/35">RESPONSE &lt; 48H · A BOHR LABS COMPANY</p>
+            </div>
+        </section>
+
+        <!-- ═══════════ FOOTER ═══════════ -->
+        <footer class="mt-16 pt-6 border-t hairline flex flex-col md:flex-row items-center justify-between gap-3 font-mono text-[9px] tracking-[0.22em] text-white/35 pb-4">
+            <span>© 2026 SHANNON // DYNAMICS</span>
+            <span>SPECIMEN_PLATE // REV.5</span>
+            <div class="flex gap-6">
+                <a class="hover:text-white/70 transition-colors" href="#">PRIVACY</a>
+                <a class="hover:text-white/70 transition-colors" href="#">TERMS</a>
+                <a class="hover:text-white/70 transition-colors" href="https://bohrlabs.id">BOHR_LABS</a>
+            </div>
+        </footer>
+    </div>
+
+    <!-- ═══════════ SCRIPTS ═══════════ -->
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+    <script>
+        /* ---------- smooth scroll ---------- */
+        const lenis = new Lenis({ lerp: 0.1 });
+        function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
+        requestAnimationFrame(raf);
+        gsap.registerPlugin(ScrollTrigger);
+        lenis.on('scroll', () => ScrollTrigger.update());
+
+        /* ---------- entrance + reveals ---------- */
+        gsap.from("#nav", { y: -14, opacity: 0, duration: .8, ease: "power2.out" });
+        gsap.from("#hero-copy", { y: 24, opacity: 0, duration: 1, delay: .2, ease: "power3.out" });
+        document.querySelectorAll("[data-reveal]").forEach((el, i) => {
+            gsap.fromTo(el, { y: 18, opacity: 0 }, {
+                y: 0, opacity: 1, duration: .8, ease: "power2.out",
+                scrollTrigger: { trigger: el, start: "top 90%" }
+            });
+        });
+
+        /* ---------- counters ---------- */
+        document.querySelectorAll(".counter").forEach(el => {
+            const target = +el.dataset.target, fmt = el.dataset.format;
+            const render = v => {
+                if (fmt === "m") el.textContent = (v / 1e6).toFixed(1) + "M";
+                else if (fmt === "pct10") el.textContent = (v / 10).toFixed(1) + "%";
+                else el.textContent = Math.round(v);
+            };
+            ScrollTrigger.create({
+                trigger: el, start: "top 92%", once: true,
+                onEnter: () => {
+                    const s = { v: 0 };
+                    gsap.to(s, { v: target, duration: 1.4, ease: "power2.out", onUpdate: () => render(s.v) });
+                }
+            });
+        });
+
+        /* ---------- X-ray hologram arm ---------- */
+        (function () {
+            const canvas = document.getElementById("xray-canvas");
+            const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+            renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+            camera.position.set(1.2, 1.6, 8.6);
+
+            // ghost material: additive translucent wireframe
+            const ghost = (opacity) => new THREE.MeshBasicMaterial({
+                color: 0xa5c8e8, wireframe: true, transparent: true,
+                opacity, blending: THREE.AdditiveBlending, depthWrite: false
+            });
+            const gFine = () => ghost(.16), gMid = () => ghost(.3), gHot = () => ghost(.5);
+
+            const root = new THREE.Group();
+            root.position.set(1.1, -2.1, 0);
+            scene.add(root);
+
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(.85, 1.05, .35, 40), gFine());
+            base.position.y = .18; root.add(base);
+
+            const yaw = new THREE.Group(); yaw.position.y = .38; root.add(yaw);
+            const turret = new THREE.Mesh(new THREE.CylinderGeometry(.55, .68, .5, 28), gFine());
+            turret.position.y = .25; yaw.add(turret);
+
+            const shoulder = new THREE.Group(); shoulder.position.y = .58; yaw.add(shoulder);
+            shoulder.add(new THREE.Mesh(new THREE.SphereGeometry(.42, 18, 18), gMid()));
+
+            const upperLen = 1.7;
+            const upper = new THREE.Mesh(new THREE.BoxGeometry(.4, upperLen, .5, 2, 5, 2), gMid());
+            upper.position.y = upperLen / 2; shoulder.add(upper);
+
+            const elbow = new THREE.Group(); elbow.position.y = upperLen; shoulder.add(elbow);
+            elbow.add(new THREE.Mesh(new THREE.SphereGeometry(.32, 16, 16), gMid()));
+
+            const foreLen = 1.45;
+            const fore = new THREE.Mesh(new THREE.BoxGeometry(.3, foreLen, .38, 2, 4, 2), gMid());
+            fore.position.y = foreLen / 2; elbow.add(fore);
+
+            const wrist = new THREE.Group(); wrist.position.y = foreLen; elbow.add(wrist);
+            wrist.add(new THREE.Mesh(new THREE.CylinderGeometry(.18, .18, .26, 18), gHot()));
+            const palm = new THREE.Mesh(new THREE.BoxGeometry(.4, .16, .3, 2, 1, 1), gHot());
+            palm.position.y = .2; wrist.add(palm);
+            const fingers = [];
+            [-1, 1].forEach(side => {
+                const f = new THREE.Group(); f.position.set(side * .13, .28, 0); wrist.add(f);
+                const seg = new THREE.Mesh(new THREE.BoxGeometry(.07, .36, .12), gHot());
+                seg.position.y = .18; f.add(seg);
+                fingers.push({ g: f, side });
+            });
+
+            // drifting dust motes — dense from the first frame, some in front of the arm
+            const N = 720, pos = new Float32Array(N * 3);
+            for (let i = 0; i < N * 3; i += 3) {
+                pos[i] = (Math.random() - .5) * 18;
+                pos[i + 1] = (Math.random() - .5) * 10;
+                pos[i + 2] = 1.5 - Math.random() * 11;
+            }
+            const pGeo = new THREE.BufferGeometry();
+            pGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+            const motes = new THREE.Points(pGeo, new THREE.PointsMaterial({
+                color: 0xa5c8e8, size: .05, transparent: true, opacity: .65,
+                blending: THREE.AdditiveBlending, depthWrite: false
+            }));
+            scene.add(motes);
+
+            let mx = 0, my = 0;
+            addEventListener("mousemove", e => {
+                mx = (e.clientX / innerWidth - .5) * 2;
+                my = (e.clientY / innerHeight - .5) * 2;
+            });
+
+            function resize() {
+                const w = canvas.clientWidth, h = canvas.clientHeight;
+                if (canvas.width !== w || canvas.height !== h) {
+                    renderer.setSize(w, h, false);
+                    camera.aspect = w / h; camera.updateProjectionMatrix();
+                }
+            }
+
+            const clock = new THREE.Clock();
+            (function animate() {
+                requestAnimationFrame(animate);
+                resize();
+                const t = clock.getElapsedTime();
+                yaw.rotation.y = t * .16 + mx * .3;
+                shoulder.rotation.z = -.5 + Math.sin(t * .4) * .15;
+                elbow.rotation.z = .95 + Math.sin(t * .4 + 1.2) * .26;
+                wrist.rotation.z = -.45 + Math.sin(t * .4 + 2.1) * .2;
+                wrist.rotation.y = t * .5;
+                const grip = .13 + (Math.sin(t * 1.1) + 1) * .04;
+                fingers.forEach(f => { f.g.position.x = f.side * grip; });
+                motes.rotation.y = t * .012;
+                motes.position.y = Math.sin(t * .12) * .35;
+                camera.position.x += (1.2 + mx * .4 - camera.position.x) * .04;
+                camera.position.y += (1.6 - my * .25 - camera.position.y) * .04;
+                camera.lookAt(1.1, .6, 0);
+                renderer.render(scene, camera);
+            })();
+        })();
+    </script>
+</body>
+
+</html>

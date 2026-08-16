@@ -1,10 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1.0" name="viewport" />
-    <title>Shannon Dynamics — Simulation-First Robotics Engineering</title>
+    <title>Books — Library — Shannon Dynamics</title>
     <meta name="description" content="An engineering company with a passion for rehearsing reality — robots and autonomous software, simulated before they exist." />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -1049,13 +1048,115 @@
             .vn-go, .vn-here { grid-column: 3; grid-row: 1; }
             .vn-desc { grid-column: 2 / -1; grid-row: 2; }
         }
+    
+        /* ═══ sub-page banner ═══ */
+        /* .tex tex-bottom (defined in the shared sheet) lays the legibility
+           scrim between the dot canvas and this copy */
+        .lp-banner { position: relative; height: 46vh; min-height: 340px; background: #10181b; }
+        .lp-banner-in { position: relative; max-width: 1240px; margin: 0 auto; height: 100%; padding: 0 24px;
+                        display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 46px; }
+        .lp-crumb { display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
+                    font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .2em; color: rgba(255,255,255,.72); }
+        .lp-crumb a { color: rgba(255,255,255,.72); transition: color .25s; }
+        .lp-crumb a:hover { color: #fff; }
+        .lp-crumb span.on { color: #A9C3FF; }
+        .lp-title { color: #fff; font-size: clamp(30px, 4vw, 52px); font-weight: 500; letter-spacing: -.02em; line-height: 1.08; max-width: 18ch; }
+        .lp-sub { color: rgba(255,255,255,.82); font-size: 14px; line-height: 1.7; max-width: 56ch; margin-top: 16px; }
+        .lp-body { background: #fff; padding: 0 24px 24px; }
+        .lp-wrap { max-width: 1240px; margin: 0 auto; }
+        .lp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 30px 0 26px;
+                  font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em; color: rgba(16,24,27,.42); }
+        .lp-count { margin-left: auto; }
+
+        /* filter chips */
+        .lp-filter { border: 1px solid rgba(16,24,27,.16); border-radius: 9999px; padding: 7px 15px;
+                     font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .16em;
+                     color: rgba(16,24,27,.55); transition: background .25s, color .25s, border-color .25s; }
+        .lp-filter:hover { border-color: rgba(76,126,255,.5); color: #4C7EFF; }
+        .lp-filter[aria-pressed="true"] { background: #10181b; border-color: #10181b; color: #fff; }
+
+        /* ═══ publications list ═══ */
+        .pp-row { display: grid; gap: 6px 28px; padding: 26px 14px; border-top: 1px solid rgba(16,24,27,.12);
+                  transition: background .3s, padding-left .3s; }
+        .pp-row:hover { background: rgba(16,24,27,.025); padding-left: 22px; }
+        .pp-row[hidden] { display: none; }
+        @media (min-width: 900px) { .pp-row { grid-template-columns: 92px 132px 1fr 96px; align-items: start; } }
+        .pp-year { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .14em; color: rgba(16,24,27,.35); padding-top: 3px; }
+        .pp-tag { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .14em;
+                  border: 1px solid rgba(76,126,255,.35); color: #4C7EFF; border-radius: 9999px;
+                  padding: 3px 9px; justify-self: start; white-space: nowrap; }
+        .pp-h { font-size: 17px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+        .pp-by { font-size: 12px; color: rgba(16,24,27,.5); margin-top: 5px; }
+        .pp-ex { font-size: 13px; line-height: 1.7; color: rgba(16,24,27,.62); margin-top: 11px; max-width: 68ch; }
+        .pp-go { font-size: 12.5px; color: #4C7EFF; white-space: nowrap; padding-top: 3px; }
+        .pp-row:hover .pp-go { text-decoration: underline; text-underline-offset: 4px; }
+
+        /* ═══ books grid ═══ */
+        .bk-grid { display: grid; gap: 40px 30px; padding-bottom: 20px; }
+        @media (min-width: 640px)  { .bk-grid { grid-template-columns: repeat(2, 1fr); } }
+        /* 4 not 3 — each cover was ~393px at 3-up, big enough to dominate the
+           page; 4-up brings it to ~288px, roughly the same ~27% cut the detail-
+           page cover took (218px -> 160px) so the two pages feel consistent */
+        @media (min-width: 1000px) { .bk-grid { grid-template-columns: repeat(4, 1fr); } }
+        .bk { display: flex; flex-direction: column; height: 100%; }
+        /* face-on here — the -46deg shelf tilt belongs to the drifting rail on
+           the home page, not to a catalogue you are meant to read */
+        .bk .book-cover {
+            position: relative; display: block; width: 100%; aspect-ratio: 3 / 4.2; height: auto;
+            border-radius: 3px 8px 8px 3px; transform: none; overflow: hidden;
+            box-shadow: 0 22px 44px -26px rgba(16,24,27,.75);
+            transition: transform .5s cubic-bezier(.76,0,.24,1), box-shadow .5s ease;
+        }
+        .bk .book-cover:hover { transform: translateY(-6px); box-shadow: 0 30px 54px -26px rgba(16,24,27,.6); }
+        .bk .book-cover::after { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 17px; z-index: 3;
+            background: linear-gradient(90deg, rgba(0,0,0,.34), rgba(0,0,0,.05) 70%, rgba(255,255,255,.1)); }
+        .bk .book-cover-t { left: 30px; right: 18px; bottom: 20px; font-size: 14px; font-weight: 600; line-height: 1.35; }
+        /* grow so the meta line lands on the same baseline across a row,
+           however long each blurb runs */
+        .bk-meta { padding-top: 16px; display: flex; flex-direction: column; flex: 1; }
+        .bk-t { font-size: 14.5px; font-weight: 600; letter-spacing: -.01em; }
+        .bk-t a { color: inherit; }
+        .bk-t a:hover { color: #4C7EFF; }
+        .bk-a { font-size: 12px; color: rgba(16,24,27,.5); margin-top: 3px; }
+        .bk-d { font-size: 12.5px; line-height: 1.65; color: rgba(16,24,27,.6); margin-top: 10px; }
+        .bk-f { display: flex; align-items: center; gap: 14px; margin-top: auto; padding-top: 14px;
+                font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .14em; color: rgba(16,24,27,.4); }
+        .bk-f a { margin-left: auto; color: #4C7EFF; }
+        .bk-f a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+        /* ═══ open-source cards ═══ */
+        .os-h { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .2em;
+                color: rgba(16,24,27,.42); padding: 34px 0 16px; }
+        .os-grid { display: grid; gap: 14px; }
+        @media (min-width: 800px) { .os-grid { grid-template-columns: repeat(2, 1fr); } }
+        .os-card { position: relative; border: 1px solid rgba(16,24,27,.12); border-radius: 14px;
+                   padding: 22px 24px 20px; background: #fff; display: flex; flex-direction: column;
+                   transition: border-color .35s, box-shadow .35s, transform .35s cubic-bezier(.76,0,.24,1); }
+        .os-card:hover { border-color: rgba(76,126,255,.34); box-shadow: 0 20px 40px -28px rgba(16,24,27,.5); transform: translateY(-3px); }
+        .os-name { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 500; letter-spacing: .02em; }
+        .os-d { font-size: 12.5px; line-height: 1.7; color: rgba(16,24,27,.62); margin-top: 10px; }
+        .os-f { display: flex; align-items: center; gap: 14px; margin-top: auto; padding-top: 18px;
+                font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: .14em; color: rgba(16,24,27,.4); }
+        .os-f a { margin-left: auto; color: #4C7EFF; }
+        .os-f a:hover { text-decoration: underline; text-underline-offset: 3px; }
+        .os-dot { width: 7px; height: 7px; border-radius: 9999px; background: #4C7EFF; flex-shrink: 0; }
+
+        /* sibling links out to the other two Library pages */
+        .lp-more { display: grid; gap: 14px; padding: 46px 0 10px; border-top: 1px solid rgba(16,24,27,.12); margin-top: 40px; }
+        @media (min-width: 700px) { .lp-more { grid-template-columns: 1fr 1fr; } }
+        .lp-more a { display: flex; align-items: baseline; gap: 14px; padding: 20px 22px;
+                     border: 1px solid rgba(16,24,27,.12); border-radius: 14px;
+                     transition: border-color .3s, background .3s, padding-left .3s; }
+        .lp-more a:hover { border-color: rgba(76,126,255,.34); background: rgba(76,126,255,.03); padding-left: 30px; }
+        .lp-more b { font-size: 15px; font-weight: 600; }
+        .lp-more small { display: block; font-size: 12px; color: rgba(16,24,27,.55); margin-top: 4px; font-weight: 400; }
+        .lp-more span { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .2em; color: #4C7EFF; }
+        .lp-more em { margin-left: auto; font-style: normal; color: rgba(16,24,27,.3); }
     </style>
 </head>
 
 <body class="bg-slatebg antialiased overflow-x-hidden">
-
-    <!-- paint server shared by the geometric capability marks -->
-    <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
         <defs>
             <pattern id="gm-hatch" width="4.5" height="4.5" patternUnits="userSpaceOnUse" patternTransform="rotate(-40)">
                 <line x1="0" y1="0" x2="0" y2="4.5" stroke="#4C7EFF" stroke-width=".85"/>
@@ -1072,25 +1173,22 @@
         </defs>
     </svg>
 
-    <!-- ═══════════ STICKY NAV ═══════════
-         Sits outside the page wrapper below so position:fixed is not trapped
-         by that wrapper's overflow:hidden. -->
-    <header id="nav">
+<header id="nav">
         <div class="nav-in">
-            <a href="#" class="nav-logo flex items-center shrink-0">
+            <a href="index-v3.html" class="nav-logo flex items-center shrink-0">
                 <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" />
             </a>
             <nav class="nav-links glass-dark rounded-full px-2 py-1.5 flex items-center gap-1 text-[12.5px] text-white/75">
-                <a class="nav-link" href="#work">What we do</a>
-                <a class="nav-link" href="#capabilities">Capabilities</a>
-                <a class="nav-link" href="#showcase">Products</a>
+                <a class="nav-link" href="index-v3.html#work">What we do</a>
+                <a class="nav-link" href="index-v3.html#capabilities">Capabilities</a>
+                <a class="nav-link" href="index-v3.html#showcase">Products</a>
 
                 <!-- ── Library: nav-link + hover/focus submenu ──
                      The link itself still jumps to the in-page #library section;
                      the submenu is a shortcut straight to each sub-page, so
                      neither path is lost. -->
                 <div class="nav-item" data-nav-item>
-                    <a class="nav-link nav-link-sub" href="#library" aria-haspopup="true" aria-expanded="false">
+                    <a class="nav-link nav-link-sub" href="index-v3.html#library" aria-haspopup="true" aria-expanded="false">
                         Library
                         <svg class="nav-chev" width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
                             <path d="M1 2.5L4 5.5L7 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
@@ -1109,777 +1207,110 @@
                     </div>
                 </div>
 
-                <a class="nav-link" href="#ecosystem">Ecosystem</a>
+                <a class="nav-link" href="index-v3.html#ecosystem">Ecosystem</a>
             </nav>
             <a class="nav-cta" href="#contact">Contact Us <span aria-hidden="true">→</span></a>
         </div>
     </header>
-    <!-- floating contact button — revealed once the top of the page is behind you -->
-
-
 
     <div class="w-full">
         <div class="overflow-hidden">
 
-            <!-- ═══════════ HERO ═══════════ -->
-            <div class="hero tex tex-hero">
-                <canvas class="halftone absolute inset-0" data-speed="2.2" data-tech="on"></canvas>
-
-                <div class="hero-in" id="hero-copy">
-                    <div>
-                        <h1 class="hero-h1">
-                            We build <span class="on">robotics engines</span>
-                            and the <span class="on">software that runs them.</span>
-                        </h1>
-
-                        <p class="hero-sub">
-                            We test everything in simulation first. So by the time it reaches
-                            the real world, we already know it works.
-                        </p>
-
-                        <div class="hero-cta">
-                            <a href="#contact" class="bg-white text-graphite rounded-full px-6 py-3.5 text-[13px] font-medium hover:opacity-90 transition-opacity">Get Started →</a>
-                            <a href="#showcase" class="btn-line px-6 py-3.5 text-[13px]">See the systems</a>
-                        </div>
-                    </div>
-
-                    <!-- library shortcut — stacks under the copy below 900px -->
-                    <div class="hero-lib">
-                        <p class="hero-lib-label">OPEN ACCESS · THE LIBRARY</p>
-                        <a class="hero-lib-row" href="library-publications.html">
-                            <span><b>Publications</b><em>Papers, preprints and field notes</em></span>
-                            <i aria-hidden="true">↗</i>
-                        </a>
-                        <a class="hero-lib-row" href="library-books.html">
-                            <span><b>Books</b><em>Long-form from Shannon Press</em></span>
-                            <i aria-hidden="true">↗</i>
-                        </a>
-                        <a class="hero-lib-row" href="library-open-source.html">
-                            <span><b>Open Source</b><em>Repositories, guides and API reference</em></span>
-                            <i aria-hidden="true">↗</i>
-                        </a>
-                        <a class="hero-lib-all" href="#library">Browse the whole library →</a>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ WHITE HEADLINE BODY ═══════════ -->
-            <div class="bg-white px-6 py-14 md:py-24">
-                <div class="max-w-[1240px] mx-auto">
-
-                <!-- two main focus areas -->
-                <div class="sec-head">
-                    <div class="flex items-baseline justify-between mb-8" data-reveal>
-                        <h2 class="text-2xl md:text-3xl font-medium tracking-tight">Two disciplines, one company</h2>
-                        <span class="font-mono text-[10px] tracking-[0.2em] text-accent">FOCUS 01 — 02</span>
-                    </div>
-                    <div class="disc-grid" data-reveal>
-                        <div class="disc-col-a">
-                            <span class="disc-num">01</span>
-                            <p class="disc-tag">MACHINES THAT MOVE.</p>
-                            <h3 class="disc-h3">Robotics Simulation</h3>
-                            <p class="disc-p">Robots designed, trained, and validated in physics-accurate worlds — so the first physical prototype arrives already trained.</p>
-                            <ul class="disc-list">
-                                <li><span>—</span> Physics-accurate simulation on the Shannon Sim engine</li>
-                                <li><span>—</span> Reinforcement-learning training at factory scale</li>
-                                <li><span>—</span> Digital twins, fleet deployment, and sim-to-real transfer</li>
-                            </ul>
-                            <a href="#showcase" class="disc-link">Explore the simulator →</a>
-                        </div>
-                        <div class="disc-col-b">
-                            <span class="disc-num">02</span>
-                            <p class="disc-tag">SOFTWARE THAT THINKS.</p>
-                            <h3 class="disc-h3">Software Development</h3>
-                            <p class="disc-p">Autonomous software built with the same engineering discipline — agents that defend, discover, and deliver on their own.</p>
-                            <ul class="disc-list">
-                                <li><span>—</span> Agentic security operations with Shannon Sentinel</li>
-                                <li><span>—</span> AI-scored interviews with Shannon Scout</li>
-                                <li><span>—</span> Software manufactured on the Shannon Factory line</li>
-                            </ul>
-                            <a href="#showcase" class="disc-link">Explore the systems →</a>
-                        </div>
-                    </div>
-                </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ WHAT WE DO ═══════════ -->
-            <div id="work" class="bg-white px-6 pb-16">
-                <div class="max-w-[1240px] mx-auto">
-                <div class="sec-head pt-16 mb-9" data-reveal>
-                    <div class="sec-line">
-                        <span class="sec-num">01</span>
-                        <span class="sec-dash"></span>
-                        <span class="sec-label">WHAT WE DO</span>
-                        <span class="sec-meta">01 — 03</span>
-                    </div>
-                    <h2 class="sec-title"><span class="hl-soft">Machines are proven</span> before they are built.</h2>
-                </div>
-                <div>
-                    <div class="work-row" data-reveal>
-                        <span class="work-num">01</span>
-                        <h3 class="text-[17px] md:text-[19px] font-semibold tracking-tight">Physics-first simulation</h3>
-                        <p class="text-[13px] leading-6 text-slatebg/60 max-w-xl">Deterministic rigid-body dynamics and contact-rich manipulation, validated against real-world benchmarks at every release.</p>
-                    </div>
-                    <div class="work-row" data-reveal>
-                        <span class="work-num">02</span>
-                        <h3 class="text-[17px] md:text-[19px] font-semibold tracking-tight">Training at factory scale</h3>
-                        <p class="text-[13px] leading-6 text-slatebg/60 max-w-xl">Thousands of GPU-batched environments per node on a memory-safe Rust core — reinforcement learning as an industrial process.</p>
-                    </div>
-                    <div class="work-row" data-reveal>
-                        <span class="work-num">03</span>
-                        <h3 class="text-[17px] md:text-[19px] font-semibold tracking-tight">Sim-to-real transfer</h3>
-                        <p class="text-[13px] leading-6 text-slatebg/60 max-w-xl">Domain randomization pipelines shrink the reality gap to 2.1% — policies walk out of the lab on day one.</p>
-                    </div>
-                </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ CAPABILITIES (TABBED) ═══════════ -->
-            <div id="capabilities" class="bg-white px-6 pb-16 glass-stage">
-                <div class="max-w-[1240px] mx-auto">
-                <div class="sec-head pt-16 mb-9" data-reveal>
-                    <div class="sec-line">
-                        <span class="sec-num">02</span>
-                        <span class="sec-dash"></span>
-                        <span class="sec-label">CAPABILITIES</span>
-                        <span class="sec-meta">BY DISCIPLINE</span>
-                    </div>
-                    <h2 class="sec-title"><span class="hl-soft">Everything the machine needs,</span> before it exists.</h2>
-                </div>
-
-                <div class="flex items-center gap-2.5 mb-7" role="tablist" data-reveal>
-                    <button class="tab-btn" role="tab" aria-selected="true" aria-controls="tab-robotics" id="tabbtn-robotics">Robotics Simulation</button>
-                    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-software" id="tabbtn-software">Software Development</button>
-                </div>
-
-                <div class="tab-panel" id="tab-robotics" role="tabpanel" aria-labelledby="tabbtn-robotics">
-                    <div class="hair-grid">
-                        <div class="hair-cell">
-                            <span class="cap-num">R.01</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><ellipse cx="17.0" cy="46.0" rx="8" ry="17" transform="rotate(-34 17.0 46.0)"/><ellipse cx="22.2" cy="42.3" rx="8" ry="17" transform="rotate(-34 22.2 42.3)"/><ellipse cx="27.4" cy="38.6" rx="8" ry="17" transform="rotate(-34 27.4 38.6)"/><ellipse cx="32.6" cy="34.9" rx="8" ry="17" transform="rotate(-34 32.6 34.9)"/><ellipse cx="37.8" cy="31.2" rx="8" ry="17" transform="rotate(-34 37.8 31.2)"/><ellipse cx="43.0" cy="27.5" rx="8" ry="17" transform="rotate(-34 43.0 27.5)"/><ellipse cx="48.2" cy="23.8" rx="8" ry="17" transform="rotate(-34 48.2 23.8)"/><ellipse cx="53.4" cy="20.1" rx="8" ry="17" transform="rotate(-34 53.4 20.1)"/></svg>
-                            <h3 class="text-[15px] font-semibold">Physics Engine</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Contact-rich dynamics, articulated chains, and soft-body simulation at real-time-plus speeds.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">R.02</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="16" cy="54" r="2.6" fill="currentColor" stroke="none"/><path d="M16 54 L54.99 41.33"/><path d="M16 54 L49.99 31.07"/><path d="M16 54 L42.35 22.59"/><path d="M16 54 L32.68 16.54"/><path d="M36.38 48.92 A21 21 0 0 1 23.18 34.27"/><path d="M48.02 46.02 A33 33 0 0 1 27.29 22.99"/></svg>
-                            <h3 class="text-[15px] font-semibold">Sensor Simulation</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Ray-traced LiDAR, depth cameras, IMUs, and force-torque rigs with calibrated noise models.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">R.03</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="28" cy="36" r="17" fill="url(#gm-hatch)" stroke="none"/><circle cx="28" cy="36" r="17"/><circle cx="46" cy="36" r="17"/></svg>
-                            <h3 class="text-[15px] font-semibold">Digital Twins</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Mirror physical fleets in real time — replay incidents, test updates, predict wear.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">R.04</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="13.5" r="5.2"/><circle cx="28.5" cy="13.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="43.5" cy="13.5" r="5.2"/><circle cx="58.5" cy="13.5" r="5.2"/><circle cx="13.5" cy="28.5" r="5.2"/><circle cx="28.5" cy="28.5" r="5.2"/><circle cx="43.5" cy="28.5" r="5.2"/><circle cx="58.5" cy="28.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="13.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="28.5" cy="43.5" r="5.2"/><circle cx="43.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="58.5" cy="43.5" r="5.2"/><circle cx="13.5" cy="58.5" r="5.2"/><circle cx="28.5" cy="58.5" r="5.2"/><circle cx="43.5" cy="58.5" r="5.2"/><circle cx="58.5" cy="58.5" r="5.2"/></svg>
-                            <h3 class="text-[15px] font-semibold">RL Training Farm</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Massively parallel reinforcement learning with curriculum scheduling and domain randomization.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">R.05</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="24"/><circle cx="36" cy="36" r="6.5" fill="currentColor" stroke="none"/><circle cx="36.0" cy="12.0" r="4.2" fill="#fff"/><circle cx="15.22" cy="48.0" r="4.2" fill="#fff"/><circle cx="56.78" cy="48.0" r="4.2" fill="#fff"/></svg>
-                            <h3 class="text-[15px] font-semibold">Fleet Orchestration</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Staged policy rollouts to heterogeneous fleets, with instant rollback.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">R.06</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><rect x="12" y="12" width="32" height="32" fill="url(#gm-hatch)" stroke="none"/><rect x="12" y="12" width="32" height="32"/><circle cx="46" cy="40" r="16"/></svg>
-                            <h3 class="text-[15px] font-semibold">Hardware-in-the-Loop</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Real controllers bridged into virtual worlds for certification-grade validation.</p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="tab-panel" id="tab-software" role="tabpanel" aria-labelledby="tabbtn-software" hidden>
-                    <div class="hair-grid">
-                        <div class="hair-cell">
-                            <span class="cap-num">S.01</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="26" cy="28" r="13"/><circle cx="46" cy="28" r="13"/><circle cx="36" cy="46" r="13" fill="currentColor" stroke="none"/></svg>
-                            <h3 class="text-[15px] font-semibold">Agentic Operations</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">AI agents that triage, investigate, and resolve — with governed autonomy and audit trails.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">S.02</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="25"/><path d="M36 16 L56 36 L36 56 L16 36 Z" fill="url(#gm-hatch)" stroke="none"/><path d="M36 16 L56 36 L36 56 L16 36 Z"/></svg>
-                            <h3 class="text-[15px] font-semibold">Security Engineering</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Zero-trust access, data classification, and label-aware enforcement at the point of action.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">S.03</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="9"/><circle cx="36" cy="36" r="17"/><circle cx="36" cy="36" r="25"/><path d="M61.0 36.0 L67.0 36.0"/><path d="M36.0 11.0 L36.0 5.0"/><path d="M11.0 36.0 L5.0 36.0"/><path d="M36.0 61.0 L36.0 67.0"/><circle cx="48" cy="25" r="3.2" fill="currentColor" stroke="none"/></svg>
-                            <h3 class="text-[15px] font-semibold">Autonomous Recon</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Continuous discovery and monitoring of digital terrain, surfacing change before it bites.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">S.04</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><path d="M36 10 L62 36 L36 62 L10 36 Z"/><path d="M36 17 L55 36 L36 55 L17 36 Z"/><path d="M36 25 L47 36 L36 47 L25 36 Z" fill="currentColor" stroke="none"/></svg>
-                            <h3 class="text-[15px] font-semibold">Rust Platform Core</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Memory-safe, zero-cost-abstraction services shared across the Bohr Labs stack.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">S.05</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="13" fill="url(#gm-hatch)" stroke="none"/><circle cx="20" cy="36" r="13"/><circle cx="36" cy="36" r="13"/><circle cx="52" cy="36" r="13"/></svg>
-                            <h3 class="text-[15px] font-semibold">Software Factory</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Spec-to-shipped pipelines that assemble, test, and release systems automatically.</p>
-                        </div>
-                        <div class="hair-cell">
-                            <span class="cap-num">S.06</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><ellipse cx="36" cy="18" rx="20" ry="7" fill="url(#gm-hatch)" stroke="none"/><ellipse cx="36" cy="18" rx="20" ry="7"/><ellipse cx="36" cy="36" rx="20" ry="7"/><ellipse cx="36" cy="54" rx="20" ry="7"/><path d="M16 18 L16 54"/><path d="M56 18 L56 54"/></svg>
-                            <h3 class="text-[15px] font-semibold">Data &amp; Observability</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Telemetry collection, enrichment, and sensitivity-aware detection across distributed systems.</p>
-                        </div>
-                    </div>
-                </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ SYSTEMS IN PRODUCTION (hover row → detail panel) ═══════════ -->
-            <div id="showcase" class="bg-white pb-20 overflow-hidden">
-                <div class="max-w-[1240px] mx-auto px-6">
-                    <div class="sec-head pt-16 mb-9" data-reveal>
-                        <div class="sec-line">
-                            <span class="sec-num">03</span>
-                            <span class="sec-dash"></span>
-                            <span class="sec-label">PRODUCTS</span>
-                            <span class="sec-meta">SIM / SEN / SCT / FCT</span>
-                        </div>
-                        <h2 class="sec-title">Systems in production</h2>
-                    </div>
-
-                    <!-- ── trigger row: hover/tap a card to load it below ── -->
-                    <div class="ps-row" id="ps-row" role="tablist" aria-label="Shannon systems" data-reveal>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sim">
-                            <span class="ps-num">001</span>
-                            <span>
-                                <h3>Shannon Sim</h3>
-                                <p>The robotics simulator beneath every Shannon invention.</p>
-                            </span>
-                        </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sen">
-                            <span class="ps-num">002</span>
-                            <span>
-                                <h3>Shannon Sentinel</h3>
-                                <p>An agentic security operations center under governed autonomy.</p>
-                            </span>
-                        </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sct">
-                            <span class="ps-num">003</span>
-                            <span>
-                                <h3>Shannon Scout</h3>
-                                <p>Interviews recorded, transcribed, and scored — bilingual by design.</p>
-                            </span>
-                        </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-fct">
-                            <span class="ps-num">004</span>
-                            <span>
-                                <h3>Shannon Factory</h3>
-                                <p>An autonomous software factory — spec in, working systems out.</p>
-                            </span>
-                        </button>
-                    </div>
-
-                    <!-- ── detail panels: one per product, stacked in a fixed box ── -->
-                    <div class="ps-detail" data-reveal>
-                        <!-- filmstrip: the frame stays put, the four panels ride this track -->
-                        <div class="ps-track">
-                            <article class="ps-panel" id="ps-sim" role="tabpanel">
-                            <div class="ps-shot">
-                            <div class="win ps-win flex flex-col">
-                                <div class="win-bar">
-                                    <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
-                                    <span class="font-mono text-[10px] text-white/35 ml-2">shannon-sim · warehouse_04</span>
-                                </div>
-                                <div class="relative flex-1 flex">
-                                    <span class="anno-chip" style="top:14px; right:14px">PHYSICS 0.5MS</span>
-                                    <span class="anno-chip" style="bottom:14px; left:14px">256 ENVS PARALLEL</span>
-                                    <div class="relative w-28 border-r border-white/10 p-3 space-y-2">
-                                        <div class="skel-blue h-2 w-14"></div>
-                                        <div class="skel h-2 w-16"></div><div class="skel h-2 w-12"></div>
-                                        <div class="skel h-2 w-16"></div><div class="skel h-2 w-10"></div>
-                                    </div>
-                                    <div class="relative flex-1 p-4 flex flex-col gap-3">
-                                        <div class="flex gap-3">
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                        </div>
-                                        <div class="flex-1 pb-5">
-                                            <!-- training curve drawn out of the dot field, not flat bars -->
-                                            <svg class="dot-chart" viewBox="0 0 300 110" preserveAspectRatio="none" aria-hidden="true">
-                                                <path d="M0,110 L0.0,88 L20.0,74 L40.0,79 L60.0,58 L80.0,63 L100.0,41 L120.0,46 L140.0,30 L160.0,34 L180.0,22 L200.0,26 L220.0,16 L240.0,18 L260.0,13 L280.0,14 L300.0,11 L300,110 Z" fill="url(#dot-blue)" opacity=".55"/>
-                                                <polyline points="0.0,88 20.0,74 40.0,79 60.0,58 80.0,63 100.0,41 120.0,46 140.0,30 160.0,34 180.0,22 200.0,26 220.0,16 240.0,18 260.0,13 280.0,14 300.0,11" fill="none" stroke="#4C7EFF"
-                                                          stroke-width="3.2" stroke-linecap="round" stroke-dasharray="0 7"
-                                                          vector-effect="non-scaling-stroke"/>
-                                            </svg>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        
-                            </div>
-                            <div class="ps-body">
-                                <span class="ps-eyebrow">SIM.01 · FLAGSHIP</span>
-                                <h3 class="ps-title">Shannon Sim</h3>
-                                <p class="ps-desc">The robotics simulator beneath every Shannon invention. Physics-accurate worlds where machines are designed, trained, and validated before the first bolt is tightened.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
-                                <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Deterministic solver · 0.5ms physics step</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>256+ GPU-batched environments per node</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>CAD / URDF import with validated asset library</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Sim-to-real gap measured at 2.1%</p></div>
-                                </div>
-                            
-                            </div>
-                        </article>
-
-                            <article class="ps-panel" id="ps-sen" role="tabpanel">
-                            <div class="ps-shot">
-                            <div class="win ps-win flex flex-col">
-                                <div class="win-bar">
-                                    <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
-                                    <span class="font-mono text-[10px] text-white/35 ml-2">shannon-sentinel · triage</span>
-                                </div>
-                                <div class="relative flex-1 p-4 space-y-2.5 flex flex-col justify-center">
-                                    <span class="anno-chip" style="top:14px; right:14px">GOVERNED AUTONOMY</span>
-                                    <span class="anno-chip" style="bottom:14px; left:14px">AUDIT LOG SEALED</span>
-                                    <div class="relative flex items-center gap-3">
-                                        <div class="skel-blue h-2 w-2 rounded-full"></div>
-                                        <div class="skel h-2 flex-1"></div><div class="skel h-2 w-10"></div>
-                                    </div>
-                                    <div class="relative flex items-center gap-3">
-                                        <div class="skel-blue h-2 w-2 rounded-full"></div>
-                                        <div class="skel h-2 flex-1"></div><div class="skel h-2 w-8"></div>
-                                    </div>
-                                    <div class="relative flex items-center gap-3">
-                                        <div class="skel h-2 w-2 rounded-full"></div>
-                                        <div class="skel h-2 flex-1"></div><div class="skel h-2 w-12"></div>
-                                    </div>
-                                    <div class="relative mt-4 rounded-lg border border-white/10 p-3 space-y-2">
-                                        <div class="skel-blue h-2 w-24"></div>
-                                        <div class="skel h-2 w-full"></div>
-                                        <div class="skel h-2 w-4/5"></div>
-                                        <div class="skel h-2 w-3/5"></div>
-                                    </div>
-                                </div>
-                            </div>
-                        
-                            </div>
-                            <div class="ps-body">
-                                <span class="ps-eyebrow">SEN.02 · ACTIVE</span>
-                                <h3 class="ps-title">Shannon Sentinel</h3>
-                                <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
-                                <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Classify · Evaluate · Enforce architecture</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>Fail-closed decision function on every request</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>Tamper-evident audit log at the point of action</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Fully self-hostable inside your environment</p></div>
-                                </div>
-                            
-                            </div>
-                        </article>
-
-                            <article class="ps-panel" id="ps-sct" role="tabpanel">
-                            <div class="ps-shot">
-                                <!-- live demo reel, not a static mock — the file already draws its
-                                     own browser chrome, so no .win wrapper here. ?embed=1 hides its
-                                     internal play/pause/replay bar (it autoplays and loops on its own);
-                                     drop the query param to get those controls back if this ever moves
-                                     somewhere it should be user-driven instead of ambient. -->
-                                <iframe class="ps-demo-frame" src="shannon-scout-demo.html?embed=1"
-                                        title="Shannon Scout product demo" loading="lazy"></iframe>
-                            </div>
-                            <div class="ps-body">
-                                <span class="ps-eyebrow">SCT.03 · BETA</span>
-                                <h3 class="ps-title">Shannon Scout</h3>
-                                <p class="ps-desc">An AI recruiter that sits in on every interview. It transcribes and scores the conversation as it happens — in Bahasa Indonesia and English, code-switching included — then hands you a ranked shortlist with the reasoning attached.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
-                                <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Bilingual transcription — Bahasa, English, code-switches included</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>Live interview room with real-time speech and key-term detection</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>Candidate ranking scored straight from the transcript, timestamped</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Every decision logged — a tamper-evident audit trail</p></div>
-                                </div>
-
-                            </div>
-                        </article>
-
-                            <article class="ps-panel" id="ps-fct" role="tabpanel">
-                            <div class="ps-shot">
-                            <div class="win ps-win flex flex-col">
-                                <div class="win-bar">
-                                    <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
-                                    <span class="font-mono text-[10px] text-white/35 ml-2">shannon-factory · pipeline</span>
-                                </div>
-                                <div class="relative flex-1 p-5 flex flex-col justify-center gap-4">
-                                    <span class="anno-chip" style="top:14px; right:14px">BUILD #4021</span>
-                                    <span class="anno-chip" style="bottom:14px; left:14px">AUTONOMOUS</span>
-                                    <div class="relative flex items-center gap-2">
-                                        <div class="skel h-7 flex-1 rounded"></div>
-                                        <span class="text-white/25 text-xs">→</span>
-                                        <div class="skel-blue h-7 flex-1 rounded"></div>
-                                        <span class="text-white/25 text-xs">→</span>
-                                        <div class="skel h-7 flex-1 rounded"></div>
-                                        <span class="text-white/25 text-xs">→</span>
-                                        <div class="skel h-7 flex-1 rounded"></div>
-                                    </div>
-                                    <div class="relative h-[92px]">
-                                        <!-- build throughput, stepped: same dot language as the Sim card -->
-                                        <svg class="dot-chart" viewBox="0 0 300 92" preserveAspectRatio="none" aria-hidden="true">
-                                            <path d="M0,92 L0.0,82 L23.1,82 L46.2,68 L69.2,68 L92.3,55 L115.4,55 L138.5,44 L161.5,44 L184.6,30 L207.7,30 L230.8,19 L253.8,19 L276.9,10 L300.0,10 L300,92 Z" fill="url(#dot-dim)"/>
-                                            <polyline points="0.0,82 23.1,82 46.2,68 69.2,68 92.3,55 115.4,55 138.5,44 161.5,44 184.6,30 207.7,30 230.8,19 253.8,19 276.9,10 300.0,10" fill="none" stroke="#4C7EFF"
-                                                      stroke-width="3" stroke-linecap="round" stroke-dasharray="0 6.5"
-                                                      vector-effect="non-scaling-stroke"/>
-                                        </svg>
-                                    </div>
-                                </div>
-                            </div>
-                        
-                            </div>
-                            <div class="ps-body">
-                                <span class="ps-eyebrow">FCT.04 · IN BUILD</span>
-                                <h3 class="ps-title">Shannon Factory</h3>
-                                <p class="ps-desc">An autonomous software factory — specification in, working systems out. Software produced the way a plant produces parts, at a rate a team cannot match by hand.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
-                                <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Spec → plan → build → verify, end to end</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>Every artifact traced to the line that asked for it</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>Test and review gates that cannot be skipped</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Runs on the same Rust core as the rest</p></div>
-                                </div>
-                            
-                            </div>
-                        </article>
-                        </div>
-                        <span class="anno-chip ps-counter">01 / 04</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ LIBRARY ═══════════ -->
-            <div id="library" class="bg-white px-6 pb-16 glass-stage">
-                <div class="max-w-[1240px] mx-auto">
-                <div class="sec-head pt-16 mb-9" data-reveal>
-                    <div class="sec-line">
-                        <span class="sec-num">04</span>
-                        <span class="sec-dash"></span>
-                        <span class="sec-label">LIBRARY</span>
-                        <span class="sec-meta">OPEN ACCESS</span>
-                    </div>
-                    <h2 class="sec-title"><span class="hl-soft">What we have learned,</span> written down.</h2>
-                </div>
-                <div class="lib-stack" id="lib-stack" data-reveal>
-
-                    <!-- ─── LIB.01 Publications (journals, papers, articles, notes) ─── -->
-                    <article class="lib-panel" data-lib-panel>
-                        <span class="lib-num">LIB.01</span>
-                        <span class="lib-glyph" aria-hidden="true">
-                            <svg viewBox="0 0 120 340" preserveAspectRatio="xMidYMid meet">
-                                <line class="gl" x1="10" y1="18"  x2="104" y2="18"  style="--len:94; --d:0s"/>
-                                <line class="gl" x1="10" y1="44"  x2="86"  y2="44"  style="--len:76; --d:.18s"/>
-                                <line class="gl" x1="10" y1="70"  x2="110" y2="70"  style="--len:100; --d:.36s"/>
-                                <line class="gl gl-blue" x1="10" y1="96" x2="72" y2="96" style="--len:62; --d:.54s"/>
-                                <line class="gl" x1="10" y1="122" x2="98"  y2="122" style="--len:88; --d:.72s"/>
-                                <line class="gl" x1="10" y1="148" x2="104" y2="148" style="--len:94; --d:.9s"/>
-                                <line class="gl" x1="10" y1="174" x2="64"  y2="174" style="--len:54; --d:1.08s"/>
-                                <line class="gl" x1="10" y1="200" x2="92"  y2="200" style="--len:82; --d:1.26s"/>
-                                <line class="gl" x1="10" y1="226" x2="106" y2="226" style="--len:96; --d:1.44s"/>
-                                <line class="gl" x1="10" y1="252" x2="76"  y2="252" style="--len:66; --d:1.62s"/>
-                                <line class="gl" x1="10" y1="278" x2="100" y2="278" style="--len:90; --d:1.8s"/>
-                                <line class="gl gl-blue" x1="10" y1="304" x2="48" y2="304" style="--len:38; --d:1.98s"/>
-                                <line class="gl-pulse" x1="10" y1="96"  x2="72" y2="96" style="--len:62"/>
-                                <line class="gl-pulse" x1="10" y1="304" x2="48" y2="304" style="--len:38; --pd:1.8s"/>
-                            </svg>
-                        </span>
-                        <button class="lib-tab" type="button" aria-expanded="false" aria-controls="lib-pub"
-                                aria-label="Publications — peer-reviewed papers and field notes"></button>
-                        <span class="lib-label">Publications<small>PAPERS · NOTES</small></span>
-
-                        <div class="lib-inner" id="lib-pub">
-                            <div class="lib-cap">
-                                <span>PEER-REVIEWED &amp; WRITTEN IN THE OPEN</span>
-                                <a href="library-publications.html">All publications ↗</a>
-                            </div>
-                            <div class="pub-list" data-pub>
-                                <div class="pub-item">
-                                    <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">PAPER</span>
-                                        <span>
-                                            <span class="pub-title">High-Fidelity Contact Dynamics for Sim-to-Real Transfer</span>
-                                            <span class="pub-by">Shannon Robotics Group</span>
-                                        </span>
-                                        <span class="pub-chev">›</span>
-                                    </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Contact is where simulation usually lies. We model compliant contact with
-                                        measured material response instead of tuned stiffness, and show policies trained in
-                                        the simulator holding their grasp success rate on hardware without retuning.</p>
-                                        <div class="pub-meta"><span>2026</span><span>PEER-REVIEWED</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
-                                </div>
-
-                                <div class="pub-item">
-                                    <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">PREPRINT</span>
-                                        <span>
-                                            <span class="pub-title">Agentic Autonomy Under Partial Observability</span>
-                                            <span class="pub-by">Shannon Dynamics</span>
-                                        </span>
-                                        <span class="pub-chev">›</span>
-                                    </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">A planner that reasons about what it cannot see. We give the agent an
-                                        explicit budget for information-gathering actions and measure how that budget trades
-                                        against task completion time across 400 simulated warehouse layouts.</p>
-                                        <div class="pub-meta"><span>2025</span><span>PREPRINT</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
-                                </div>
-
-                                <div class="pub-item">
-                                    <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">NOTE</span>
-                                        <span>
-                                            <span class="pub-title">What Breaks When You Simulate a Factory</span>
-                                            <span class="pub-by">Field notes from the team</span>
-                                        </span>
-                                        <span class="pub-chev">›</span>
-                                    </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Everything fits in CAD and nothing fits on the floor. A write-up of the
-                                        six assumptions that failed first when we rehearsed a real production line — and the
-                                        validation step we now run before any asset enters the simulator.</p>
-                                        <div class="pub-meta"><span>2025</span><span>ENGINEERING</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
-                                </div>
-
-                                <div class="pub-item">
-                                    <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">NOTE</span>
-                                        <span>
-                                            <span class="pub-title">Rust in the Control Loop</span>
-                                            <span class="pub-by">Field notes from the team</span>
-                                        </span>
-                                        <span class="pub-chev">›</span>
-                                    </button>
-                                    <div class="pub-body"><div><div class="pub-body-in">
-                                        <p class="pub-ex">Why the borrow checker earns its keep at 1 kHz. Allocation discipline,
-                                        deterministic teardown, and the places we still reach for unsafe — with the latency
-                                        numbers that justified moving the loop off C++.</p>
-                                        <div class="pub-meta"><span>2024</span><span>ENGINEERING</span><a href="#">Read ↗</a></div>
-                                    </div></div></div>
-                                </div>
-                            </div>
-                        </div>
-                    </article>
-
-                    <!-- ─── LIB.02 Books ─── -->
-                    <article class="lib-panel" data-lib-panel>
-                        <span class="lib-num">LIB.02</span>
-                        <span class="lib-glyph" aria-hidden="true">
-                            <svg viewBox="0 0 120 340" preserveAspectRatio="xMidYMid meet">
-                                <line class="gl" x1="8" y1="318" x2="112" y2="318" style="--len:104; --d:0s"/>
-                                <line class="gl" x1="22"  y1="318" x2="22"  y2="150" style="--len:168; --d:.3s"/>
-                                <line class="gl" x1="40"  y1="318" x2="40"  y2="108" style="--len:210; --d:.5s"/>
-                                <line class="gl gl-blue gl-bold" x1="58" y1="318" x2="58" y2="72" style="--len:246; --d:.7s"/>
-                                <line class="gl" x1="76"  y1="318" x2="76"  y2="170" style="--len:148; --d:.9s"/>
-                                <line class="gl" x1="94"  y1="318" x2="94"  y2="126" style="--len:192; --d:1.1s"/>
-                                <line class="gl gl-blue" x1="110" y1="318" x2="110" y2="196" style="--len:122; --d:1.3s"/>
-                                <line class="gl-pulse" x1="8" y1="318" x2="112" y2="318" style="--len:104; --pd:.6s"/>
-                                <line class="gl-pulse" x1="58" y1="318" x2="58" y2="72" style="--len:246; --pd:2.1s"/>
-                            </svg>
-                        </span>
-                        <button class="lib-tab" type="button" aria-expanded="false" aria-controls="lib-books"
-                                aria-label="Books — long-form texts from the Shannon team"></button>
-                        <span class="lib-label">Books<small>LONG-FORM</small></span>
-
-                        <div class="lib-inner" id="lib-books">
-                            <div class="lib-cap">
-                                <span>SHANNON PRESS</span>
-                                <a href="library-books.html">Full catalogue ↗</a>
-                            </div>
-                            <div class="shelf-vp">
-                                <div class="shelf-track">
-                                    <!-- set A -->
-                                    <div class="book">
-                                        <p class="book-by"><b>Robotics in Rust</b><span>Shannon Press</span></p>
-                                        <a href="book-robotics-in-rust.html" class="book-cover bc-ink bc-v1"><span class="book-cover-t">Robotics in Rust</span></a>
-                                    </div>
-                                    <div class="book">
-                                        <p class="book-by"><b>Simulation-First Engineering</b><span>Shannon Press</span></p>
-                                        <a href="book-simulation-first-engineering.html" class="book-cover bc-blue bc-v2"><span class="book-cover-t">Simulation-First Engineering</span></a>
-                                    </div>
-                                    <div class="book">
-                                        <p class="book-by"><b>Machine Learning Systems</b><span>Shannon Press</span></p>
-                                        <a href="book-machine-learning-systems-in-rust.html" class="book-cover bc-paper bc-v1"><span class="book-cover-t">Machine Learning Systems in Rust</span></a>
-                                    </div>
-                                    <div class="book">
-                                        <p class="book-by"><b>Foundations of Sim-to-Real</b><span>Shannon Press</span></p>
-                                        <a href="book-foundations-of-sim-to-real.html" class="book-cover bc-ink bc-v3"><span class="book-cover-t">Foundations of Sim-to-Real</span></a>
-                                    </div>
-                                    <div class="book">
-                                        <p class="book-by"><b>The Agentic Machine</b><span>Shannon Press</span></p>
-                                        <a href="book-the-agentic-machine.html" class="book-cover bc-blue bc-v1"><span class="book-cover-t">The Agentic Machine</span></a>
-                                    </div>
-                                    <div class="book">
-                                        <p class="book-by"><b>Numerical Methods for Robotics</b><span>Shannon Press</span></p>
-                                        <a href="book-numerical-methods-for-robotics.html" class="book-cover bc-paper bc-v2"><span class="book-cover-t">Numerical Methods for Robotics</span></a>
-                                    </div>
-                                    <!-- set B — duplicate, so the -50% drift loops seamlessly -->
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>Robotics in Rust</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-ink bc-v1"><span class="book-cover-t">Robotics in Rust</span></span>
-                                    </div>
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>Simulation-First Engineering</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-blue bc-v2"><span class="book-cover-t">Simulation-First Engineering</span></span>
-                                    </div>
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>Machine Learning Systems</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-paper bc-v1"><span class="book-cover-t">Machine Learning Systems in Rust</span></span>
-                                    </div>
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>Foundations of Sim-to-Real</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-ink bc-v3"><span class="book-cover-t">Foundations of Sim-to-Real</span></span>
-                                    </div>
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>The Agentic Machine</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-blue bc-v1"><span class="book-cover-t">The Agentic Machine</span></span>
-                                    </div>
-                                    <div class="book" aria-hidden="true">
-                                        <p class="book-by"><b>Numerical Methods for Robotics</b><span>Shannon Press</span></p>
-                                        <span class="book-cover bc-paper bc-v2"><span class="book-cover-t">Numerical Methods for Robotics</span></span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </article>
-
-                    <!-- ─── LIB.03 Open Source & Documentation ─── -->
-                    <article class="lib-panel" data-lib-panel>
-                        <span class="lib-num">LIB.03</span>
-                        <span class="lib-glyph" aria-hidden="true">
-                            <svg viewBox="0 0 120 340" preserveAspectRatio="xMidYMid meet">
-                                <line class="gl" x1="42" y1="16" x2="42" y2="324" style="--len:308; --d:0s"/>
-                                <path class="gl gl-blue" d="M42 76 C 82 92, 82 100, 82 138 L 82 196 C 82 234, 82 242, 42 258" style="--len:220; --d:.5s"/>
-                                <circle class="gl" cx="42" cy="44"  r="7" style="--len:44; --d:1s"/>
-                                <circle class="gl gl-blue gl-fill" cx="82" cy="167" r="7" style="--len:44; --d:1.3s"/>
-                                <circle class="gl" cx="42" cy="167" r="7" style="--len:44; --d:1.6s"/>
-                                <circle class="gl" cx="42" cy="296" r="7" style="--len:44; --d:1.9s"/>
-                                <line class="gl-pulse" x1="42" y1="16" x2="42" y2="324" style="--len:308"/>
-                                <path class="gl-pulse" d="M42 76 C 82 92, 82 100, 82 138 L 82 196 C 82 234, 82 242, 42 258" style="--len:220; --pd:1.2s"/>
-                            </svg>
-                        </span>
-                        <button class="lib-tab" type="button" aria-expanded="false" aria-controls="lib-oss"
-                                aria-label="Open source and documentation — repositories, guides and API reference"></button>
-                        <span class="lib-label">Open Source<small>REPOS · DOCS</small></span>
-
-                        <div class="lib-inner" id="lib-oss">
-                            <div class="lib-cap">
-                                <span>REPOSITORIES, GUIDES &amp; TYPED INTERFACES</span>
-                                <a href="library-open-source.html">All repos &amp; docs ↗</a>
-                            </div>
-                            <div class="folders">
-                                <div class="folder fold-a" style="--i:0; --tx:0px">
-                                    <p class="fold-name">octomap-rs</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">Octree occupancy mapping in Rust — probabilistic updates, ray casting,
-                                        and serialisation, with no allocation on the update path.</p>
-                                        <p class="fold-meta"><span>RUST</span><span>APACHE-2.0</span>
-                                            <a href="https://github.com/Shannon-Dynamics" target="_blank" rel="noopener">Repository ↗</a></p>
-                                    </div>
-                                </div>
-                                <div class="folder fold-b" style="--i:1; --tx:214px">
-                                    <p class="fold-name">scan3d-rs</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">3D scan reconstruction — point-cloud registration through to a watertight
-                                        mesh the simulator can load directly as a collision asset.</p>
-                                        <p class="fold-meta"><span>RUST</span><span>APACHE-2.0</span>
-                                            <a href="https://github.com/Shannon-Dynamics" target="_blank" rel="noopener">Repository ↗</a></p>
-                                    </div>
-                                </div>
-                                <div class="folder fold-a" style="--i:2; --tx:96px">
-                                    <p class="fold-name">shannon-sdk / docs</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">Guides, tutorials and quickstarts — from importing a URDF to running your
-                                        first closed-loop rehearsal against a simulated cell.</p>
-                                        <p class="fold-meta"><span>DOCUMENTATION</span><span>VERSIONED</span>
-                                            <a href="library-open-source.html">Read the docs ↗</a></p>
-                                    </div>
-                                </div>
-                                <div class="folder fold-b" style="--i:3; --tx:310px">
-                                    <p class="fold-name">api-reference</p>
-                                    <div class="fold-body">
-                                        <p class="fold-desc">Typed interfaces for every Shannon system — generated from source, so the
-                                        reference and the shipped binary never drift apart.</p>
-                                        <p class="fold-meta"><span>REFERENCE</span><span>AUTO-GENERATED</span>
-                                            <a href="library-open-source.html">Browse API ↗</a></p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </article>
-
-                </div>
-                </div>
-            </div>
-
-            <!-- ═══════════ ECOSYSTEM ═══════════ -->
-            <div id="ecosystem" class="bg-white px-6 pb-20">
-                <div class="max-w-[1240px] mx-auto">
-                <div class="sec-head pt-16 mb-9" data-reveal>
-                    <div class="sec-line">
-                        <span class="sec-num">05</span>
-                        <span class="sec-dash"></span>
-                        <span class="sec-label">VENTURE NETWORK</span>
-                        <span class="sec-meta">BOHRLABS.ID</span>
-                    </div>
-                    <h2 class="sec-title">Part of Bohr Labs</h2>
-                </div>
-
-                <div class="flex flex-wrap items-center gap-x-10 gap-y-6 mb-10" data-reveal>
-                    <span class="vn-chip"><img src="src/BohrLabs_logo_white.png" alt="Bohr Labs" /></span>
-                    <p class="text-[13px] leading-6 text-slatebg/60 max-w-lg">
-                        Shannon is built inside Bohr Labs, a deep-tech venture builder — sharing a
-                        Rust-powered infrastructure core with its sibling companies.
+            <!-- ═══════════ PAGE BANNER ═══════════ -->
+            <div class="lp-banner tex tex-bottom">
+                <canvas class="halftone absolute inset-0" data-speed="1.6"></canvas>
+                <div class="lp-banner-in">
+                    <p class="lp-crumb">
+                        <a href="index-v3.html">SHANNON</a> /
+                        <a href="index-v3.html#library">LIBRARY</a> /
+                        <span class="on">BOOKS</span>
                     </p>
-                    <a href="https://bohrlabs.id" target="_blank" rel="noopener"
-                       class="text-[13px] font-medium text-accent underline underline-offset-4 decoration-accent/40 hover:decoration-accent transition-colors md:ml-auto">bohrlabs.id →</a>
-                </div>
-
-                <div data-reveal>
-                    <div class="vn-row is-self">
-                        <span class="vn-mark">SH</span>
-                        <span class="vn-name">Shannon Dynamics</span>
-                        <span class="vn-desc text-[12.5px] leading-6 text-slatebg/55">Simulation-first robotics — digital twins, RL at scale, embodied autonomy.</span>
-                        <span class="vn-here">YOU ARE HERE</span>
-                    </div>
-                    <a class="vn-row" href="https://rantai.dev" target="_blank" rel="noopener">
-                        <span class="vn-mark">RA</span>
-                        <span class="vn-name">RantAI</span>
-                        <span class="vn-desc text-[12.5px] leading-6 text-slatebg/55">Enterprise-scale agentic AI, engineered in Rust for regulated teams.</span>
-                        <span class="vn-go text-sm">↗</span>
-                    </a>
-                    <a class="vn-row" href="https://gaussian.id" target="_blank" rel="noopener">
-                        <span class="vn-mark">GA</span>
-                        <span class="vn-name">Gaussian</span>
-                        <span class="vn-desc text-[12.5px] leading-6 text-slatebg/55">Physics simulation for manufacturing and process industries.</span>
-                        <span class="vn-go text-sm">↗</span>
-                    </a>
-                    <a class="vn-row" href="https://dirac.id" target="_blank" rel="noopener">
-                        <span class="vn-mark">DR</span>
-                        <span class="vn-name">Dirac</span>
-                        <span class="vn-desc text-[12.5px] leading-6 text-slatebg/55">A research assistant for quantum computing — algorithms to hardware.</span>
-                        <span class="vn-go text-sm">↗</span>
-                    </a>
-                </div>
+                    <h1 class="lp-title">Long-form from Shannon &amp; RantAI Press</h1>
+                    <p class="lp-sub">Books written by the Shannon and RantAI teams on Rust, robotics and machine learning — the long-form counterpart to the papers and notes.</p>
                 </div>
             </div>
 
-            <!-- ═══════════ CTA BANNER — contact form ═══════════ -->
+            <!-- ═══════════ CONTENT ═══════════ -->
+            <div class="lp-body">
+                <div class="lp-wrap">
+                <div class="lp-bar" data-reveal>
+                    <span>SHANNON &amp; RANTAI PRESS</span>
+                    <span class="lp-count">6 TITLES</span>
+                </div>
+                <div class="bk-grid">
+                    <article class="bk" data-reveal>
+                        <a href="book-robotics-in-rust.html" class="book-cover bc-ink bc-v1"><span class="book-cover-t">Robotics in Rust</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-robotics-in-rust.html">Robotics in Rust</a></h2>
+                            <p class="bk-a">Shannon Press</p>
+                            <p class="bk-d">Building robot control software in Rust — from real-time constraints and hardware interfaces through to a full manipulation stack, with the borrow checker as a design tool rather than an obstacle.</p>
+                            <p class="bk-f"><span>2026 · 512 PP</span><a href="book-robotics-in-rust.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                    <article class="bk" data-reveal>
+                        <a href="book-simulation-first-engineering.html" class="book-cover bc-blue bc-v2"><span class="book-cover-t">Simulation-First Engineering</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-simulation-first-engineering.html">Simulation-First Engineering</a></h2>
+                            <p class="bk-a">Shannon Press</p>
+                            <p class="bk-d">The method behind the company: rehearse the machine before it exists. Covers scene construction, validation discipline, and how to decide when a simulation is trustworthy enough to build against.</p>
+                            <p class="bk-f"><span>2026 · 384 PP</span><a href="book-simulation-first-engineering.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                    <article class="bk" data-reveal>
+                        <a href="book-machine-learning-systems-in-rust.html" class="book-cover bc-paper bc-v1"><span class="book-cover-t">Machine Learning Systems in Rust</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-machine-learning-systems-in-rust.html">Machine Learning Systems in Rust</a></h2>
+                            <p class="bk-a">RantAI</p>
+                            <p class="bk-d">Training and serving ML systems in a memory-safe stack — data pipelines, GPU batching, and the deployment patterns that survive contact with production.</p>
+                            <p class="bk-f"><span>2025 · 640 PP</span><a href="book-machine-learning-systems-in-rust.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                    <article class="bk" data-reveal>
+                        <a href="book-foundations-of-sim-to-real.html" class="book-cover bc-ink bc-v3"><span class="book-cover-t">Foundations of Sim-to-Real</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-foundations-of-sim-to-real.html">Foundations of Sim-to-Real</a></h2>
+                            <p class="bk-a">Shannon Press</p>
+                            <p class="bk-d">Why policies trained in simulation fail on hardware, and what actually closes the gap. Domain randomisation, system identification, and honest measurement of transfer.</p>
+                            <p class="bk-f"><span>2025 · 448 PP</span><a href="book-foundations-of-sim-to-real.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                    <article class="bk" data-reveal>
+                        <a href="book-the-agentic-machine.html" class="book-cover bc-blue bc-v1"><span class="book-cover-t">The Agentic Machine</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-the-agentic-machine.html">The Agentic Machine</a></h2>
+                            <p class="bk-a">RantAI</p>
+                            <p class="bk-d">Designing agents that act under governance — decision functions, audit trails, and the architecture that keeps autonomy accountable when it touches real systems.</p>
+                            <p class="bk-f"><span>2025 · 296 PP</span><a href="book-the-agentic-machine.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                    <article class="bk" data-reveal>
+                        <a href="book-numerical-methods-for-robotics.html" class="book-cover bc-paper bc-v2"><span class="book-cover-t">Numerical Methods for Robotics</span></a>
+                        <div class="bk-meta">
+                            <h2 class="bk-t"><a href="book-numerical-methods-for-robotics.html">Numerical Methods for Robotics</a></h2>
+                            <p class="bk-a">Shannon Press</p>
+                            <p class="bk-d">The mathematics under the solver: integrators, constraint formulations, and the numerical failure modes that quietly ruin a physics engine.</p>
+                            <p class="bk-f"><span>2024 · 576 PP</span><a href="book-numerical-methods-for-robotics.html">Details ↗</a></p>
+                        </div>
+                    </article>
+                </div>
+
+                    <!-- ── the other two Library pages ── -->
+                    <nav class="lp-more" data-reveal aria-label="More from the Library">
+                    <a href="library-publications.html">
+                        <span>LIB.01</span>
+                        <b>Publications<small>Papers, preprints and field notes</small></b>
+                        <em>↗</em>
+                    </a>
+                    <a href="library-open-source.html">
+                        <span>LIB.03</span>
+                        <b>Open Source<small>Repositories, guides and API reference</small></b>
+                        <em>↗</em>
+                    </a>
+                    </nav>
+                </div>
+            </div>
+
+<!-- ═══════════ CTA BANNER — contact form ═══════════ -->
             <div id="contact" class="relative bg-graphite tex tex-cta py-20 md:py-28">
                 <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
                 <div class="relative max-w-[1240px] mx-auto px-6 grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
@@ -1983,7 +1414,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
 
     <script>
-        /* ---------- smooth scroll ---------- */
+/* ---------- smooth scroll ---------- */
         const lenis = new Lenis({ lerp: 0.1 });
         function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
         requestAnimationFrame(raf);
@@ -2045,228 +1476,6 @@
                 scrollTrigger: { trigger: el, start: "top 90%" }
             });
         });
-
-        /* ---------- capability tabs ---------- */
-        (function () {
-            const btns = [...document.querySelectorAll(".tab-btn")];
-            btns.forEach(btn => {
-                btn.addEventListener("click", () => {
-                    btns.forEach(b => {
-                        const on = b === btn;
-                        b.setAttribute("aria-selected", on ? "true" : "false");
-                        const panel = document.getElementById(b.getAttribute("aria-controls"));
-                        if (panel) panel.hidden = !on;
-                    });
-                    const active = document.getElementById(btn.getAttribute("aria-controls"));
-                    if (active) gsap.fromTo(active, { y: 10, opacity: 0 }, { y: 0, opacity: 1, duration: .4, ease: "power2.out" });
-                });
-            });
-        })();
-
-        /* ---------- library: expanding panels ----------
-           Widths come from flex-grow (open 6 : shut 1) so the row always adds
-           up to the container, whatever it measures. The body inside each
-           panel is absolutely positioned at the open width — --lib-openw — so
-           it stays un-squashed while the panel narrows around it. */
-        (function () {
-            const stack = document.getElementById("lib-stack");
-            if (!stack) return;
-            const panels = [...stack.querySelectorAll("[data-lib-panel]")];
-            if (!panels.length) return;
-
-            const OPEN = 6, SHUT = 1, GAP = 8;
-            const desktop = matchMedia("(min-width: 1024px)");
-            let current = 0;
-
-            function measure() {
-                const inner = stack.clientWidth - GAP * (panels.length - 1);
-                const share = OPEN / (OPEN + SHUT * (panels.length - 1));
-                stack.style.setProperty("--lib-openw", (inner * share) + "px");
-            }
-
-            function open(i) {
-                current = i;
-                panels.forEach((p, j) => {
-                    const on = j === i;
-                    p.classList.toggle("is-open", on);
-                    p.style.flexGrow = on ? OPEN : SHUT;
-                    p.querySelector(".lib-tab").setAttribute("aria-expanded", String(on));
-                });
-            }
-
-            panels.forEach((p, i) => {
-                const tab = p.querySelector(".lib-tab");
-                /* hover drives it on a real pointer; the tab button keeps it
-                   reachable by click, tap and keyboard everywhere else */
-                p.addEventListener("mouseenter", () => { if (desktop.matches) open(i); });
-                tab.addEventListener("click", () => open(i));
-                tab.addEventListener("focus", () => open(i));
-                /* focus moving into the open body must not let a stale panel win */
-                p.addEventListener("focusin", () => { if (desktop.matches && current !== i) open(i); });
-            });
-
-            measure();
-            open(0);
-            addEventListener("resize", measure);
-        })();
-
-        /* ---------- publications: accordion card stack ----------
-           One open card at a time. Heights animate through grid-template-rows
-           0fr → 1fr, so the excerpts stay in normal flow and nothing needs a
-           measured pixel height. */
-        (function () {
-            const list = document.querySelector("[data-pub]");
-            if (!list) return;
-            const items = [...list.querySelectorAll(".pub-item")];
-            const fine = matchMedia("(hover: hover) and (pointer: fine)");
-            let timer;
-
-            function show(item) {
-                items.forEach(o => {
-                    const on = o === item;
-                    o.classList.toggle("is-on", on);
-                    o.querySelector(".pub-head").setAttribute("aria-expanded", String(on));
-                });
-            }
-
-            items.forEach(item => {
-                item.querySelector(".pub-head").addEventListener("click", () => {
-                    clearTimeout(timer);
-                    show(item);
-                });
-                item.addEventListener("mouseenter", () => {
-                    if (!fine.matches) return;
-                    clearTimeout(timer);
-                    timer = setTimeout(() => show(item), 110);   // no thrash while crossing rows
-                });
-            });
-            list.addEventListener("mouseleave", () => clearTimeout(timer));
-
-            show(items[0]);
-        })();
-
-        /* ---------- folders: keyboard parity for the hover lift ----------
-           CSS handles the pointer case with `.folder:hover ~ .folder`; this
-           mirrors it for focus so tabbing through the links opens the same
-           window onto each folder's body. */
-        (function () {
-            const stacks = document.querySelectorAll(".folders");
-            stacks.forEach(stack => {
-                const folders = [...stack.querySelectorAll(".folder")];
-                folders.forEach(f => {
-                    f.addEventListener("focusin", () => {
-                        folders.forEach(o => o.classList.toggle("is-lift", o === f));
-                    });
-                });
-                stack.addEventListener("focusout", e => {
-                    if (!stack.contains(e.relatedTarget)) folders.forEach(o => o.classList.remove("is-lift"));
-                });
-            });
-        })();
-
-        /* ---------- product showcase: trigger row slides the filmstrip ----------
-           A tablist where hover counts as selection on a real pointer. The four
-           full panels sit on one horizontal track inside a fixed frame;
-           selecting a product slides the track to it, and the arriving panel's
-           copy staggers in as the strip settles. `inert` keeps off-screen
-           panels out of the tab order. */
-        (function () {
-            const row = document.getElementById("ps-row");
-            if (!row) return;
-            const tabs = [...row.querySelectorAll(".ps-card")];
-            const panels = tabs.map(t => document.getElementById(t.getAttribute("aria-controls")));
-            const track = document.querySelector(".ps-track");
-            const counter = document.querySelector(".ps-counter");
-            const fine = matchMedia("(hover: hover) and (pointer: fine)");
-            let timer;
-
-            function show(i) {
-                tabs.forEach((t, j) => t.setAttribute("aria-selected", String(j === i)));
-                if (track) track.style.transform = `translateX(-${i * 100}%)`;
-                panels.forEach((p, j) => {
-                    if (!p) return;
-                    p.classList.toggle("is-on", j === i);
-                    p.toggleAttribute("inert", j !== i);
-                });
-                if (counter) counter.textContent = String(i + 1).padStart(2, "0") + " / 04";
-            }
-
-            tabs.forEach((tab, i) => {
-                tab.addEventListener("click", () => { clearTimeout(timer); show(i); });
-                tab.addEventListener("focus", () => show(i));
-                tab.addEventListener("mouseenter", () => {
-                    if (!fine.matches) return;
-                    clearTimeout(timer);
-                    timer = setTimeout(() => show(i), 90);   // no thrash while sweeping across
-                });
-            });
-            row.addEventListener("mouseleave", () => clearTimeout(timer));
-
-            show(0);
-        })();
-
-        /* ---------- contact form ----------
-           No backend on this page, so there is nothing to POST to yet — this
-           composes a mailto: with the fields folded into the subject/body and
-           hands off to the visitor's own mail client, which is the one
-           contact mechanism that genuinely works with zero server. The hint
-           under the button says exactly that, so nobody reads "Send message"
-           as "this silently went somewhere."
-           Swap in a real backend by replacing the body of the setTimeout
-           below with a fetch() POST to whatever endpoint you wire up
-           (Formspree, Netlify Forms, your own API) — the validation and
-           status UI need no change. */
-        (function () {
-            const form = document.getElementById("contact-form");
-            if (!form) return;
-            const status = document.getElementById("cta-status");
-
-            const fields = [
-                { el: form.elements.name, err: "cf-name-err", check: v => v.trim().length > 0 },
-                { el: form.elements.email, err: "cf-email-err", check: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) },
-                { el: form.elements.message, err: "cf-message-err", check: v => v.trim().length > 0 },
-            ];
-
-            function setStatus(kind, msg) {
-                status.className = "cta-status is-on is-" + kind;
-                status.textContent = msg;
-            }
-
-            form.addEventListener("submit", e => {
-                e.preventDefault();
-                status.className = "cta-status";
-
-                let firstBad = null;
-                fields.forEach(f => {
-                    const bad = !f.check(f.el.value);
-                    f.el.setAttribute("aria-invalid", String(bad));
-                    document.getElementById(f.err).classList.toggle("is-on", bad);
-                    if (bad && !firstBad) firstBad = f.el;
-                });
-                if (firstBad) { firstBad.focus(); return; }
-
-                form.classList.add("is-sending");
-                const submitBtn = form.querySelector(".cta-submit");
-                submitBtn.disabled = true;
-
-                // brief, deliberate pause — opening the mail client is instant,
-                // but a jump-cut there reads as broken rather than handled
-                setTimeout(() => {
-                    const subject = "Enquiry from " + form.elements.name.value.trim();
-                    const body = "From: " + form.elements.name.value.trim() + " <" + form.elements.email.value.trim() + ">\n\n"
-                        + form.elements.message.value.trim();
-                    const mailto = "mailto:office@shannon.id"
-                        + "?subject=" + encodeURIComponent(subject)
-                        + "&body=" + encodeURIComponent(body);
-
-                    window.location.href = mailto;
-
-                    form.classList.remove("is-sending");
-                    submitBtn.disabled = false;
-                    setStatus("ok", "Opening your email client with this filled in — hit send there and it reaches us directly.");
-                }, 550);
-            });
-        })();
 
         /* ---------- animated halftone moiré texture + magnetic hover lens ---------- */
         document.querySelectorAll(".halftone").forEach(canvas => {

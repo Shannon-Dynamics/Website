@@ -1,0 +1,1186 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shannon Scout — Product Demo Reel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Lora:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   SHANNON SCOUT — PRODUCT DEMO REEL
+   Design tokens lifted directly from the repo (tailwind.config.ts
+   + app/globals.css) so the reel is pixel-honest to the product.
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --primary:#0E5E6F; --primary-light:#E6F4F7; --primary-dark:#09414D;
+  --n0:#FFFFFF; --n50:#F7F8F8; --n100:#ECEEF0; --n200:#D5D9DC;
+  --n300:#BFC5C9; --n400:#8D969E; --n700:#2E3538; --n900:#0F1517;
+  --success:#1A7F4B; --success-light:#E8F5EE;
+  --warning:#B45309; --warning-light:#FEF3E2;
+  --danger:#C0392B;  --danger-light:#FDECEA;
+  --cs:#5B4FF5; --cs-light:#EEF2FF;
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-cam:cubic-bezier(.62,.02,.24,1);   /* camera: weighted, film-like */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0B1113;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+body{font-family:'Inter',system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;
+     justify-content:center;min-height:100vh;padding:24px;gap:16px}
+
+/* ── Stage: fixed 1440×810 design space, scaled to fit ───────────── */
+#wrap{width:100%;max-width:1440px;aspect-ratio:16/9;position:relative;
+      border-radius:14px;overflow:hidden;background:var(--n900);
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.06)}
+#root{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:top left;
+      background:var(--n50);overflow:hidden}
+
+/* ── Camera: scripted push-ins / pull-backs over the whole app ───── */
+#cam{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:0 0;
+     transition:transform 1.4s var(--ease-cam);will-change:transform;backface-visibility:hidden}
+/* ── Drift: slow ambient breathing so no frame is ever fully still ─ */
+#drift{position:absolute;inset:0;transform-origin:50% 50%;
+       animation:drift 26s ease-in-out infinite alternate}
+@keyframes drift{
+  0%  {transform:scale(1.012) translate(-4px,-2px)}
+  50% {transform:scale(1.024) translate(3px,-4px)}
+  100%{transform:scale(1.014) translate(4px,3px)}
+}
+
+/* ── Browser chrome ──────────────────────────────────────────────── */
+#chrome{height:44px;background:#EDEFF1;border-bottom:1px solid var(--n200);
+        display:flex;align-items:center;gap:14px;padding:0 16px;position:relative;z-index:6}
+.lights{display:flex;gap:7px}
+.lights i{width:11px;height:11px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}
+.lights i:nth-child(3){background:#28C840}
+#urlpill{flex:1;max-width:520px;height:26px;background:#fff;border:1px solid var(--n200);
+         border-radius:13px;display:flex;align-items:center;gap:7px;padding:0 12px;
+         font-size:11.5px;color:var(--n400);font-family:'Inter'}
+#urlpill b{color:var(--n700);font-weight:500}
+#urlpath{transition:opacity .25s}
+.lock{width:9px;height:9px;flex:none;color:var(--success)}
+
+/* ── App shell ───────────────────────────────────────────────────── */
+#app{height:766px;display:flex;position:relative;background:#fff}
+
+/* Sidebar */
+#sidebar{width:240px;flex:none;background:#fff;border-right:1px solid var(--n200);
+         display:flex;flex-direction:column;
+         transform:translateX(-240px);transition:transform .7s var(--ease-out)}
+#sidebar.in{transform:none}
+.sb-logo{display:flex;align-items:center;gap:12px;padding:16px;border-bottom:1px solid var(--n200)}
+.mark{width:32px;height:32px;border-radius:9px;background:var(--primary);flex:none;
+      display:flex;align-items:center;justify-content:center;color:#fff}
+.sb-logo p{font-size:13px;font-weight:700;color:var(--n900);line-height:1.25}
+.sb-logo span{font-size:11px;color:var(--n400);line-height:1.25;display:block}
+.tenant{margin:8px 12px;padding:8px 12px;background:var(--n50);border:1px solid var(--n200);
+        border-radius:8px;display:flex;align-items:center;justify-content:space-between}
+.tenant .av{width:20px;height:20px;border-radius:5px;background:var(--primary-light);
+            display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:var(--primary)}
+.tenant .nm{font-size:11px;font-weight:500;color:var(--n700)}
+.tenant .lft{display:flex;align-items:center;gap:8px}
+nav{flex:1;padding:8px}
+.nv{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:6px;font-size:13px;
+    color:var(--n700);margin-bottom:2px;border-left:2px solid transparent;
+    opacity:0;transform:translateX(-8px);transition:opacity .4s,transform .4s var(--ease-out),background .18s}
+.nv.in{opacity:1;transform:none}
+.nv.dim{color:var(--n400)}
+.nv.hot{background:var(--n50)}
+.nv.act{background:var(--primary-light);color:var(--primary);border-left-color:var(--primary);font-weight:500}
+.nv svg{width:16px;height:16px;flex:none}
+.sb-div{margin:8px 12px;border-top:1px solid var(--n100)}
+.sb-lbl{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--n400);
+        padding:8px 12px 4px;font-weight:600}
+.sb-user{padding:12px;border-top:1px solid var(--n200);display:flex;align-items:center;gap:10px}
+.sb-user .av{width:28px;height:28px;border-radius:50%;background:var(--primary-light);color:var(--primary);
+             display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700}
+.sb-user p{font-size:11.5px;font-weight:600;color:var(--n700);line-height:1.3}
+.sb-user span{font-size:10px;color:var(--n400)}
+
+/* Main + scenes */
+#main{flex:1;position:relative;overflow:hidden;background:#fff}
+.scene{position:absolute;inset:0;display:flex;flex-direction:column;
+       opacity:0;visibility:hidden;transform:translateX(34px) scale(.985);filter:blur(7px);
+       transition:opacity .5s ease,transform .7s var(--ease-out),filter .5s ease,visibility .5s}
+.scene.active{opacity:1;visibility:visible;transform:none;filter:blur(0)}
+.scene.out{transform:translateX(-22px) scale(.99);filter:blur(5px)}
+
+/* Page header */
+.phead{padding:16px 24px;border-bottom:1px solid var(--n200);display:flex;
+       align-items:flex-start;justify-content:space-between;
+       opacity:0;transform:translateY(-6px);transition:.5s var(--ease-out)}
+.phead.in{opacity:1;transform:none}
+.phead h1{font-size:19px;font-weight:600;color:var(--n900);letter-spacing:-.015em}
+.phead p{font-size:12px;color:var(--n400);margin-top:3px}
+.body{flex:1;overflow:hidden;padding:20px 24px}
+
+/* ── Buttons / badges ────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:8px;
+     font-size:12.5px;font-weight:500;border:1px solid var(--n200);background:#fff;color:var(--n700);
+     transition:background .18s,border-color .18s,transform .12s}
+.btn.pri{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.hot{background:var(--primary-dark);border-color:var(--primary-dark)}
+.btn.press{transform:scale(.965)}
+.badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;
+       font-size:10px;font-weight:600;letter-spacing:.01em}
+.b-teal{background:var(--primary-light);color:var(--primary)}
+.b-green{background:var(--success-light);color:var(--success)}
+.b-amber{background:var(--warning-light);color:var(--warning)}
+.b-red{background:var(--danger-light);color:var(--danger)}
+.b-cs{background:var(--cs-light);color:var(--cs)}
+
+/* ══ SCENE: DASHBOARD ═════════════════════════════════════════════ */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.stat{border:1px solid var(--n200);border-radius:12px;padding:15px;background:#fff;
+      opacity:0;transform:translateY(14px);transition:.55s var(--ease-out)}
+.stat.in{opacity:1;transform:none}
+.stat .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.stat .lbl{font-size:11px;font-weight:500;color:var(--n400)}
+.stat .ic{width:32px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center}
+.stat .ic svg{width:17px;height:17px}
+.stat .val{font-size:27px;font-weight:700;color:var(--n900);letter-spacing:-.03em;
+           font-variant-numeric:tabular-nums;line-height:1}
+.stat .chg{font-size:10.5px;color:var(--n400);margin-top:6px}
+.cols{display:grid;grid-template-columns:1.35fr 1fr;gap:14px}
+.card{border:1px solid var(--n200);border-radius:12px;background:#fff;
+      opacity:0;transform:translateY(14px);transition:.55s var(--ease-out)}
+.card.in{opacity:1;transform:none}
+.card>header{padding:13px 16px;border-bottom:1px solid var(--n100);display:flex;
+             align-items:center;justify-content:space-between}
+.card h2{font-size:13px;font-weight:600;color:var(--n900)}
+.card .more{font-size:11px;color:var(--primary);font-weight:500}
+.pipe{padding:16px}
+.pipebar{display:flex;height:8px;border-radius:999px;overflow:hidden;gap:2px;margin-bottom:12px}
+.pipebar span{width:0;transition:width .8s var(--ease-out)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px}
+.legend div{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--n400)}
+.legend i{width:7px;height:7px;border-radius:50%;display:block}
+.legend b{color:var(--n700);font-weight:600}
+.row{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--n100);
+     opacity:0;transform:translateY(8px);transition:.45s var(--ease-out)}
+.row.in{opacity:1;transform:none}
+.row:last-child{border-bottom:0}
+.row .nm{font-size:12.5px;font-weight:500;color:var(--n700)}
+.row .sub{font-size:10.5px;color:var(--n400);margin-top:2px}
+.row .grow{flex:1;min-width:0}
+
+/* ══ SCENE: LIVE INTERVIEW ROOM ═══════════════════════════════════ */
+.room{flex:1;display:grid;grid-template-columns:1fr 340px;gap:0;overflow:hidden}
+.roomL{display:flex;flex-direction:column;border-right:1px solid var(--n200);overflow:hidden}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px 16px 12px}
+.tile{aspect-ratio:16/10;border-radius:11px;position:relative;overflow:hidden;
+      background:linear-gradient(150deg,#1B2427,#0F1517);
+      opacity:0;transform:scale(.97);transition:.5s var(--ease-out)}
+.tile.in{opacity:1;transform:none}
+.tile .who{position:absolute;left:10px;bottom:10px;display:flex;align-items:center;gap:7px;
+           background:rgba(15,21,23,.72);backdrop-filter:blur(6px);border-radius:7px;padding:5px 9px}
+.tile .who span{font-size:10.5px;color:#fff;font-weight:500}
+.tile .init{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+            font-size:30px;font-weight:600;color:rgba(255,255,255,.18);letter-spacing:.04em}
+.vad{display:flex;align-items:flex-end;gap:2px;height:13px}
+.vad i{width:2.5px;background:#34D399;border-radius:2px;display:block;transform-origin:bottom}
+.speaking .vad i{animation:vad .55s ease-in-out infinite}
+.vad i:nth-child(2){animation-delay:.09s}.vad i:nth-child(3){animation-delay:.19s}
+.vad i:nth-child(4){animation-delay:.13s}.vad i:nth-child(5){animation-delay:.04s}
+@keyframes vad{0%,100%{transform:scaleY(.28)}50%{transform:scaleY(1)}}
+
+.tbar{display:flex;align-items:center;gap:10px;padding:0 16px 12px}
+.rec{display:flex;align-items:center;gap:7px;padding:5px 10px;border-radius:999px;
+     background:var(--danger-light);color:var(--danger);font-size:10.5px;font-weight:600}
+.rec i{width:7px;height:7px;border-radius:50%;background:var(--danger);display:block;
+       animation:blink 1.4s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.timer{font-family:'JetBrains Mono';font-size:12px;color:var(--n700);font-variant-numeric:tabular-nums}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--n400)}
+.chip svg{width:13px;height:13px}
+
+.tscroll{flex:1;overflow:hidden;padding:4px 16px 0;position:relative;
+         mask-image:linear-gradient(to bottom,transparent 0,#000 26px)}
+.tinner{display:flex;flex-direction:column;justify-content:flex-end;min-height:100%;padding-bottom:6px}
+.ln{display:flex;gap:10px;margin-bottom:13px;opacity:0;transform:translateY(10px);
+    transition:opacity .35s,transform .45s var(--ease-out)}
+.ln.in{opacity:1;transform:none}
+.ln.s2{flex-direction:row-reverse}
+.spk{height:19px;padding:0 7px;border-radius:999px;font-size:9.5px;font-weight:700;flex:none;
+     display:flex;align-items:center;margin-top:2px}
+.ln.s1 .spk{background:var(--primary-light);color:var(--primary)}
+.ln.s2 .spk{background:var(--cs-light);color:#4338CA}
+.lnb{max-width:86%;display:flex;flex-direction:column}
+.ln.s2 .lnb{align-items:flex-end}
+.meta{display:flex;align-items:center;gap:7px;margin-bottom:4px}
+.ln.s2 .meta{flex-direction:row-reverse}
+.meta em{font-size:9.5px;font-weight:600;color:var(--n400);font-style:normal}
+.meta time{font-size:9.5px;color:var(--n400);font-family:'JetBrains Mono'}
+.conf{font-size:9px;padding:1px 5px;border-radius:4px;font-weight:600}
+.bub{padding:9px 12px;border-radius:12px;font-family:'Lora',Georgia,serif;font-size:12.5px;
+     line-height:1.62;color:var(--n700)}
+.ln.s1 .bub{background:var(--n50);border:1px solid var(--n200);border-top-left-radius:2px}
+.ln.s2 .bub{background:var(--primary-light);border:1px solid #D7EBF0;border-top-right-radius:2px}
+/* ★ SIGNATURE: code-switch detection strike */
+mark.cs{background-image:linear-gradient(var(--cs),var(--cs));background-repeat:no-repeat;
+        background-position:0 100%;background-size:0% 1.6px;color:inherit;
+        transition:background-size .5s var(--ease-out),color .5s ease;padding-bottom:1px}
+mark.cs.on{background-size:100% 1.6px;color:var(--cs);font-weight:500}
+mark.kt{background:none;color:inherit;border-bottom:1.4px dashed transparent;
+        transition:border-color .45s ease,color .45s ease}
+mark.kt.on{border-bottom-color:var(--primary);color:var(--primary)}
+.kts{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.ln.s2 .kts{justify-content:flex-end}
+.kts span{font-size:9.5px;padding:2px 7px;border-radius:5px;background:var(--primary-light);
+          color:var(--primary);border:1px solid #D7EBF0;
+          opacity:0;transform:translateY(4px) scale(.9);transition:.35s var(--ease-out)}
+.kts span.on{opacity:1;transform:none}
+.partial{display:flex;align-items:center;gap:9px;padding:8px 14px;margin:0 16px 14px;
+         border-radius:10px;background:var(--n50);border:1px dashed var(--n200);
+         font-family:'Lora',Georgia,serif;font-size:12px;color:var(--n400);font-style:italic;
+         min-height:36px;opacity:0;transition:opacity .3s}
+.partial.on{opacity:1}
+.partial .dot{width:6px;height:6px;border-radius:50%;background:var(--primary);flex:none;
+              animation:blink 1s ease-in-out infinite}
+.caret{display:inline-block;width:1.5px;height:12px;background:var(--primary);
+       margin-left:2px;vertical-align:-2px;animation:blink .8s steps(1) infinite}
+
+.roomR{padding:16px;display:flex;flex-direction:column;gap:12px;background:var(--n50);overflow:hidden}
+.panel{background:#fff;border:1px solid var(--n200);border-radius:11px;padding:13px;
+       opacity:0;transform:translateX(10px);transition:.5s var(--ease-out)}
+.panel.in{opacity:1;transform:none}
+.panel h3{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--n400);
+          font-weight:600;margin-bottom:10px}
+.mrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.mrow:last-child{margin-bottom:0}
+.mrow .k{font-size:11.5px;color:var(--n400)}
+.mrow .v{font-size:12px;font-weight:600;color:var(--n700);font-variant-numeric:tabular-nums}
+.mrow .v.g{color:var(--success)}
+.mrow .v.i{color:var(--cs)}
+.term{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:11.5px;color:var(--n700);
+       border-bottom:1px solid var(--n100);opacity:0;transform:translateY(5px);transition:.35s var(--ease-out)}
+.term.on{opacity:1;transform:none}
+.term:last-child{border-bottom:0}
+.term i{width:5px;height:5px;border-radius:50%;background:var(--primary);display:block;flex:none}
+.term code{font-family:'JetBrains Mono';font-size:10.5px;color:var(--n400);margin-left:auto}
+
+/* ══ SCENE: AI RANKING ════════════════════════════════════════════ */
+.aisum{border:1px solid #D7EBF0;background:linear-gradient(180deg,#F4FBFC,#fff);
+       border-radius:12px;padding:14px 16px;display:flex;gap:12px;margin-bottom:16px;
+       opacity:0;transform:translateY(12px);transition:.55s var(--ease-out)}
+.aisum.in{opacity:1;transform:none}
+.aisum .sp{width:30px;height:30px;border-radius:9px;background:var(--primary);color:#fff;flex:none;
+           display:flex;align-items:center;justify-content:center}
+.aisum h3{font-size:12.5px;font-weight:600;color:var(--n900);margin-bottom:4px}
+.aisum p{font-size:11.5px;line-height:1.6;color:var(--n700);max-width:820px}
+.rk{border:1px solid var(--n200);border-radius:12px;margin-bottom:10px;background:#fff;
+    opacity:0;transform:translateY(16px);
+    transition:opacity .5s,transform .6s var(--ease-out),border-color .25s,box-shadow .25s}
+.rk.in{opacity:1;transform:none}
+.rk.hot{border-color:var(--primary);box-shadow:0 4px 16px -4px rgba(14,94,111,.22)}
+.rk .head{display:flex;align-items:center;gap:14px;padding:13px 16px}
+.pos{width:30px;height:30px;border-radius:9px;background:var(--n50);border:1px solid var(--n200);
+     display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+     color:var(--n400);flex:none}
+.rk.top .pos{background:var(--warning-light);border-color:#F4DDB8;color:var(--warning)}
+.pav{width:34px;height:34px;border-radius:50%;background:var(--primary-light);color:var(--primary);
+     display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;flex:none}
+.rk .nm{font-size:13px;font-weight:600;color:var(--n900)}
+.rk .sub{font-size:10.5px;color:var(--n400);margin-top:2px}
+.scorebox{display:flex;align-items:center;gap:12px;min-width:210px}
+.sbar{flex:1;height:5px;background:var(--n100);border-radius:999px;overflow:hidden}
+.sbar i{display:block;height:100%;width:0;border-radius:999px;background:var(--primary);
+        transition:width 1s var(--ease-out)}
+.sc{font-size:19px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;min-width:34px;
+    text-align:right}
+.sc small{font-size:10px;font-weight:500;color:var(--n400)}
+.tag{opacity:0;transform:scale(.85);transition:.4s var(--ease-out)}
+.tag.on{opacity:1;transform:none}
+.exp{max-height:0;overflow:hidden;transition:max-height .65s var(--ease-out)}
+.rk.open .exp{max-height:230px}
+.expin{border-top:1px solid var(--n100);padding:14px 16px;display:grid;
+       grid-template-columns:280px 1fr;gap:22px}
+.dim{margin-bottom:9px}
+.dim .t{display:flex;justify-content:space-between;font-size:10.5px;margin-bottom:4px}
+.dim .t span{color:var(--n400)}.dim .t b{color:var(--n700);font-variant-numeric:tabular-nums}
+.dim .bar{height:4px;background:var(--n100);border-radius:999px;overflow:hidden}
+.dim .bar i{display:block;height:100%;width:0;background:var(--primary);border-radius:999px;
+            transition:width .85s var(--ease-out)}
+.why h4{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--n400);
+        font-weight:600;margin-bottom:7px}
+.why p{font-size:11.5px;line-height:1.65;color:var(--n700);font-family:'Lora',Georgia,serif}
+.why .acts{display:flex;gap:8px;margin-top:12px}
+
+/* Toast */
+#toast{position:absolute;right:22px;bottom:22px;z-index:8;display:flex;align-items:center;gap:11px;
+       background:var(--n900);color:#fff;border-radius:11px;padding:12px 16px;
+       box-shadow:0 18px 40px -10px rgba(0,0,0,.45);
+       transform:translateY(130%);opacity:0;
+       transition:transform .62s cubic-bezier(.18,1.25,.4,1),opacity .4s ease}
+#toast.on{transform:none;opacity:1}
+#toast .ok{width:22px;height:22px;border-radius:50%;background:var(--success);flex:none;
+           display:flex;align-items:center;justify-content:center}
+#toast p{font-size:12.5px;font-weight:500}
+#toast span{font-size:10.5px;color:var(--n400);display:block;margin-top:2px}
+
+/* ══ OVERLAYS: cold open + end card ═══════════════════════════════ */
+.overlay{position:absolute;inset:0;z-index:9;display:flex;flex-direction:column;
+         align-items:center;justify-content:center;background:#fff;
+         opacity:0;visibility:hidden;transition:opacity .6s ease,visibility .6s}
+.overlay.active{opacity:1;visibility:visible}
+/* overlays get their own slow camera move, independent of #cam */
+.ostage{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;transform-origin:50% 48%;transform:scale(1)}
+#open.active .ostage{animation:pullBack 3.6s var(--ease-out) forwards}   /* settles out */
+#end.active  .ostage{animation:pushIn  5.4s var(--ease-out) forwards}    /* creeps in  */
+@keyframes pullBack{from{transform:scale(1.085)}to{transform:scale(1)}}
+@keyframes pushIn  {from{transform:scale(1)}to{transform:scale(1.055)}}
+.overlay::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(680px 420px at 50% 44%,rgba(14,94,111,.09),transparent 68%)}
+.omark{width:76px;height:76px;border-radius:21px;background:var(--primary);color:#fff;
+       display:flex;align-items:center;justify-content:center;position:relative;
+       opacity:0;transform:scale(.72) rotate(-9deg);
+       transition:opacity .6s,transform .9s var(--ease-out);
+       box-shadow:0 18px 44px -14px rgba(14,94,111,.6)}
+.omark.in{opacity:1;transform:none}
+.omark svg{width:36px;height:36px}
+.owm{margin-top:26px;font-size:44px;font-weight:700;letter-spacing:-.035em;color:var(--n900);
+     display:flex;overflow:hidden}
+.owm i{display:inline-block;font-style:normal;opacity:0;transform:translateY(22px);
+       transition:opacity .45s,transform .6s var(--ease-out)}
+.owm.in i{opacity:1;transform:none}
+.oeb{margin-top:14px;font-size:11.5px;letter-spacing:.24em;text-transform:uppercase;
+     color:var(--primary);font-weight:600;opacity:0;transform:translateY(8px);
+     transition:.6s var(--ease-out)}
+.oeb.in{opacity:1;transform:none}
+.rule{width:0;height:1px;background:var(--n200);margin-top:26px;transition:width .9s var(--ease-out)}
+.rule.in{width:340px}
+
+#end .tagline{margin-top:24px;font-size:29px;font-weight:600;letter-spacing:-.028em;color:var(--n900);
+              text-align:center;line-height:1.32;max-width:800px;
+              opacity:0;transform:translateY(14px);transition:.7s var(--ease-out)}
+#end .tagline.in{opacity:1;transform:none}
+#end .tagline b{color:var(--primary);font-weight:600}
+#end .sub{margin-top:14px;font-size:14px;color:var(--n400);opacity:0;transform:translateY(10px);
+          transition:.7s var(--ease-out)}
+#end .sub.in{opacity:1;transform:none}
+#end .url{margin-top:34px;display:flex;align-items:center;gap:9px;height:38px;padding:0 20px;
+          border-radius:999px;border:1px solid var(--n200);background:#fff;font-size:13px;
+          font-weight:500;color:var(--n700);opacity:0;transform:translateY(10px);
+          transition:.7s var(--ease-out)}
+#end .url.in{opacity:1;transform:none}
+
+/* ── Cursor ──────────────────────────────────────────────────────── */
+#cursor{position:absolute;top:0;left:0;width:22px;height:22px;z-index:20;pointer-events:none;
+        opacity:0;transform:translate(720px,400px);
+        transition:transform 1s var(--ease),opacity .35s;filter:drop-shadow(0 3px 5px rgba(0,0,0,.28))}
+#cursor.on{opacity:1}
+#cursor.press{transform-origin:top left}
+.ripple{position:absolute;width:34px;height:34px;border-radius:50%;border:2px solid var(--primary);
+        margin:-17px 0 0 -17px;z-index:19;pointer-events:none;opacity:0}
+.ripple.go{animation:rip .62s var(--ease-out) forwards}
+@keyframes rip{0%{transform:scale(.25);opacity:.85}100%{transform:scale(1.35);opacity:0}}
+
+/* ── Controls (hidden with #clean or ?embed=1) ───────────────────── */
+#bar{display:flex;align-items:center;gap:14px;color:#7C8A90;font-size:12px;
+     font-family:'Inter';width:100%;max-width:1440px}
+#bar button{background:#1A2427;border:1px solid #2A3639;color:#D5D9DC;height:32px;padding:0 14px;
+            border-radius:8px;font:500 12px 'Inter';cursor:pointer;transition:.15s}
+#bar button:hover{background:#222F33;border-color:#3A4A4E}
+#bar button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+#track{flex:1;height:3px;background:#222C2F;border-radius:2px;overflow:hidden}
+#fill{height:100%;width:0;background:var(--primary)}
+#bar .t{font-family:'JetBrains Mono';font-size:11px;font-variant-numeric:tabular-nums}
+body.embed #bar{display:none}
+body.embed{padding:0}
+
+/* Poster (reduced-motion / manual start) */
+#poster{position:absolute;inset:0;z-index:30;background:rgba(255,255,255,.94);
+        display:none;align-items:center;justify-content:center;flex-direction:column;gap:18px}
+#poster.on{display:flex}
+#poster p{font-size:14px;color:var(--n400);max-width:380px;text-align:center;line-height:1.6}
+#poster button{height:44px;padding:0 26px;border-radius:999px;background:var(--primary);color:#fff;
+               border:0;font:600 14px 'Inter';cursor:pointer;display:flex;align-items:center;gap:9px}
+@media (prefers-reduced-motion:reduce){
+  .rec i,.vad i,.partial .dot,.caret,#drift{animation:none!important}
+  #cam{transition:none!important;transform:none!important}
+  .ostage{animation:none!important}
+  .scene{filter:none!important}
+}
+</style>
+
+<div id="wrap">
+  <div id="root">
+
+    <!-- ══ CAMERA RIG: everything inside moves as one shot ══════ -->
+    <div id="cam"><div id="drift">
+
+    <!-- ── browser chrome ─────────────────────────────────────── -->
+    <div id="chrome">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div id="urlpill">
+        <svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <span><b>app.shannonscout.id</b><span id="urlpath">/dashboard</span></span>
+      </div>
+    </div>
+
+    <!-- ── app shell ──────────────────────────────────────────── -->
+    <div id="app">
+
+      <aside id="sidebar">
+        <div class="sb-logo">
+          <div class="mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round" style="width:17px;height:17px">
+              <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+          </div>
+          <div><p>Shannon Scout</p><span>AI Recruitment</span></div>
+        </div>
+
+        <div class="tenant">
+          <div class="lft"><div class="av">MT</div><div class="nm">Mandiri Tech</div></div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="#8D969E" stroke-width="2.2" stroke-linecap="round"
+               style="width:12px;height:12px"><path d="m6 9 6 6 6-6"/></svg>
+        </div>
+
+        <nav>
+          <a class="nv" data-nav="dash">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/>
+              <rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Dashboard</a>
+          <a class="nv" data-nav="jobs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <rect width="20" height="14" x="2" y="7" rx="2"/>
+              <path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+            Jobs</a>
+          <a class="nv" data-nav="cand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+              <path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            Candidates</a>
+          <a class="nv" data-nav="intv">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2"/></svg>
+            Interviews</a>
+          <a class="nv" data-nav="tran">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
+              <path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>
+            Transcripts</a>
+          <a class="nv" data-nav="glos">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round"><path d="M12 7v14"/>
+              <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>
+            Glossary</a>
+
+          <div class="sb-div"></div>
+          <div class="sb-lbl">System</div>
+          <a class="nv" data-nav="set">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            Settings</a>
+          <a class="nv" data-nav="adm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+            Admin</a>
+          <a class="nv dim" data-nav="comp">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>
+            Compliance</a>
+        </nav>
+
+        <div class="sb-user">
+          <div class="av">SD</div>
+          <div><p>Sari Dewi Kusuma</p><span>Recruiter · Mandiri Tech</span></div>
+        </div>
+      </aside>
+
+      <main id="main">
+
+        <!-- ══ DASHBOARD ══════════════════════════════════════ -->
+        <section class="scene" id="dash">
+          <div class="phead">
+            <div><h1>Dashboard</h1><p>Welcome back, Sari — Senin, 16 Agustus 2026</p></div>
+            <div style="display:flex;gap:8px">
+              <span class="btn">Export</span>
+              <span class="btn pri">New job</span>
+            </div>
+          </div>
+          <div class="body">
+            <div class="stats">
+              <div class="stat">
+                <div class="top"><span class="lbl">Active jobs</span>
+                  <span class="ic" style="background:var(--primary-light);color:var(--primary)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <rect width="20" height="14" x="2" y="7" rx="2"/>
+                      <path d="M16 20V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></span></div>
+                <div class="val" data-to="6">0</div><div class="chg">+2 this week</div>
+              </div>
+              <div class="stat">
+                <div class="top"><span class="lbl">Candidates</span>
+                  <span class="ic" style="background:var(--success-light);color:var(--success)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg></span></div>
+                <div class="val" data-to="14">0</div><div class="chg">+4 this week</div>
+              </div>
+              <div class="stat">
+                <div class="top"><span class="lbl">Interviews scheduled</span>
+                  <span class="ic" style="background:var(--primary-light);color:var(--primary)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                         stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/>
+                      <rect width="14" height="12" x="2" y="6" rx="2"/></svg></span></div>
+                <div class="val" data-to="6">0</div><div class="chg">1 live now</div>
+              </div>
+              <div class="stat">
+                <div class="top"><span class="lbl">Hours transcribed</span>
+                  <span class="ic" style="background:var(--cs-light);color:#4338CA">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                      <rect x="9" y="2" width="6" height="13" rx="3"/></svg></span></div>
+                <div class="val" data-to="424">0</div><div class="chg">Avg WER 8.8%</div>
+              </div>
+            </div>
+
+            <div class="cols">
+              <div class="card" id="cJobs">
+                <header><h2>Active jobs</h2><span class="more">View all</span></header>
+                <div class="row"><div class="grow"><div class="nm">Senior Software Engineer — Backend</div>
+                  <div class="sub">PT Mandiri Teknologi · 4 candidates</div></div>
+                  <span class="badge b-teal">Interviewing</span></div>
+                <div class="row"><div class="grow"><div class="nm">Product Manager — Payments</div>
+                  <div class="sub">StartupID · 3 candidates</div></div>
+                  <span class="badge b-teal">Interviewing</span></div>
+                <div class="row"><div class="grow"><div class="nm">Full-Stack Engineer</div>
+                  <div class="sub">StartupID · 1 live interview</div></div>
+                  <span class="badge b-red">Live now</span></div>
+                <div class="row"><div class="grow"><div class="nm">Analis Risiko Kredit Senior</div>
+                  <div class="sub">Bank Rakyat Nusantara · 2 candidates</div></div>
+                  <span class="badge b-amber">Screening</span></div>
+                <div class="row"><div class="grow"><div class="nm">Data Scientist — Credit Scoring</div>
+                  <div class="sub">Bank Rakyat Nusantara · 2 candidates</div></div>
+                  <span class="badge b-amber">Screening</span></div>
+              </div>
+
+              <div class="card" id="cPipe">
+                <header><h2>Pipeline</h2><span class="more">14 candidates</span></header>
+                <div class="pipe">
+                  <div class="pipebar">
+                    <span style="background:var(--n300)" data-w="28"></span>
+                    <span style="background:var(--primary)" data-w="29"></span>
+                    <span style="background:var(--warning)" data-w="21"></span>
+                    <span style="background:var(--success)" data-w="14"></span>
+                    <span style="background:var(--danger)" data-w="8"></span>
+                  </div>
+                  <div class="legend">
+                    <div><i style="background:var(--n300)"></i>Screening <b>4</b></div>
+                    <div><i style="background:var(--primary)"></i>Interview <b>4</b></div>
+                    <div><i style="background:var(--warning)"></i>Decision <b>3</b></div>
+                    <div><i style="background:var(--success)"></i>Hired <b>2</b></div>
+                    <div><i style="background:var(--danger)"></i>Rejected <b>1</b></div>
+                  </div>
+                  <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--n100)">
+                    <div class="mrow"><span class="k">Avg word error rate</span><span class="v g">8.8%</span></div>
+                    <div class="mrow"><span class="k">Avg diarization error</span><span class="v g">5.7%</span></div>
+                    <div class="mrow"><span class="k">Interviews this week</span><span class="v">38</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ══ LIVE INTERVIEW ROOM ════════════════════════════ -->
+        <section class="scene" id="room">
+          <div class="phead">
+            <div><h1>Fajar Kurniawan Susanto</h1>
+              <p>Full-Stack Engineer · StartupID · Interviewer Rina Agustina</p></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span class="badge b-red" style="height:24px"><i style="width:6px;height:6px;border-radius:50%;background:var(--danger);display:block"></i> LIVE</span>
+              <span class="btn">End interview</span>
+            </div>
+          </div>
+
+          <div class="room">
+            <div class="roomL">
+              <div class="tiles">
+                <div class="tile" id="tile1">
+                  <div class="init">RA</div>
+                  <div class="who"><span>Rina Agustina</span>
+                    <div class="vad"><i style="height:5px"></i><i style="height:9px"></i><i style="height:13px"></i><i style="height:9px"></i><i style="height:5px"></i></div>
+                  </div>
+                </div>
+                <div class="tile" id="tile2">
+                  <div class="init">FK</div>
+                  <div class="who"><span>Fajar Kurniawan</span>
+                    <div class="vad"><i style="height:5px"></i><i style="height:9px"></i><i style="height:13px"></i><i style="height:9px"></i><i style="height:5px"></i></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tbar">
+                <span class="rec"><i></i> REC</span>
+                <span class="timer" id="timer">00:00</span>
+                <span class="chip">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M12 20h.01"/><path d="M8.5 16.4a5 5 0 0 1 7 0"/><path d="M5 12.9a10 10 0 0 1 14 0"/>
+                    <path d="M1.4 9.4a15 15 0 0 1 21.2 0"/></svg>
+                  Connection excellent</span>
+                <span class="chip" style="margin-left:auto">Google STT · id-ID + en-US</span>
+              </div>
+
+              <div class="tscroll"><div class="tinner" id="tinner"></div></div>
+              <div class="partial" id="partial"><span class="dot"></span><span id="ptext"></span></div>
+            </div>
+
+            <div class="roomR">
+              <div class="panel" id="p1">
+                <h3>Live signal</h3>
+                <div class="mrow"><span class="k">ASR latency</span><span class="v" id="lat">280 ms</span></div>
+                <div class="mrow"><span class="k">Avg confidence</span><span class="v g" id="avgconf">—</span></div>
+                <div class="mrow"><span class="k">Code-switches</span><span class="v i" id="csn">0</span></div>
+                <div class="mrow"><span class="k">Speakers</span><span class="v">2 · S1 / S2</span></div>
+              </div>
+              <div class="panel" id="p2">
+                <h3>Key terms detected</h3>
+                <div class="term" id="k1"><i></i>Next.js<code>frontend</code></div>
+                <div class="term" id="k2"><i></i>Node.js<code>backend</code></div>
+                <div class="term" id="k3"><i></i>payment gateway<code>domain</code></div>
+                <div class="term" id="k4"><i></i>UMKM<code>domain</code></div>
+              </div>
+              <div class="panel" id="p3">
+                <h3>Language mix</h3>
+                <div style="display:flex;height:7px;border-radius:999px;overflow:hidden;gap:2px;margin-bottom:10px">
+                  <span id="mixid" style="background:var(--primary);width:0;transition:width 1s var(--ease-out)"></span>
+                  <span id="mixen" style="background:var(--cs);width:0;transition:width 1s var(--ease-out)"></span>
+                </div>
+                <div class="legend">
+                  <div><i style="background:var(--primary)"></i>Bahasa <b>72%</b></div>
+                  <div><i style="background:var(--cs)"></i>English <b>28%</b></div>
+                </div>
+                <p style="font-size:10.5px;color:var(--n400);line-height:1.55;margin-top:11px">
+                  Mixed-language speech is transcribed in one pass — no separate model per language.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ══ AI RANKING ═════════════════════════════════════ -->
+        <section class="scene" id="rank">
+          <div class="phead">
+            <div><h1>Candidate ranking</h1>
+              <p>Senior Software Engineer — Backend · PT Mandiri Teknologi</p></div>
+            <div style="display:flex;gap:8px"><span class="btn">Export shortlist</span></div>
+          </div>
+          <div class="body" style="overflow:hidden">
+            <div class="aisum">
+              <div class="sp">
+                <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px">
+                  <path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0L14.06 8.5a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96l-6.14 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/></svg>
+              </div>
+              <div>
+                <h3>4 candidates ranked from 4 completed interviews</h3>
+                <p>Arief leads on technical depth (92) with production-proven distributed systems experience.
+                   Scores are derived from the transcript only — every number links back to the timestamp it came from.</p>
+              </div>
+            </div>
+
+            <div class="rk top" id="r1">
+              <div class="head">
+                <div class="pos">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                       stroke-linejoin="round" style="width:15px;height:15px">
+                    <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+                    <path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+                    <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
+                    <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+                </div>
+                <div class="pav">AH</div>
+                <div class="grow"><div class="nm">Arief Rahmat Hidayat</div>
+                  <div class="sub">6 yrs · ex-Tokopedia · interviewed 12 Agu</div></div>
+                <span class="badge b-green tag" id="tag1">Recommended</span>
+                <div class="scorebox"><div class="sbar"><i data-w="88"></i></div>
+                  <div class="sc" style="color:var(--success)">88<small>/100</small></div></div>
+              </div>
+              <div class="exp"><div class="expin">
+                <div>
+                  <div class="dim"><div class="t"><span>Communication</span><b>85</b></div>
+                    <div class="bar"><i data-w="85"></i></div></div>
+                  <div class="dim"><div class="t"><span>Technical depth</span><b>92</b></div>
+                    <div class="bar"><i data-w="92"></i></div></div>
+                  <div class="dim"><div class="t"><span>Cultural fit</span><b>88</b></div>
+                    <div class="bar"><i data-w="88"></i></div></div>
+                  <div class="dim"><div class="t"><span>Experience relevance</span><b>87</b></div>
+                    <div class="bar"><i data-w="87"></i></div></div>
+                </div>
+                <div class="why">
+                  <h4>Why this score</h4>
+                  <p>Separated a strong-consistent hot path from an eventual-consistent analytics path at
+                     50K TPS — architectural maturity, not memorised theory. Gap: limited
+                     financial-services domain exposure.</p>
+                  <div class="acts">
+                    <span class="btn pri" id="btnMove">Move to Decision</span>
+                    <span class="btn">Open transcript</span>
+                  </div>
+                </div>
+              </div></div>
+            </div>
+
+            <div class="rk" id="r2"><div class="head">
+              <div class="pos">2</div><div class="pav">DF</div>
+              <div class="grow"><div class="nm">Dewi Fitriani Putri</div>
+                <div class="sub">5 yrs · ex-Bukalapak · interviewed 12 Agu</div></div>
+              <span class="badge b-teal tag" id="tag2">Consider</span>
+              <div class="scorebox"><div class="sbar"><i data-w="76"></i></div>
+                <div class="sc" style="color:var(--primary)">76<small>/100</small></div></div>
+            </div></div>
+
+            <div class="rk" id="r3"><div class="head">
+              <div class="pos">3</div><div class="pav">SN</div>
+              <div class="grow"><div class="nm">Siti Nurhaliza Maharani</div>
+                <div class="sub">4 yrs · ex-Gojek · interviewed 13 Agu</div></div>
+              <span class="badge b-amber tag" id="tag3">Borderline</span>
+              <div class="scorebox"><div class="sbar"><i data-w="71"></i></div>
+                <div class="sc" style="color:var(--warning)">71<small>/100</small></div></div>
+            </div></div>
+
+            <div class="rk" id="r4"><div class="head">
+              <div class="pos">4</div><div class="pav">HW</div>
+              <div class="grow"><div class="nm">Hendra Wijaya Santoso</div>
+                <div class="sub">3 yrs · ex-Traveloka · interviewed 13 Agu</div></div>
+              <span class="badge b-red tag" id="tag4">Not a fit</span>
+              <div class="scorebox"><div class="sbar"><i data-w="65"></i></div>
+                <div class="sc" style="color:var(--danger)">65<small>/100</small></div></div>
+            </div></div>
+          </div>
+        </section>
+
+      </main>
+
+      <div id="toast">
+        <div class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"
+             stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px">
+          <path d="m5 12 5 5L20 6"/></svg></div>
+        <div><p>Moved to Decision</p><span>Audit entry recorded · Sari D. · 16 Agu 14:32</span></div>
+      </div>
+    </div>
+
+    <!-- ── cursor (lives inside the rig, so it tracks the zoom) ─ -->
+    <svg id="cursor" viewBox="0 0 24 24" fill="#0F1517" stroke="#fff" stroke-width="1.4"
+         stroke-linejoin="round"><path d="M4.5 2.5 19 12.2l-6.4 1-3.3 6.1z"/></svg>
+
+    </div></div><!-- /drift /cam -->
+
+    <!-- ── cold open ──────────────────────────────────────────── -->
+    <div class="overlay active" id="open"><div class="ostage">
+      <div class="omark" id="omark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+      </div>
+      <div class="owm" id="owm"></div>
+      <div class="rule" id="orule"></div>
+      <div class="oeb" id="oeb">Interviews in Bahasa &amp; English</div>
+    </div></div>
+
+    <!-- ── end card ───────────────────────────────────────────── -->
+    <div class="overlay" id="end"><div class="ostage">
+      <div class="omark" id="emark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+      </div>
+      <div class="tagline" id="etag">Every interview transcribed,<br>scored, and <b>on the record</b>.</div>
+      <div class="sub" id="esub">Bahasa Indonesia and English — code-switching included.</div>
+      <div class="url" id="eurl">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round"
+             style="width:15px;height:15px"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        shannonscout.id
+      </div>
+    </div></div>
+
+    <div id="poster">
+      <button id="pplay">
+        <svg viewBox="0 0 24 24" fill="currentColor" style="width:16px;height:16px"><path d="M6 3l14 9-14 9z"/></svg>
+        Play the demo
+      </button>
+      <p>Motion is reduced in your system settings, so the reel doesn't start on its own.</p>
+    </div>
+
+  </div>
+</div>
+
+<div id="bar">
+  <button id="btnPlay">Pause</button>
+  <button id="btnReplay">Replay</button>
+  <div id="track"><div id="fill"></div></div>
+  <span class="t" id="clock">0:00 / 0:45</span>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const DUR = 45000;
+
+/* ── fit the 1440×810 stage into whatever width we're given ─────── */
+const wrap = $("#wrap"), root = $("#root");
+const fit = () => { root.style.transform = `scale(${wrap.clientWidth / 1440})`; };
+new ResizeObserver(fit).observe(wrap); fit();
+
+/* embed mode: #clean or ?embed=1 hides the control bar */
+if (location.hash === "#clean" || /[?&]embed=1/.test(location.search))
+  document.body.classList.add("embed");
+
+/* ── transcript data (verbatim from lib/mock-data.ts) ───────────── */
+const LINES = [
+  { spk:"S1", who:"Interviewer", t:"00:05", conf:96,
+    txt:"Selamat pagi Fajar! Selamat datang di [interview] hari ini.", cs:["interview"] },
+  { spk:"S2", who:"Candidate", t:"00:20", conf:94,
+    txt:"Selamat pagi Bu Rina! Saya sudah sangat [excited] untuk bergabung dengan tim StartupID.",
+    cs:["excited"] },
+  { spk:"S1", who:"Interviewer", t:"00:34", conf:95,
+    txt:"Ceritakan satu [project] yang paling [challenging] yang pernah kamu kerjakan sebagai [full-stack developer].",
+    cs:["project","challenging","full-stack developer"] },
+  { spk:"S2", who:"Candidate", t:"00:54", conf:92,
+    txt:"Saya membangun sistem [e-commerce] untuk {UMKM} lokal. Pakai {Next.js} untuk [frontend] dan {Node.js} untuk [backend]-nya.",
+    cs:["e-commerce","frontend","backend"], kt:["Next.js","Node.js","UMKM"] },
+  { spk:"S1", who:"Interviewer", t:"01:32", conf:93,
+    txt:"[Interesting]. Berapa lama kamu menyelesaikan [project] itu?", cs:["Interesting","project"] },
+  { spk:"S2", who:"Candidate", t:"01:44", conf:92,
+    txt:"Sekitar empat bulan. Yang paling [challenging] itu integrasi {payment gateway} lokal — dokumentasinya kurang lengkap.",
+    cs:["challenging"], kt:["payment gateway"] }
+];
+/* [x] = code-switch (English inside Bahasa) · {x} = domain key term */
+const render = txt => txt
+  .replace(/\[([^\]]+)\]/g, '<mark class="cs">$1</mark>')
+  .replace(/\{([^}]+)\}/g, '<mark class="kt">$1</mark>');
+const plain = txt => txt.replace(/[\[\]{}]/g, "");
+
+/* ── tiny helpers ───────────────────────────────────────────────── */
+const timers = [];
+const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+const on  = (sel, c="in") => $$(sel).forEach(e => e.classList.add(c));
+const off = (sel, c="in") => $$(sel).forEach(e => e.classList.remove(c));
+const stag = (sel, step, c="in") =>
+  $$(sel).forEach((e,i) => later(i*step, () => e.classList.add(c)));
+
+function count(el, to, ms){
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0)/ms);
+    el.textContent = Math.round(to * (1 - Math.pow(1-p, 3)));
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function scene(id){
+  $$(".scene").forEach(s => {
+    const isIn = s.id === id;
+    if (!isIn && s.classList.contains("active")){
+      s.classList.remove("active"); s.classList.add("out");
+      later(700, () => s.classList.remove("out"));
+    }
+    s.classList.toggle("active", isIn);
+  });
+}
+function nav(name){
+  $$(".nv").forEach(n => n.classList.toggle("act", n.dataset.nav === name));
+}
+function url(path){
+  const u = $("#urlpath");
+  u.style.opacity = 0;
+  later(220, () => { u.textContent = path; u.style.opacity = 1; });
+}
+
+/* ── camera ─────────────────────────────────────────────────────────
+   cam(z, x, y, ms) frames app-space point (x,y) at zoom z. All click
+   targets stay in app space, so the cursor keeps hitting the right
+   thing no matter where the camera is.                              */
+const camEl = $("#cam"), drift = $("#drift");
+function cam(z, x, y, ms = 1400){
+  camEl.style.transitionDuration = ms + "ms";
+  camEl.style.transform = `translate(${720 - x*z}px, ${405 - y*z}px) scale(${z})`;
+}
+const camWide = (ms = 1300) => cam(1, 720, 405, ms);
+
+/* cursor */
+const cur = $("#cursor");
+function move(x, y, ms=950){
+  cur.classList.add("on");
+  cur.style.transitionDuration = ms + "ms";
+  cur.style.transform = `translate(${x}px, ${y}px)`;
+}
+function click(x, y){
+  cur.style.transform = `translate(${x}px, ${y}px) scale(.82)`;
+  later(130, () => cur.style.transform = `translate(${x}px, ${y}px)`);
+  const r = document.createElement("div");
+  r.className = "ripple";
+  r.style.left = x + "px"; r.style.top = y + "px";
+  drift.appendChild(r);
+  requestAnimationFrame(() => r.classList.add("go"));
+  later(800, () => r.remove());
+}
+
+/* ── the cue sheet ──────────────────────────────────────────────── */
+const CUES = [];
+const at = (t, fn) => CUES.push({ t, fn, done:false });
+
+/* ─ 1. COLD OPEN ─ */
+at(300, () => on("#omark"));
+at(800, () => {
+  const wm = $("#owm");
+  wm.innerHTML = "";
+  "Shannon Scout".split("").forEach((ch,i) => {
+    const s = document.createElement("i");
+    s.textContent = ch === " " ? "\u00A0" : ch;
+    s.style.transitionDelay = (i*38) + "ms";
+    wm.appendChild(s);
+  });
+  requestAnimationFrame(() => wm.classList.add("in"));
+});
+at(1700, () => on("#orule"));
+at(1950, () => on("#oeb"));
+at(3300, () => { $("#open").classList.remove("active"); });
+
+/* ─ 2. DASHBOARD ─ */
+at(3400, () => { scene("dash"); nav("dash"); on("#sidebar"); });
+at(3700, () => stag(".nv", 55));
+at(4300, () => on(".phead"));
+at(4500, () => cam(1.30, 840, 195, 1700));      /* push in on the stat row  */
+at(4600, () => {
+  stag(".stat", 110);
+  $$(".stat .val").forEach((el,i) =>
+    later(200 + i*110, () => count(el, +el.dataset.to, 1050)));
+});
+at(5850, () => camWide(1600));                  /* pull back for the cards  */
+at(5900, () => { on("#cPipe"); });
+at(6200, () => $$(".pipebar span").forEach((s,i) =>
+  later(i*110, () => s.style.width = s.dataset.w + "%")));
+at(6600, () => on("#cJobs"));
+at(6900, () => stag("#cJobs .row", 85));
+at(8300, () => move(690, 430, 900));
+
+/* ─ 3. LIVE INTERVIEW ROOM ─ */
+at(9400,  () => move(96, 305, 950));
+at(10300, () => $$('.nv[data-nav="intv"]').forEach(n => n.classList.add("hot")));
+at(10800, () => { click(96, 305); });
+at(11000, () => $$('.nv[data-nav="intv"]').forEach(n => n.classList.remove("hot")));
+at(11150, () => {
+  nav("intv"); scene("room"); url("/dashboard/interviews/i3");
+  cur.classList.remove("on");
+});
+at(11450, () => { on(".tile"); on("#p1"); cam(1.06, 840, 425, 1500); });
+at(11700, () => { on("#p2"); on("#p3"); startTimer(); });
+at(11900, () => {
+  $("#mixid").style.width = "72%"; $("#mixen").style.width = "28%";
+});
+
+/* camera through the transcript: slow creep → punch on detection → pull to the rail */
+at(12300, () => cam(1.18,  700, 545, 3200));   /* creep into the transcript */
+at(19300, () => cam(1.46,  690, 600, 1600));   /* ★ punch on the code-switch strike */
+at(21400, () => cam(1.13,  935, 470, 2000));   /* pull to include the live-signal rail */
+
+/* transcript beats */
+const T0 = 12300, GAP = 2050;
+LINES.forEach((L, i) => {
+  const base = T0 + i * GAP;
+  at(base,      () => speak(L.spk));
+  at(base,      () => typePartial(plain(L.txt), 780));
+  at(base + 900,  () => commit(L, i));
+  at(base + 1350, () => detect(i));
+});
+at(T0 + 3*GAP + 1500, () => { on("#k1","on"); on("#k2","on"); });
+at(T0 + 3*GAP + 1750, () => on("#k4","on"));
+at(T0 + 5*GAP + 1500, () => on("#k3","on"));
+
+/* ─ 4. AI RANKING ─ */
+at(24350, () => camWide(1300));                 /* pull wide before navigating */
+at(24600, () => { stopTimer(); move(96, 259, 900); });
+at(25500, () => $$('.nv[data-nav="jobs"]').forEach(n => n.classList.add("hot")));
+at(25900, () => click(96, 259));
+at(26100, () => $$('.nv[data-nav="jobs"]').forEach(n => n.classList.remove("hot")));
+at(26250, () => {
+  nav("jobs"); scene("rank"); url("/dashboard/jobs/j1/ranking");
+  cur.classList.remove("on");
+});
+at(26400, () => cam(1.05, 840, 395, 1500));     /* gentle settle onto the list */
+at(26550, () => on(".aisum"));
+at(26900, () => {
+  ["#r1","#r2","#r3","#r4"].forEach((id,i) => later(i*230, () => {
+    const el = $(id); el.classList.add("in");
+    later(180, () => el.querySelectorAll("[data-w]").forEach(
+      b => b.style.width = b.dataset.w + "%"));
+  }));
+});
+at(28900, () => ["#tag1","#tag2","#tag3","#tag4"].forEach((id,i) =>
+  later(i*130, () => $(id).classList.add("on"))));
+at(29150, () => cam(1.26, 840, 252, 1600));     /* push in on the #1 candidate */
+at(29600, () => move(560, 200, 850));
+at(30300, () => $("#r1").classList.add("hot"));
+at(30700, () => click(560, 200));
+at(30950, () => cam(1.14, 840, 345, 1500));     /* reframe for the expanded panel */
+at(30900, () => {
+  $("#r1").classList.add("open");
+  later(320, () => $$("#r1 .dim .bar i").forEach((b,i) =>
+    later(i*110, () => b.style.width = b.dataset.w + "%")));
+});
+
+/* ─ 5. ACTION + AUDIT ─ */
+at(33500, () => move(700, 352, 900));
+at(34150, () => cam(1.52, 700, 352, 1200));     /* tight on the action button */
+at(34400, () => $("#btnMove").classList.add("hot"));
+at(34900, () => { $("#btnMove").classList.add("press"); click(700, 352); });
+at(35100, () => $("#btnMove").classList.remove("press"));
+at(35250, () => camWide(1100));                 /* snap wide so the toast reads */
+at(35400, () => { $("#toast").classList.add("on"); cur.classList.remove("on"); });
+at(38900, () => $("#toast").classList.remove("on"));
+
+/* ─ 6. END CARD ─ */
+at(39500, () => camWide(900));
+at(40200, () => { $("#end").classList.add("active"); on("#emark"); });
+at(40700, () => on("#etag"));
+at(41100, () => on("#esub"));
+at(41700, () => on("#eurl"));
+
+/* ── scene-specific machinery ───────────────────────────────────── */
+function speak(spk){
+  $("#tile1").classList.toggle("speaking", spk === "S1");
+  $("#tile2").classList.toggle("speaking", spk === "S2");
+}
+function typePartial(text, ms){
+  const box = $("#partial"), out = $("#ptext");
+  box.classList.add("on");
+  const words = text.split(" ");
+  const per = ms / words.length;
+  words.forEach((w,i) => later(i*per, () => {
+    out.innerHTML = words.slice(0, i+1).join(" ") + '<span class="caret"></span>';
+  }));
+}
+function commit(L, i){
+  $("#partial").classList.remove("on");
+  $("#ptext").innerHTML = "";
+  const cls = L.conf >= 93 ? "b-green" : L.conf >= 85 ? "b-amber" : "b-red";
+  const el = document.createElement("div");
+  el.className = "ln " + L.spk.toLowerCase();
+  el.dataset.i = i;
+  el.innerHTML = `
+    <div class="spk">${L.spk}</div>
+    <div class="lnb">
+      <div class="meta"><em>${L.who}</em><time>${L.t}</time>
+        <span class="conf ${cls}">${L.conf}%</span></div>
+      <div class="bub">${render(L.txt)}</div>
+      ${L.kt ? `<div class="kts">${L.kt.map(k=>`<span>${k}</span>`).join("")}</div>` : ""}
+    </div>`;
+  $("#tinner").appendChild(el);
+  requestAnimationFrame(() => el.classList.add("in"));
+  /* keep the visible window to the last 4 lines */
+  const all = $$("#tinner .ln");
+  if (all.length > 4) all[0].remove();
+  /* rolling average confidence */
+  const shown = LINES.slice(0, i+1);
+  $("#avgconf").textContent =
+    Math.round(shown.reduce((s,x)=>s+x.conf,0) / shown.length) + "%";
+  $("#lat").textContent = (245 + Math.round(Math.random()*70)) + " ms";
+}
+function detect(i){
+  const el = $(`#tinner .ln[data-i="${i}"]`);
+  if (!el) return;
+  el.querySelectorAll("mark.cs").forEach((m,j) => later(j*150, () => {
+    m.classList.add("on");
+    const n = $("#csn"); n.textContent = (+n.textContent) + 1;
+  }));
+  el.querySelectorAll("mark.kt").forEach((m,j) => later(200 + j*150, () => m.classList.add("on")));
+  el.querySelectorAll(".kts span").forEach((s,j) => later(500 + j*110, () => s.classList.add("on")));
+}
+let tick = null, tsec = 0;
+function startTimer(){
+  tsec = 4;
+  tick = setInterval(() => {
+    tsec += 3;
+    $("#timer").textContent =
+      String(Math.floor(tsec/60)).padStart(2,"0") + ":" + String(tsec%60).padStart(2,"0");
+  }, 340);
+}
+function stopTimer(){ clearInterval(tick); tick = null; }
+
+/* ── reset to frame zero ────────────────────────────────────────── */
+function reset(){
+  timers.forEach(clearTimeout); timers.length = 0;
+  stopTimer();
+  off(".nv"); off(".stat"); off(".card"); off(".row"); off(".phead");
+  off("#sidebar"); off(".tile"); off(".panel"); off(".aisum"); off(".rk");
+  off("#omark"); off("#owm"); off("#oeb"); off("#orule");
+  off("#emark"); off("#etag"); off("#esub"); off("#eurl");
+  $$(".tag").forEach(t => t.classList.remove("on"));
+  $$(".term").forEach(t => t.classList.remove("on"));
+  $$(".rk").forEach(r => r.classList.remove("open","hot"));
+  $$(".nv").forEach(n => n.classList.remove("act","hot"));
+  $$("[data-w]").forEach(b => b.style.width = "0");
+  $$(".pipebar span").forEach(s => s.style.width = "0");
+  $("#mixid").style.width = "0"; $("#mixen").style.width = "0";
+  $$(".stat .val").forEach(v => v.textContent = "0");
+  $("#tinner").innerHTML = "";
+  $("#partial").classList.remove("on"); $("#ptext").innerHTML = "";
+  $("#tile1").classList.remove("speaking"); $("#tile2").classList.remove("speaking");
+  $("#csn").textContent = "0"; $("#avgconf").textContent = "—";
+  $("#lat").textContent = "280 ms"; $("#timer").textContent = "00:00";
+  $("#toast").classList.remove("on");
+  $("#btnMove").classList.remove("hot","press");
+  $("#owm").innerHTML = "";
+  $("#end").classList.remove("active");
+  $("#open").classList.add("active");
+  $$(".scene").forEach(s => s.classList.remove("active","out"));
+  /* camera home, with no visible travel */
+  camEl.style.transitionDuration = "0ms";
+  camEl.style.transform = "translate(0px, 0px) scale(1)";
+  requestAnimationFrame(() => camEl.style.transitionDuration = "1400ms");
+  url("/dashboard");
+  cur.classList.remove("on");
+  cur.style.transitionDuration = "0ms";
+  cur.style.transform = "translate(720px, 400px)";
+  requestAnimationFrame(() => cur.style.transitionDuration = "1000ms");
+  CUES.forEach(c => c.done = false);
+}
+
+/* ── clock ──────────────────────────────────────────────────────── */
+let t0 = performance.now(), paused = false, pausedAt = 0;
+const fill = $("#fill"), clock = $("#clock");
+const fmt = ms => Math.floor(ms/60000) + ":" + String(Math.floor(ms/1000)%60).padStart(2,"0");
+
+function frame(now){
+  requestAnimationFrame(frame);
+  if (paused) return;
+  let t = now - t0;
+  if (t >= DUR){ reset(); t0 = now; t = 0; }
+  for (const c of CUES) if (!c.done && t >= c.t){ c.done = true; c.fn(); }
+  fill.style.width = (t / DUR * 100) + "%";
+  clock.textContent = fmt(t) + " / 0:45";
+}
+requestAnimationFrame(frame);
+
+/* ── controls ───────────────────────────────────────────────────── */
+$("#btnPlay").addEventListener("click", e => {
+  paused = !paused;
+  if (paused) pausedAt = performance.now();
+  else t0 += performance.now() - pausedAt;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+$("#btnReplay").addEventListener("click", () => {
+  reset(); t0 = performance.now(); paused = false; $("#btnPlay").textContent = "Pause";
+});
+
+/* ── reduced motion: wait for an explicit play ──────────────────── */
+if (matchMedia("(prefers-reduced-motion: reduce)").matches){
+  paused = true; pausedAt = performance.now();
+  $("#poster").classList.add("on");
+  $("#btnPlay").textContent = "Play";
+  $("#pplay").addEventListener("click", () => {
+    $("#poster").classList.remove("on");
+    t0 += performance.now() - pausedAt; paused = false;
+    $("#btnPlay").textContent = "Pause";
+  });
+}
+})();
+</script>
