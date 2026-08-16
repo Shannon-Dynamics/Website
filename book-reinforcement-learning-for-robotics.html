@@ -105,10 +105,15 @@
             padding: 20px 0; border-bottom: 1px solid transparent;
             transition: padding .3s ease, background .3s ease, border-color .3s ease;
         }
+        /* three tracks so the link island sits dead centre regardless of how
+           wide the logo or the CTA happen to be */
         .nav-in {
             max-width: 1240px; margin-inline: auto; padding-inline: 24px;
-            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px;
         }
+        .nav-logo { justify-self: start; }
+        .nav-links { justify-self: center; }
+        .nav-cta { justify-self: end; }
         /* past the hero the bar needs a surface of its own: the logo and links
            are white-only assets and the body behind them turns white */
         #nav.is-stuck {
@@ -127,50 +132,65 @@
 
         .nav-link { padding: 6px 14px; border-radius: 9999px; transition: background .25s ease, color .25s ease; }
         .nav-link:hover { background: rgba(255,255,255,.1); color: #fff; }
-        .nav-sep { width: 1px; height: 20px; background: rgba(255,255,255,.18); margin: 0 5px 0 7px; flex-shrink: 0; }
-        /* Contact Us lives inside the island so it stays pinned with the bar
-           rather than floating as a separate affordance */
+
+        /* ═══ Library submenu — hover/focus disclosure, click-toggle for touch ═══
+           The trigger is a real link (jumps to #library) that also happens to
+           carry a menu; JS only handles the touch case where hover can't open
+           it, plus outside-click / Escape to close. */
+        .nav-item { position: relative; }
+        .nav-link-sub { display: inline-flex; align-items: center; gap: 5px; }
+        .nav-chev { transition: transform .25s ease; flex-shrink: 0; }
+        .nav-item:hover .nav-chev, .nav-item.is-open .nav-chev { transform: rotate(180deg); }
+        .nav-sub {
+            position: absolute; top: calc(100% + 10px); left: 50%; transform: translate(-50%, 6px);
+            width: 240px; padding: 8px; border-radius: 16px;
+            opacity: 0; visibility: hidden; pointer-events: none;
+            transition: opacity .22s ease, transform .22s ease, visibility .22s;
+            background: rgba(13,19,23,.97);
+            backdrop-filter: blur(18px) saturate(160%);
+            -webkit-backdrop-filter: blur(18px) saturate(160%);
+            border: 1px solid rgba(255,255,255,.12);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 20px 44px -18px rgba(0,0,0,.65);
+        }
+        /* small gap-bridging pad so the pointer can travel from link to panel
+           without the hover chain breaking on the dead space between them */
+        .nav-item::after {
+            content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 14px;
+        }
+        .nav-item:hover .nav-sub,
+        .nav-item:focus-within .nav-sub,
+        .nav-item.is-open .nav-sub {
+            opacity: 1; visibility: visible; transform: translate(-50%, 0); pointer-events: auto;
+        }
+        .nav-sub-link {
+            display: block; padding: 9px 12px; border-radius: 10px;
+            transition: background .2s ease;
+        }
+        .nav-sub-link:hover, .nav-sub-link:focus-visible { background: rgba(255,255,255,.1); }
+        .nav-sub-link b { display: block; font-size: 12.5px; font-weight: 600; color: #fff; letter-spacing: -.01em; }
+        .nav-sub-link small { display: block; font-size: 11px; color: rgba(255,255,255,.55); margin-top: 2px; }
+        @media (prefers-reduced-motion: reduce) { .nav-sub, .nav-chev { transition-duration: .01ms; } }
+        /* its own frame, sitting outside the link island, so it stays pinned
+           with the bar rather than floating as a separate affordance */
         .nav-cta {
             display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;
             background: #fff; color: #10181b; border-radius: 9999px;
-            padding: 8px 17px; font-size: 12.5px; font-weight: 500;
+            padding: 9px 18px; font-size: 12.5px; font-weight: 500;
             transition: opacity .25s ease;
         }
         .nav-cta:hover { opacity: .88; }
 
-        /* ═══ floating contact button ═══
-           The page's one floating contact affordance — the nav carries no CTA.
-           Revealed once the hero is behind you; stands down over the CTA
-           banner so it never floats on top of the same call to action. */
-        .fab {
-            position: fixed; right: 26px; bottom: 26px; z-index: 70;
-            display: inline-flex; align-items: center; gap: 9px;
-            background: #10181b; color: #fff; border-radius: 9999px;
-            padding: 14px 22px; font-size: 13px; font-weight: 500;
-            box-shadow: 0 18px 40px -14px rgba(16,24,27,.55);
-            opacity: 0; transform: translateY(14px); pointer-events: none;
-            transition: opacity .35s ease, transform .35s ease, background .25s ease;
-        }
-        .fab.is-on { opacity: 1; transform: none; pointer-events: auto; }
-        .fab:hover { background: #4C7EFF; }
-        .fab i { width: 7px; height: 7px; border-radius: 9999px; background: #4C7EFF; transition: background .25s ease; }
-        .fab:hover i { background: #fff; }
-        @media (max-width: 640px) { .fab { right: 14px; bottom: 14px; padding: 12px 17px; } }
-        @media (prefers-reduced-motion: reduce) { .fab { transition-duration: .01ms; } }
 
-        /* below the link breakpoint the island drops its glass and collapses to
-           just the CTA — the links have nowhere to go at that width */
+
+        /* the links have nowhere to go at this width; logo and CTA hold the bar */
         @media (max-width: 1023.98px) {
-            .nav-links {
-                background: none; border-color: transparent; box-shadow: none;
-                backdrop-filter: none; -webkit-backdrop-filter: none; padding: 0;
-            }
-            .nav-link, .nav-sep { display: none; }
+            .nav-in { grid-template-columns: 1fr auto; }
+            .nav-links { display: none; }
         }
 
         /* the bar now covers the top of the viewport, so anchor jumps have to
            stop short of it or every section lands with its heading underneath */
-        #work, #capabilities, #showcase, #library, #ecosystem, #contact { scroll-margin-top: 80px; }
+        #capabilities, #showcase, #library, #ecosystem, #contact { scroll-margin-top: 80px; }
 
 @media (prefers-reduced-motion: reduce) { #nav { transition-duration: .01ms; } }
 
@@ -548,6 +568,92 @@
         /* Brand blue is only ~4.3:1 on the veiled texture; this tint is the same
            hue family, lifted just enough for small eyebrow labels on dark. */
         .on-tex-accent { color: #8FAEFF; }
+
+        /* ═══════════════════════════════════════════════════════════════════
+           CTA — contact form
+           Left column is plain text on the texture, veiled by .tex-cta above.
+           Right column is a glass-dark card, which supplies its own contrast
+           independent of the canvas underneath.
+           ═══════════════════════════════════════════════════════════════════ */
+        .tex-cta::after {
+            background: linear-gradient(90deg,
+                rgba(11,17,20,.86) 0%, rgba(11,17,20,.74) 40%,
+                rgba(11,17,20,.4) 58%, transparent 72%);
+        }
+        .cta-steps { display: flex; flex-direction: column; gap: 18px; margin-top: 34px; }
+        .cta-step { display: grid; grid-template-columns: 26px 1fr; gap: 14px; align-items: baseline; }
+        .cta-step-num {
+            font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .1em;
+            color: #8FAEFF;
+        }
+        .cta-step h3 { color: #fff; font-size: 13.5px; font-weight: 600; }
+        .cta-step p { color: rgba(255,255,255,.62); font-size: 12.5px; line-height: 1.6; margin-top: 3px; }
+        .cta-fallback {
+            margin-top: 30px; padding-top: 22px; border-top: 1px solid rgba(255,255,255,.14);
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+            font-size: 12.5px; color: rgba(255,255,255,.55);
+        }
+        .cta-fallback a { color: #8FAEFF; }
+        .cta-fallback a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+        .cta-form { padding: 30px; border-radius: 20px; }
+        .cta-form-head { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px; }
+        .cta-form-sub { font-size: 12.5px; line-height: 1.6; color: rgba(255,255,255,.6); margin-bottom: 20px; }
+        .field { margin-top: 16px; }
+        .field:first-of-type { margin-top: 0; }
+        .field label {
+            display: block; font-family: "JetBrains Mono", monospace; font-size: 10px;
+            letter-spacing: .16em; color: rgba(255,255,255,.5); margin-bottom: 8px;
+        }
+        .field input, .field textarea {
+            width: 100%; background: rgba(11,17,20,.35); color: #fff;
+            border: 1px solid rgba(255,255,255,.16); border-radius: 10px;
+            padding: 11px 14px; font-size: 13.5px; font-family: inherit;
+            transition: border-color .2s ease, background .2s ease;
+        }
+        .field input::placeholder, .field textarea::placeholder { color: rgba(255,255,255,.32); }
+        .field input:focus, .field textarea:focus {
+            outline: none; border-color: #4C7EFF; background: rgba(11,17,20,.55);
+        }
+        .field textarea { resize: vertical; min-height: 92px; }
+        .field input[aria-invalid="true"], .field textarea[aria-invalid="true"] {
+            border-color: #FCA5A5;
+        }
+        .field-err {
+            display: none; margin-top: 6px; font-size: 11.5px; color: #FCA5A5;
+        }
+        .field-err.is-on { display: block; }
+
+        .cta-submit {
+            width: 100%; margin-top: 22px; padding: 13px 20px;
+            display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+            background: #fff; color: #10181b; border-radius: 9999px;
+            font-size: 13.5px; font-weight: 500;
+            transition: opacity .2s ease, transform .2s ease;
+        }
+        .cta-submit:hover { opacity: .9; transform: translateY(-1px); }
+        .cta-submit:disabled { opacity: .7; pointer-events: none; }
+        .cta-spin {
+            width: 14px; height: 14px; border-radius: 9999px;
+            border: 2px solid rgba(16,24,27,.25); border-top-color: #10181b;
+            animation: cta-spin-turn .7s linear infinite; display: none;
+        }
+        .is-sending .cta-spin { display: inline-block; }
+        .is-sending .cta-submit-label { display: none; }
+        @keyframes cta-spin-turn { to { transform: rotate(360deg); } }
+
+        .cta-hint {
+            margin-top: 14px; font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+            letter-spacing: .1em; line-height: 1.6; color: rgba(255,255,255,.72); text-align: center;
+        }
+        .cta-status {
+            display: none; margin-top: 16px; padding: 12px 14px; border-radius: 10px;
+            font-size: 12.5px; line-height: 1.6;
+        }
+        .cta-status.is-on { display: block; }
+        .cta-status.is-ok { background: rgba(76,126,255,.14); border: 1px solid rgba(76,126,255,.35); color: #d7e2ff; }
+        .cta-status.is-err { background: rgba(252,165,165,.1); border: 1px solid rgba(252,165,165,.35); color: #FCA5A5; }
+        @media (prefers-reduced-motion: reduce) { .cta-spin { animation: none; } }
 
         /* ═══════════════════════════════════════════════════════════════════
            HERO — one large centred statement
@@ -1143,20 +1249,39 @@
 
 <header id="nav">
         <div class="nav-in">
-            <a href="index.html" class="flex items-center shrink-0">
+            <a href="index.html" class="nav-logo flex items-center shrink-0">
                 <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-7 w-auto" />
             </a>
-            <nav class="nav-links glass-dark rounded-full pl-2 pr-1.5 py-1.5 flex items-center gap-1 text-[12.5px] text-white/75">
+            <nav class="nav-links glass-dark rounded-full px-2 py-1.5 flex items-center gap-1 text-[12.5px] text-white/75">
                 <a class="nav-link" href="index.html#capabilities">Capabilities</a>
                 <a class="nav-link" href="index.html#showcase">Products</a>
-                <a class="nav-link" href="index.html#library">Library</a>
+
+                <!-- ── Library: nav-link + hover/focus submenu ── -->
+                <div class="nav-item" data-nav-item>
+                    <a class="nav-link nav-link-sub" href="index.html#library" aria-haspopup="true" aria-expanded="false">
+                        Library
+                        <svg class="nav-chev" width="8" height="8" viewBox="0 0 8 8" fill="none" aria-hidden="true">
+                            <path d="M1 2.5L4 5.5L7 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                    </a>
+                    <div class="nav-sub" role="menu" aria-label="Library">
+                        <a class="nav-sub-link" href="library-publications.html" role="menuitem">
+                            <b>Publications</b><small>Papers, preprints and field notes</small>
+                        </a>
+                        <a class="nav-sub-link" href="library-books.html" role="menuitem">
+                            <b>Books</b><small>Long-form from Shannon Press</small>
+                        </a>
+                        <a class="nav-sub-link" href="library-open-source.html" role="menuitem">
+                            <b>Open Source</b><small>Repositories, guides and API reference</small>
+                        </a>
+                    </div>
+                </div>
+
                 <a class="nav-link" href="index.html#ecosystem">Ecosystem</a>
-                <span class="nav-sep" aria-hidden="true"></span>
             </nav>
+            <a class="nav-cta" href="#contact">Contact Us <span aria-hidden="true">→</span></a>
         </div>
     </header>
-    <!-- floating contact button — revealed once the top of the page is behind you -->
-    <a href="index.html#contact" class="fab" aria-label="Contact Shannon Dynamics"><i aria-hidden="true"></i>Contact Us →</a>
 
 
     
@@ -1492,18 +1617,87 @@
                 </div>
             </div>
 
-<!-- ═══════════ CTA BANNER ═══════════ -->
-            <div id="contact" class="relative h-[38vh] min-h-[300px] bg-graphite tex tex-center">
+<!-- ═══════════ CTA BANNER — contact form ═══════════ -->
+            <div id="contact" class="relative bg-graphite tex tex-cta py-20 md:py-28">
                 <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
-                <div class="absolute inset-0 flex flex-col items-center justify-center text-center px-6">
-                    <p class="on-tex-accent text-[11px] tracking-[0.2em] mb-4" data-reveal>LET'S BUILD</p>
-                    <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-xl leading-snug" data-reveal>
-                        Rehearse your machine before reality does.
-                    </h2>
-                    <div class="mt-8 flex flex-wrap items-center justify-center gap-3" data-reveal>
-                        <a href="mailto:office@shannon.id" class="bg-white text-graphite rounded-full px-6 py-3.5 text-[13px] font-medium hover:opacity-90 transition-opacity">office@shannon.id →</a>
-                        <a href="https://bohrlabs.id" target="_blank" rel="noopener" class="btn-line px-6 py-3.5 text-[13px]">Bohr Labs</a>
+                <div class="relative max-w-[1240px] mx-auto px-6 grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
+
+                    <!-- ── left: pitch + what happens next ── -->
+                    <div>
+                        <p class="on-tex-accent text-[11px] tracking-[0.2em]" data-reveal>CONTACT</p>
+                        <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-lg leading-snug mt-4" data-reveal>
+                            Need more information?<br>Get in touch with us
+                        </h2>
+                        <p class="text-white/70 text-[13.5px] leading-7 max-w-md mt-5" data-reveal>
+                            Simulation-first engineering, applied to your problem — reach out and we'll take it from there.
+                        </p>
+
+                        <div class="cta-steps" data-reveal>
+                            <div class="cta-step">
+                                <span class="cta-step-num">01</span>
+                                <div>
+                                    <h3>Share your challenge</h3>
+                                    <p>Tell us what you're working on and what's blocking you.</p>
+                                </div>
+                            </div>
+                            <div class="cta-step">
+                                <span class="cta-step-num">02</span>
+                                <div>
+                                    <h3>Talk to an engineer</h3>
+                                    <p>You'll hear from a Shannon engineer directly — no middlemen.</p>
+                                </div>
+                            </div>
+                            <div class="cta-step">
+                                <span class="cta-step-num">03</span>
+                                <div>
+                                    <h3>See it on your use case</h3>
+                                    <p>We'll show you Shannon on a scenario that matters to you.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="cta-fallback" data-reveal>
+                            <span>Prefer email? <a href="mailto:office@shannon.id">office@shannon.id</a></span>
+                            <span aria-hidden="true">·</span>
+                            <a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a>
+                        </div>
                     </div>
+
+                    <!-- ── right: the form itself ── -->
+                    <form class="glass-dark cta-form" id="contact-form" data-reveal novalidate>
+                        <p class="cta-form-head">Send a Message</p>
+                        <p class="cta-form-sub">Fill out the form below with your details and message and we'll get back to you shortly.</p>
+
+                        <div class="field">
+                            <label for="cf-name">Name</label>
+                            <input type="text" id="cf-name" name="name" autocomplete="name" required
+                                   placeholder="Your name" aria-describedby="cf-name-err" />
+                            <p class="field-err" id="cf-name-err">Tell us who's asking.</p>
+                        </div>
+
+                        <div class="field">
+                            <label for="cf-email">Email</label>
+                            <input type="email" id="cf-email" name="email" autocomplete="email" required
+                                   placeholder="you@company.com" aria-describedby="cf-email-err" />
+                            <p class="field-err" id="cf-email-err">A valid email gets you a reply.</p>
+                        </div>
+
+                        <div class="field">
+                            <label for="cf-message">Message</label>
+                            <textarea id="cf-message" name="message" required aria-describedby="cf-message-err"
+                                placeholder="Write your message here..."></textarea>
+                            <p class="field-err" id="cf-message-err">A couple of sentences is plenty.</p>
+                        </div>
+
+                        <button type="submit" class="cta-submit">
+                            <span class="cta-spin" aria-hidden="true"></span>
+                            <span class="cta-submit-label">Send message →</span>
+                        </button>
+
+                        <p class="cta-hint">OPENS YOUR EMAIL — JUST HIT SEND</p>
+                        <div class="cta-status" id="cta-status" role="status" aria-live="polite"></div>
+                    </form>
+
                 </div>
             </div>
 
@@ -1543,18 +1737,99 @@
            button it used to stand in for is gone. */
         (function () {
             const nav = document.getElementById("nav");
-            const fab = document.querySelector(".fab");
-            const cta = document.getElementById("contact");
             function onScroll() {
                 nav.classList.toggle("is-stuck", scrollY > 40);
-                if (!fab) return;
-                const ctaTop = cta ? cta.getBoundingClientRect().top : Infinity;
-                fab.classList.toggle("is-on", scrollY > innerHeight * .5 && ctaTop > innerHeight * .8);
             }
             addEventListener("scroll", onScroll, { passive: true });
             lenis.on("scroll", onScroll);
             onScroll();
         })();
+
+        /* ---------- Library submenu: touch-toggle + outside-click/Escape ----------
+           CSS alone handles hover and keyboard focus-within; this only covers
+           what CSS can't — a tap on touch (no hover state to open it) and
+           closing when the pointer/keyboard moves elsewhere. */
+        (function () {
+            const item = document.querySelector("[data-nav-item]");
+            if (!item) return;
+            const trigger = item.querySelector(".nav-link-sub");
+
+            function close() {
+                item.classList.remove("is-open");
+                trigger.setAttribute("aria-expanded", "false");
+            }
+            trigger.addEventListener("click", e => {
+                // a real hover (mouse) already opened it — let the link navigate.
+                // Touch/keyboard-activation gets a first tap that only opens it.
+                if (matchMedia("(hover: hover)").matches) return;
+                if (!item.classList.contains("is-open")) {
+                    e.preventDefault();
+                    item.classList.add("is-open");
+                    trigger.setAttribute("aria-expanded", "true");
+                }
+            });
+            document.addEventListener("click", e => {
+                if (!item.contains(e.target)) close();
+            });
+            document.addEventListener("keydown", e => {
+                if (e.key === "Escape") close();
+            });
+        })();
+
+        /* ---------- contact form ----------
+           No backend on this page, so there is nothing to POST to yet — this
+           composes a mailto: with the fields folded into the subject/body and
+           hands off to the visitor's own mail client. */
+        (function () {
+            const form = document.getElementById("contact-form");
+            if (!form) return;
+            const status = document.getElementById("cta-status");
+
+            const fields = [
+                { el: form.elements.name, err: "cf-name-err", check: v => v.trim().length > 0 },
+                { el: form.elements.email, err: "cf-email-err", check: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v) },
+                { el: form.elements.message, err: "cf-message-err", check: v => v.trim().length > 0 },
+            ];
+
+            function setStatus(kind, msg) {
+                status.className = "cta-status is-on is-" + kind;
+                status.textContent = msg;
+            }
+
+            form.addEventListener("submit", e => {
+                e.preventDefault();
+                status.className = "cta-status";
+
+                let firstBad = null;
+                fields.forEach(f => {
+                    const bad = !f.check(f.el.value);
+                    f.el.setAttribute("aria-invalid", String(bad));
+                    document.getElementById(f.err).classList.toggle("is-on", bad);
+                    if (bad && !firstBad) firstBad = f.el;
+                });
+                if (firstBad) { firstBad.focus(); return; }
+
+                form.classList.add("is-sending");
+                const submitBtn = form.querySelector(".cta-submit");
+                submitBtn.disabled = true;
+
+                setTimeout(() => {
+                    const subject = "Enquiry from " + form.elements.name.value.trim();
+                    const body = "From: " + form.elements.name.value.trim() + " <" + form.elements.email.value.trim() + ">\n\n"
+                        + form.elements.message.value.trim();
+                    const mailto = "mailto:office@shannon.id"
+                        + "?subject=" + encodeURIComponent(subject)
+                        + "&body=" + encodeURIComponent(body);
+
+                    window.location.href = mailto;
+
+                    form.classList.remove("is-sending");
+                    submitBtn.disabled = false;
+                    setStatus("ok", "Opening your email client with this filled in — hit send there and it reaches us directly.");
+                }, 550);
+            });
+        })();
+
         gsap.from("#hero-copy > *", { y: 20, opacity: 0, stagger: .12, duration: .8, delay: .15, ease: "power2.out" });
         document.querySelectorAll("[data-reveal]").forEach(el => {
             gsap.fromTo(el, { y: 22, opacity: 0 }, {
