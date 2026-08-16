@@ -655,6 +655,19 @@
         .cta-status.is-err { background: rgba(252,165,165,.1); border: 1px solid rgba(252,165,165,.35); color: #FCA5A5; }
         @media (prefers-reduced-motion: reduce) { .cta-spin { animation: none; } }
 
+        /* ── footer navigation columns ── */
+        .foot-col-head {
+            font-family: "JetBrains Mono", monospace; font-size: 10px;
+            letter-spacing: .16em; color: rgba(255,255,255,.45); margin-bottom: 16px;
+            text-transform: uppercase;
+        }
+        .foot-col-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+        .foot-col-list a {
+            font-size: 13px; color: rgba(255,255,255,.65);
+            transition: color .2s ease;
+        }
+        .foot-col-list a:hover { color: #fff; }
+
         /* ═══════════════════════════════════════════════════════════════════
            HERO — one large centred statement
            Structural cue from rantai.dev: mono eyebrow with a rule, an
@@ -1171,23 +1184,17 @@
         .bd-ch.on { color: #4C7EFF; border-color: #4C7EFF; font-weight: 600; }
         .bd-hero { display: grid; gap: 36px; }
         @media (min-width: 760px) { .bd-hero { grid-template-columns: 160px minmax(0, 1fr); align-items: start; } }
-        /* ── 3D book cover ── */
+        /* ── flat 2D book cover ── */
         .bd-book-3d-scene {
-            perspective: 900px; perspective-origin: 50% 50%;
             width: min(160px, 47vw); aspect-ratio: 3 / 4.2;
         }
         .bd-book-3d {
             position: relative; width: 100%; height: 100%;
-            transform-style: preserve-3d;
-            transform: rotateY(-6deg) rotateX(1deg);
-            transition: transform .7s cubic-bezier(.76,0,.24,1);
         }
-        .bd-book-3d-scene:hover .bd-book-3d { transform: rotateY(-14deg) rotateX(3deg); }
         .bd-book-3d-front {
             position: absolute; inset: 0;
             background: #f2f2f3;
-            border-radius: 2px 6px 6px 2px; overflow: hidden;
-            backface-visibility: hidden;
+            border-radius: 4px; overflow: hidden;
             display: flex; flex-direction: column;
             padding: 5% 6% 4%;
             box-shadow: 0 26px 48px -22px rgba(16,24,27,.65);
@@ -1195,36 +1202,6 @@
         .bd-book-3d-front::after {
             content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 12px; z-index: 5;
             background: linear-gradient(90deg, rgba(0,0,0,.3), rgba(0,0,0,.04) 70%, rgba(255,255,255,.08));
-        }
-        .bd-book-3d-spine {
-            position: absolute; top: 0; bottom: 0; left: 0; width: 20px;
-            background: #1d2d3d;
-            transform: rotateY(-90deg) translateX(-10px);
-            transform-origin: left center;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 6px 0 0 6px;
-        }
-        .bd-book-3d-spine span {
-            writing-mode: vertical-rl;
-            font-family: "Inter", sans-serif; font-size: 5.5px; font-weight: 700;
-            letter-spacing: .12em; text-transform: uppercase;
-            color: rgba(255,255,255,.85); white-space: nowrap;
-        }
-        .bd-book-3d-pages {
-            position: absolute; top: 2px; bottom: 2px; right: 0; width: 10px;
-            background: linear-gradient(90deg, #e8e8e8, #f5f5f5);
-            transform: rotateY(90deg) translateX(5px);
-            transform-origin: right center; border-radius: 0 2px 2px 0;
-        }
-        .bd-book-3d-pages::before {
-            content: ''; position: absolute; inset: 4px 0;
-            background: repeating-linear-gradient(180deg, rgba(16,24,27,.06) 0px, transparent 1px, transparent 3px);
-        }
-        .bd-book-3d-bottom {
-            position: absolute; bottom: 0; left: 0; right: 0; height: 10px;
-            background: linear-gradient(180deg, #e4e4e4, #eee);
-            transform: rotateX(90deg) translateY(5px);
-            transform-origin: bottom center;
         }
         /* cover design elements — detail page scale */
         .bd-cv-header {
@@ -1246,9 +1223,6 @@
             border-top: 1px solid rgba(16,24,27,.18); padding-top: 3px; margin-top: 4%;
             font-family: "JetBrains Mono", monospace; font-size: 4px;
             letter-spacing: .1em; text-transform: uppercase; color: #5d5d60;
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .bd-book-3d { transition-duration: .01ms; transform: none; }
         }
         .bd-kicker { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em;
                      color: rgba(16,24,27,.42); margin-bottom: 14px; }
@@ -1431,7 +1405,7 @@
                         <!-- ── main ── -->
                         <main>
                             <section id="overview" class="bd-hero" data-reveal style="scroll-margin-top:110px">
-                                <div class="bd-book-3d-scene" data-book3d>
+                                <div class="bd-book-3d-scene">
                                     <div class="bd-book-3d">
                                         <div class="bd-book-3d-front">
                                             <div class="bd-cv-header">Shannon Dynamics</div>
@@ -1441,9 +1415,6 @@
                                             </div>
                                             <div class="bd-cv-footer">22 Chapters · Rust throughout</div>
                                         </div>
-                                        <div class="bd-book-3d-spine"><span>Reinforcement Learning for Robotics</span></div>
-                                        <div class="bd-book-3d-pages"></div>
-                                        <div class="bd-book-3d-bottom"></div>
                                     </div>
                                 </div>
                                 <div>
@@ -1798,30 +1769,26 @@
                 </div>
             </div>
 
-<!-- ═══════════ FOOTER — contact + strip ═══════════ -->
-            <footer>
-                <div id="contact" class="relative bg-graphite tex tex-cta py-20 md:py-28">
-                    <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
-                    <div class="relative max-w-[1240px] mx-auto px-6 grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
+            <!-- ═══════════ FOOTER ═══════════ -->
+            <footer id="contact" class="relative bg-graphite tex tex-cta">
+                <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
 
-                        <!-- ── left: pitch ── -->
+                <!-- ── top: contact CTA row ── -->
+                <div class="relative max-w-[1240px] mx-auto px-6 pt-20 md:pt-28 pb-16 md:pb-20">
+                    <div class="grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
+
+                        <!-- left: pitch -->
                         <div>
                             <p class="on-tex-accent text-[11px] tracking-[0.2em]" data-reveal>CONTACT</p>
                             <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-lg leading-snug mt-4" data-reveal>
                                 Have a challenge?<br>Let's build what's next.
                             </h2>
                             <p class="text-white/70 text-[13.5px] leading-7 max-w-md mt-5" data-reveal>
-                                Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem, we'd like to understand what you're building. Tell us what you're working on.
+                                Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem — tell us what you're working on.
                             </p>
-
-                            <div class="cta-fallback" data-reveal>
-                                <span>Prefer email? <a href="mailto:office@shannon.id">office@shannon.id</a></span>
-                                <span aria-hidden="true">·</span>
-                                <a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a>
-                            </div>
                         </div>
 
-                        <!-- ── right: the form itself ── -->
+                        <!-- right: form -->
                         <form class="glass-dark cta-form" id="contact-form" data-reveal novalidate>
                             <p class="cta-form-head">Send a Message</p>
                             <p class="cta-form-sub">Fill out the form and we'll get back to you.</p>
@@ -1858,14 +1825,60 @@
                     </div>
                 </div>
 
-                <div class="bg-white px-6 py-7">
-                    <div class="max-w-[1240px] mx-auto flex flex-col md:flex-row items-center justify-between gap-3 text-[11px] text-slatebg/50">
-                        <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
-                        <div class="flex gap-6">
-                            <a class="hover:text-slatebg transition-colors" href="#">Privacy</a>
-                            <a class="hover:text-slatebg transition-colors" href="#">Terms</a>
-                            <a class="hover:text-slatebg transition-colors" href="https://bohrlabs.id">Bohr Labs</a>
+                <!-- ── middle: navigation columns ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-14 md:py-16 grid grid-cols-2 md:grid-cols-4 gap-10 md:gap-8">
+
+                        <!-- col 1: brand -->
+                        <div class="col-span-2 md:col-span-1">
+                            <a href="#" class="inline-block">
+                                <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-6 w-auto" />
+                            </a>
+                            <p class="text-white/50 text-[12px] leading-relaxed mt-4 max-w-[220px]">
+                                Simulation-first engineering for robots and autonomous software.
+                            </p>
+                            <a href="mailto:office@shannon.id" class="inline-block mt-4 text-[12px] text-[#8FAEFF] hover:underline hover:underline-offset-2">office@shannon.id</a>
                         </div>
+
+                        <!-- col 2: company -->
+                        <div>
+                            <p class="foot-col-head">Company</p>
+                            <ul class="foot-col-list">
+                                <li><a href="#capabilities">Capabilities</a></li>
+                                <li><a href="#showcase">Products</a></li>
+                                <li><a href="#ecosystem">Ecosystem</a></li>
+                                <li><a href="#contact">Contact</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 3: library -->
+                        <div>
+                            <p class="foot-col-head">Library</p>
+                            <ul class="foot-col-list">
+                                <li><a href="library-books.html">Books</a></li>
+                                <li><a href="library-publications.html">Publications</a></li>
+                                <li><a href="library-open-source.html">Open Source</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 4: connect -->
+                        <div>
+                            <p class="foot-col-head">Connect</p>
+                            <ul class="foot-col-list">
+                                <li><a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a></li>
+                                <li><a href="#">Privacy</a></li>
+                                <li><a href="#">Terms</a></li>
+                            </ul>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- ── bottom: copyright bar ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-white/35">
+                        <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
+                        <span class="font-mono text-[10px] tracking-wider text-white/20">SIMULATION-FIRST</span>
                     </div>
                 </div>
             </footer>

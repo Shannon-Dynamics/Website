@@ -1191,23 +1191,18 @@
             background: linear-gradient(90deg, rgba(0,0,0,.34), rgba(0,0,0,.05) 70%, rgba(255,255,255,.1)); }
         .bd-cover .book-cover-t { left: 30px; right: 18px; bottom: 20px; font-size: 14px; font-weight: 600; line-height: 1.35; }
 
-        /* ═══ 3D book cover (detail page) ═══ */
+        /* ═══ flat 2D book cover (detail page) ═══ */
         .bd-book-3d-scene {
-            perspective: 1200px; perspective-origin: 50% 50%;
             width: min(160px, 47vw); aspect-ratio: 3 / 4.2;
         }
         .bd-book-3d {
             position: relative; display: block; width: 100%; height: 100%;
-            transform-style: preserve-3d;
-            transform: rotateY(-10deg) rotateX(2deg);
-            transition: transform .7s cubic-bezier(.76,0,.24,1);
         }
-        .bd-book-3d-scene:hover .bd-book-3d { transform: rotateY(-20deg) rotateX(4deg); }
         .bd-book-3d-front {
             position: absolute; inset: 0;
             background: #f2f2f3;
-            border-radius: 2px 6px 6px 2px;
-            overflow: hidden; backface-visibility: hidden;
+            border-radius: 4px;
+            overflow: hidden;
             display: flex; flex-direction: column;
             padding: 7% 8% 5%;
             box-shadow: 0 26px 48px -26px rgba(16,24,27,.75);
@@ -1215,32 +1210,6 @@
         .bd-book-3d-front::after {
             content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 12px; z-index: 5;
             background: linear-gradient(90deg, rgba(0,0,0,.3), rgba(0,0,0,.04) 70%, rgba(255,255,255,.08));
-        }
-        .bd-book-3d-spine {
-            position: absolute; top: 0; bottom: 0; left: 0; width: 22px;
-            background: #1d2d3d;
-            transform: rotateY(-90deg) translateX(-11px);
-            transform-origin: left center;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 4px 0 0 4px;
-        }
-        .bd-book-3d-spine span {
-            writing-mode: vertical-rl;
-            font-family: "Inter", sans-serif; font-size: 6px; font-weight: 700;
-            letter-spacing: .1em; text-transform: uppercase;
-            color: rgba(255,255,255,.85); white-space: nowrap;
-        }
-        .bd-book-3d-pages {
-            position: absolute; top: 2px; bottom: 2px; right: 0; width: 10px;
-            background: linear-gradient(90deg, #e8e8e8, #f5f5f5);
-            transform: rotateY(90deg) translateX(5px);
-            transform-origin: right center; border-radius: 0 2px 2px 0;
-        }
-        .bd-book-3d-bottom {
-            position: absolute; bottom: 0; left: 0; right: 0; height: 10px;
-            background: linear-gradient(180deg, #e4e4e4, #eee);
-            transform: rotateX(90deg) translateY(5px);
-            transform-origin: bottom center;
         }
         /* cover design elements — detail page scale */
         .bd-cv-header {
@@ -1262,10 +1231,6 @@
             border-top: 1px solid rgba(16,24,27,.18); padding-top: 3px; margin-top: 4%;
             font-family: "JetBrains Mono", monospace; font-size: 4px;
             letter-spacing: .1em; text-transform: uppercase; color: #5d5d60;
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .bd-book-3d { transition-duration: .01ms; transform: none; }
-            .bd-book-3d-scene:hover .bd-book-3d { transform: none; }
         }
         .bd-kicker { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em;
                      color: rgba(16,24,27,.42); margin-bottom: 14px; }
@@ -1455,7 +1420,7 @@
                         <!-- ── main ── -->
                         <main>
                             <section id="overview" class="bd-hero" data-reveal style="scroll-margin-top:110px">
-                                <div class="bd-book-3d-scene" data-book3d>
+                                <div class="bd-book-3d-scene">
                                     <div class="bd-book-3d">
                                         <div class="bd-book-3d-front">
                                             <div class="bd-cv-header">Shannon Dynamics</div>
@@ -1465,9 +1430,6 @@
                                             </div>
                                             <div class="bd-cv-footer">26 Chapters · 99 Simulations</div>
                                         </div>
-                                        <div class="bd-book-3d-spine"><span>Probabilistic Robotics via Rust</span></div>
-                                        <div class="bd-book-3d-pages"></div>
-                                        <div class="bd-book-3d-bottom"></div>
                                     </div>
                                 </div>
                                 <div>
@@ -2328,32 +2290,6 @@
             }, { rootMargin: '-25% 0px -65% 0px' });
             document.querySelectorAll('.bd-chsec').forEach(sec => io.observe(sec));
         })();
-
-        /* ---------- 3D book mouse-tracking ---------- */
-        document.querySelectorAll("[data-book3d]").forEach(scene => {
-            const book = scene.querySelector(".bd-book-3d");
-            if (!book) return;
-            let tx = 0, ty = 0, cx = 0, cy = 0, active = false;
-            scene.addEventListener("pointerenter", () => { active = true; });
-            scene.addEventListener("pointerleave", () => { active = false; tx = 0; ty = 0; });
-            scene.addEventListener("pointermove", e => {
-                const r = scene.getBoundingClientRect();
-                const px = (e.clientX - r.left) / r.width - .5;
-                const py = (e.clientY - r.top) / r.height - .5;
-                tx = -px * 30;
-                ty = py * 12;
-            });
-            (function tick() {
-                cx += (tx - cx) * .12;
-                cy += (ty - cy) * .12;
-                if (active || Math.abs(cx) + Math.abs(cy) > .3) {
-                    book.style.transform = "rotateY(" + cx.toFixed(1) + "deg) rotateX(" + cy.toFixed(1) + "deg)";
-                } else {
-                    book.style.transform = "";
-                }
-                requestAnimationFrame(tick);
-            })();
-        });
     </script>
 </body>
 
