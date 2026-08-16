@@ -655,6 +655,19 @@
         .cta-status.is-err { background: rgba(252,165,165,.1); border: 1px solid rgba(252,165,165,.35); color: #FCA5A5; }
         @media (prefers-reduced-motion: reduce) { .cta-spin { animation: none; } }
 
+        /* ── footer navigation columns ── */
+        .foot-col-head {
+            font-family: "JetBrains Mono", monospace; font-size: 10px;
+            letter-spacing: .16em; color: rgba(255,255,255,.45); margin-bottom: 16px;
+            text-transform: uppercase;
+        }
+        .foot-col-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+        .foot-col-list a {
+            font-size: 13px; color: rgba(255,255,255,.65);
+            transition: color .2s ease;
+        }
+        .foot-col-list a:hover { color: #fff; }
+
         /* ═══════════════════════════════════════════════════════════════════
            HERO — one large centred statement
            Structural cue from rantai.dev: mono eyebrow with a rule, an
@@ -1397,6 +1410,7 @@
                         <aside class="bd-side" data-reveal aria-label="Book contents">
                             <p class="bd-side-h">THIS BOOK</p>
                             <a class="bd-side-top" href="#overview">Overview</a>
+                            <a class="bd-side-top" href="#vision">Vision &amp; method</a>
                             <a class="bd-side-top" href="#contents">Table of contents</a>
                             <p class="bd-part">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY</p>
                             <a class="bd-ch" href="#ch-01">The Robot That Doubts — Why Probabilistic Robotics?</a>
@@ -1431,6 +1445,11 @@
                             <p class="bd-part">PART VII — FRONTIERS AND INTEGRATION</p>
                             <a class="bd-ch" href="#ch-25">Learning in the Loop</a>
                             <a class="bd-ch" href="#ch-26">Capstone: A Complete Autonomous Robot</a>
+                            <p class="bd-part">APPENDICES</p>
+                            <a class="bd-ch" href="#app-a">A — Rust for Roboticists</a>
+                            <a class="bd-ch" href="#app-b">B — Matrix Identities &amp; Gaussian Calculus</a>
+                            <a class="bd-ch" href="#app-c">C — Lie Group Reference Card</a>
+                            <a class="bd-ch" href="#app-d">D — The Simulator &amp; Widget Framework</a>
                         </aside>
 
                         <!-- ── main ── -->
@@ -1461,6 +1480,17 @@
                                         <a class="bd-btn" href="index.html#contact">REQUEST ACCESS ↗</a>
                                     </div>
                                 </div>
+                            </section>
+
+                            <section id="vision" class="bd-toc" data-reveal style="scroll-margin-top:110px">
+                                <p class="bd-kicker">PART 0</p>
+                                <h2 class="bd-h2">Vision &amp; method</h2>
+                                <p class="bd-p">Thrun, Burgard, and Fox's <em>Probabilistic Robotics</em> defined how a generation of roboticists thinks about uncertainty. Twenty years later the field's back end has moved to factor graphs, its filters live on Lie groups, its maps are TSDFs as often as occupancy grids — and no book teaches any of it in Rust, the language the robotics industry is steadily adopting for safety-critical autonomy. This book fills that gap: no interactive book, in any language, teaches probabilistic robotics with in-page simulations, and no serious "robotics algorithms in Rust" text exists at all.</p>
+                                <p class="bd-p"><strong>The FCP promise.</strong> <strong>Foundation</strong> — every concept gets its full mathematical formalism: definitions, stated assumptions, and honest derivations, in the notation lineage of Thrun et al. extended to modern on-manifold estimation. <strong>Conceptual</strong> — every hard idea gets a visual, interactive treatment: dashboards, animations, and web simulations where the reader turns noise parameters, scrubs time, drags robots, and watches beliefs evolve. <strong>Practical</strong> — every algorithm is implemented in idiomatic Rust inside one cargo workspace, where the book's printed listings, its test suite, its figures, and its in-page WASM demos are literally the same code. Because Rust compiles to WASM, the filter the reader just studied <em>is</em> the filter running in the page — no Python competitor can make that claim.</p>
+                                <p class="bd-p"><strong>The running lab.</strong> Two worlds thread through the whole book. <strong>The Hallway</strong> is a 1D corridor with indistinguishable doors — Thrun's classic example, and the pedagogical world where beliefs are plottable as curves. <strong>The Apartment</strong> is a 2D floorplan with simulated wheel encoders and a 2D LiDAR, ray-cast via <code>parry2d</code> — the realistic world where localization, mapping, SLAM, planning, and the capstone all take place. The book's robot is <strong>Rusty</strong>, a differential-drive rover built in Chapter 4 that never leaves: by Chapter 26 it autonomously explores and maps an apartment it has never seen.</p>
+                                <p class="bd-p"><strong>Reader path per chapter.</strong> Hook → Conceptual (play first) → Foundation (now the rigor) → Practical (Rust) → an integration lab that runs it in the Hallway or the Apartment → exercises. Concrete before abstract, always; theorem-proof ordering is used only inside Foundation sections.</p>
+                                <p class="bd-p"><strong>Toolchain.</strong> The book ships as a Next.js 16 / React 19 static site with Fumadocs for its chrome, math set in KaTeX, code highlighted by Shiki, and dashboards in Nivo. The taught Rust stack runs on <code>nalgebra</code> for small fixed-size linear algebra and <code>faer</code> for sparse graph-SLAM solves; <code>rand</code>/<code>rand_distr</code>/<code>statrs</code> for probability, with every demo seeded for reproducibility; <code>sophus</code> for 3D Lie groups (SE(2) is hand-rolled first, pedagogically); every filter — KF, EKF, UKF, particle — hand-rolled on <code>nalgebra</code>, because that's the point of the book; <code>parry2d</code> for ray-cast LiDAR and collision; <code>petgraph</code>/<code>pathfinding</code> for graphs and search; and <code>candle</code> for the Chapter 25 learned models. Every algorithm is implemented twice, on purpose: the Rust in the text is canonical, and a faithful TypeScript port in <code>web/lib/</code> powers the in-page simulations, pinned against the Rust by numerical invariants so a reader can compare them line by line.</p>
+                                <p class="bd-p"><strong>Baseline references.</strong> Thrun, Burgard &amp; Fox's <em>Probabilistic Robotics</em> is the spine of Parts II–VI — note that the source draft is the 1999–2000 sixteen-chapter manuscript, so FastSLAM, published-form GraphSLAM, UKF, KLD-sampling, and exploration are rebuilt from the modern literature. Lynch &amp; Park's <em>Modern Robotics</em> supplies the geometry (SO/SE, exp/log, screws) and the planning baseline; Craig's and Niku's <em>Introduction to Robotics</em> ground the frames and the sensor/actuator physics; Choset et al.'s <em>Principles of Robot Motion</em> supplies the planning taxonomy; Spong et al.'s <em>Robot Modeling and Control</em> cross-references kinematics and control. Where these stop, a modernization set carries the book forward: Dellaert &amp; Kaess on factor graphs, Solà on micro Lie theory, Barfoot on state estimation, KISS-ICP/LOAM, Forster's IMU preintegration, MSCKF/ORB-SLAM3/VINS, OctoMap/Voxblox, Williams' MPPI, POMCP/DESPOT, Placed et al. on active SLAM, and the differentiable-filter and diffusion-policy literature.</p>
                             </section>
 
                             <section class="bd-toc" id="contents">
@@ -1578,167 +1608,230 @@
                                 </li>
                             </ol>
                         </div>
+                        <div class="bd-pt" data-reveal>
+                            <p class="bd-pt-h">APPENDICES</p>
+                            <ol>
+                                <li>
+                                    <a href="#app-a"><span>APP.A</span>Rust for Roboticists<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#app-b"><span>APP.B</span>Matrix Identities & Gaussian Calculus<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#app-c"><span>APP.C</span>Lie Group Reference Card<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#app-d"><span>APP.D</span>The Simulator & Widget Framework<em>→</em></a>
+                                </li>
+                            </ol>
+                        </div>
                             </section>
 
                             <!-- ── chapters — one page, anchored sections ── -->
-                            <p data-reveal style="margin-top:46px"><span class="cd-draft">DRAFT — PLACEHOLDER COPY</span></p>
                             <section class="bd-chsec" id="ch-01" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.01</p>
                                 <h2 class="bd-h2">The Robot That Doubts — Why Probabilistic Robotics?</h2>
                                 <p class="bd-p">The five sources of uncertainty; a single best guess vs. a belief; the hallway thought experiment run live; the probabilistic paradigm's implications; tour of the book, the FCP method, and Rusty.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Hallway Belief Machine, in preview — the book's whole thesis in one autoplay animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> Reader environment setup; the workspace skeleton; first <code>cargo run</code>.</p>
                             </section>
                             <section class="bd-chsec" id="ch-02" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.02</p>
                                 <h2 class="bd-h2">Probability: The Language of Uncertainty</h2>
                                 <p class="bd-p">Random variables, joint/conditional probability, Bayes rule (with background knowledge), independence, expectation, covariance, entropy and information; the Gaussian in 1D and nD, moments vs. canonical form; sampling as representation.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Gaussian Playground — drag μ, stretch Σ, watch iso-ellipses turn into eigenvectors; the Blob Multiplier — Bayes rule as a pointwise product, conjugacy live.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rand_distr</code>/<code>statrs</code>/<code>nalgebra</code>: sampling, densities, a <code>MultivariateNormal</code> you understand; seeded reproducibility discipline.</p>
                             </section>
                             <section class="bd-chsec" id="ch-03" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.03</p>
                                 <h2 class="bd-h2">The Geometry of Motion: Poses, Frames, and Lie Groups</h2>
                                 <p class="bd-p">Frames and rotation matrices; homogeneous transforms; SO(2)/SE(2) fully worked; SO(3)/SE(3), quaternions, axis-angle; exponential/log maps, twists and screws; why "state ⊞ increment" needs ⊞/⊟; uncertainty on manifolds (preview of banana distributions).</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Frame Composer — drag frames, compose transforms, watch the leading-superscript notation come alive; the Exp/Log Lens — a twist slider driving a screw-motion animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>nalgebra</code> <code>Isometry2/3</code>, <code>UnitQuaternion</code>; hand-rolled <code>SE2</code> type with <code>exp/log/adjoint</code>; <code>sophus</code> for 3D; compile-time frame-safety via newtypes.</p>
                             </section>
                             <section class="bd-chsec" id="ch-04" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS: THE ROBOT AND ITS UNCERTAINTY · CH.04</p>
                                 <h2 class="bd-h2">Rusty, Sensors, and the Simulator</h2>
                                 <p class="bd-p">Differential-drive kinematics and wheel odometry from encoder ticks; sensor taxonomy grounded in real devices (encoders, IMU, sonar, LiDAR physics, cameras); noise phenomenology measured from the simulator; building the book's lab: the Hallway and Apartment worlds, ray-cast LiDAR via <code>parry2d</code>, fixed-seed determinism; anatomy of a book widget (<code>eframe</code> + WASM).</p>
+                                <p class="bd-p"><strong>Interactive:</strong> Rusty's Dashboard — drive Rusty with the arrow keys and watch the encoders drift from ground truth; LiDAR Anatomy — beam-by-beam ray casting with noise injection.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>sim</code> crate: <code>World</code>, <code>Robot</code>, <code>Lidar</code>, <code>Encoders</code>; the widget framework skeleton every later chapter reuses.</p>
                             </section>
                             <section class="bd-chsec" id="ch-05" data-reveal>
                                 <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.05</p>
                                 <h2 class="bd-h2">The Bayes Filter: Recursive State Estimation</h2>
                                 <p class="bd-p">States, completeness, and the Markov assumption; controls vs. measurements as two data streams; beliefs; the Bayes filter recursion derived by induction; "sensing sharpens, moving smears"; representation/computation trade-offs — the family tree of every filter to come.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the full Hallway Belief Machine — scrub time, toggle sense/move, break the Markov assumption on purpose.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>trait BayesFilter { fn predict(&mut self, u); fn correct(&mut self, z); }</code> — the trait the whole book implements; discrete hallway filter as first impl; unit test reproduces the chapter's 3-step numeric worked example.</p>
                             </section>
                             <section class="bd-chsec" id="ch-06" data-reveal>
                                 <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.06</p>
                                 <h2 class="bd-h2">Kalman Filters: The Linear-Gaussian World</h2>
                                 <p class="bd-p">Linear-Gaussian systems; the KF derived by completing the square; the Kalman gain as precision- weighted trust; the information filter and canonical form duality; matrix inversion lemma; smoothing (RTS) as the first taste of "whole-trajectory" estimation.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Kalman Tuning Bench — a 1D cart with sliders for R and Q, color-coded prior/prediction/measurement/posterior, divergence on purpose; Moments vs. Information — the same belief in two parameterizations, the cost of each operation shown live.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>Kf<const N, const U, const M></code> on nalgebra <code>SMatrix</code>; RTS smoother; cross-validation vs <code>adskalman</code>; 1D + 2D tracking labs.</p>
                             </section>
                             <section class="bd-chsec" id="ch-07" data-reveal>
                                 <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.07</p>
                                 <h2 class="bd-h2">Beyond Linearity: EKF, UKF, and Estimation on Manifolds</h2>
                                 <p class="bd-p">Taylor linearization and its lies; the EKF; the unscented transform and UKF; where 2005 stops and 2026 begins: error-state formulation, ⊞/⊟ retractions, EKF/UKF on SE(2)/SE(3), invariant-EKF intuition; when each filter breaks, demonstrated.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Linearization Lens — a nonlinear function plus a Gaussian in, the true pushforward vs. EKF vs. UKF sigma points, error updating live as you slide the operating point; Manifold vs. Vector — the heading wrap-around catastrophe, fixed by an on-manifold update.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> generic <code>Ekf</code>/<code>Ukf</code> over a <code>Manifold</code> trait; error-state EKF on our <code>SE2</code>; deliberate compile-error showing the type system rejecting a dimension mismatch.</p>
                             </section>
                             <section class="bd-chsec" id="ch-08" data-reveal>
                                 <p class="bd-pt-h">PART II — THE BAYES FILTER FAMILY · CH.08</p>
                                 <h2 class="bd-h2">Nonparametric Filters: Histograms and Particles</h2>
                                 <p class="bd-p">Discrete Bayes filter; grid decompositions; binary static-state filter in log odds (the occupancy seed); importance sampling from first principles; the particle filter; resampling variance, low- variance/systematic resampling, particle deprivation; KLD-adaptive sample sizes.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Particle Survival Arena — watch weights, then watch resampling kill and clone particles; the Resampling Wheel — roulette vs. low-variance comb, side by side, variance measured live.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>ParticleFilter&lt;S&gt;</code> with pluggable proposal/likelihood; low-variance resampler in 15 lines; rayon-parallel weights (native) with the same code single-threaded on WASM.</p>
                             </section>
                             <section class="bd-chsec" id="ch-09" data-reveal>
                                 <p class="bd-pt-h">PART III — PROBABILISTIC MODELS · CH.09</p>
                                 <h2 class="bd-h2">Probabilistic Motion Models</h2>
                                 <p class="bd-p">Probabilistic kinematics; the velocity model (closed form + sampler, α₁…α₆) derived from arc geometry; the odometry model (δ_rot1, δ_trans, δ_rot2); the banana distribution as truth vs. its Gaussian caricature; map-conditioned motion; on-manifold noise (exponential-coordinate perturbations) as the modern formulation.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Banana Machine — drive a command, sample 1,000 futures, sliders for each α; the Gaussian overlay shows exactly what EKFs get wrong.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>motion</code> module: both models, both variants, property-tested (samples ↔ closed form via KS test); the samplers that power every localization demo to come.</p>
                             </section>
                             <section class="bd-chsec" id="ch-10" data-reveal>
                                 <p class="bd-pt-h">PART III — PROBABILISTIC MODELS · CH.10</p>
                                 <h2 class="bd-h2">Probabilistic Sensor Models</h2>
                                 <p class="bd-p">The beam model as a four-way mixture (hit/short/max/rand) with EM fitting of intrinsics; likelihood fields (and their smoothness advantage); map correlation; feature/landmark models with range-bearing-signature and the correspondence variable c_t; over-confidence from independence assumptions and its mitigations.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Beam Mixture Mixer — four sliders reshape the density against real simulated beams; the Likelihood Field Explorer — drag Rusty and watch per-beam likelihood and the field itself as a heatmap.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>sensor</code> module: <code>BeamModel</code> (with <code>learn_intrinsics</code>), <code>LikelihoodField</code> (precomputed distance transform), <code>LandmarkModel</code>; benchmarked against each other in the Apartment.</p>
                             </section>
                             <section class="bd-chsec" id="ch-11" data-reveal>
                                 <p class="bd-pt-h">PART IV — LOCALIZATION · CH.11</p>
                                 <h2 class="bd-h2">Localization I: Tracking with Gaussians</h2>
                                 <p class="bd-p">The localization taxonomy (tracking / global / kidnapped; static / dynamic; passive / active); Markov localization as the Bayes filter with a map; EKF localization with known then unknown correspondences; maximum-likelihood data association, Mahalanobis gating, validation regions; multi-hypothesis tracking as a Gaussian-mixture stopgap.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Association Gate — drag a measurement around a landmark field, gates drawn as ellipses, watch a wrong association poison the filter; the EKF Localization Lab — a landmark world with uncertainty ellipses breathing as landmarks come into view.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>EkfLocalizer</code> over the Ch. 7 error-state EKF + Ch. 9/10 models; MHT with pruning as an optional feature flag.</p>
                             </section>
                             <section class="bd-chsec" id="ch-12" data-reveal>
                                 <p class="bd-pt-h">PART IV — LOCALIZATION · CH.12</p>
                                 <h2 class="bd-h2">Localization II: Global Localization with Grids and Particles</h2>
                                 <p class="bd-p">Grid localization (resolution/precision trade, likelihood pre-caching); Monte Carlo Localization as the particle filter instantiated; Augmented MCL (w_fast/w_slow random-particle recovery) solving the kidnapped-robot problem; dual/mixture proposals; localization among moving people (measurement novelty filtering); the great comparison table, reproduced experimentally.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the MCL Theater — the book's centerpiece: global localization in the Apartment, the particle cloud condensing from everywhere to one hypothesis, a kidnap button, symmetry ambiguity on display.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>Mcl</code> + <code>AugmentedMcl</code> (AMCL — still Nav2's default localizer — built by hand); side-by-side benchmark: EKF vs grid vs MCL on identical logs; this chapter's demo is the book's public demo.</p>
                             </section>
                             <section class="bd-chsec" id="ch-13" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.13</p>
                                 <h2 class="bd-h2">Occupancy Grid Mapping</h2>
                                 <p class="bd-p">Mapping with known poses; per-cell binary Bayes filters in log odds; inverse sensor models (hand-crafted, then learned from the forward model); multi-sensor fusion; where per-cell independence lies to you, and MAP mapping with forward models as the honest alternative.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Map Weaver — drive Rusty and watch the map grow in log odds, gray meaning ignorance; the Independence Trap — the conflict-in-doorways artifact, then a MAP repair.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>OccGrid</code> with the Ch. 8 binary filter per cell; Bresenham ray updates; live map streaming into egui at 60 fps.</p>
                             </section>
                             <section class="bd-chsec" id="ch-14" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.14</p>
                                 <h2 class="bd-h2">The SLAM Problem and EKF SLAM</h2>
                                 <p class="bd-p">Online vs. full SLAM; the joint pose-map state; why correlations <em>are</em> the map's value; EKF SLAM with known then unknown correspondence; provisional landmarks and map management; the two fatal flaws — quadratic cost and linearization-locked inconsistency — that motivate everything after.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Correlation Web — landmarks linked by correlation strength, loop closure snapping the whole web tight, with a linked covariance-matrix heatmap; the Consistency Autopsy — watch EKF SLAM go overconfident and wrong on a long loop.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>EkfSlam</code> with dynamic state growth; instrumented to export the covariance movie the widgets replay.</p>
                             </section>
                             <section class="bd-chsec" id="ch-15" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.15</p>
                                 <h2 class="bd-h2">SLAM as Least Squares: Factor Graphs</h2>
                                 <p class="bd-p">The modern backbone. Full-SLAM posterior in log form = sum of quadratic constraints = a factor graph; MAP inference as sparse nonlinear least squares; Gauss-Newton and Levenberg-Marquardt; sparsity, variable elimination, and the Schur complement (the EIF "reduce" step, reborn); robust kernels and outlier-immune SLAM; the information-form lineage (EIF/SEIF) told honestly as history whose sparsity insight won via smoothing.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Spring-Graph Optimizer — poses as nodes, factors as springs, energy relaxation running live; add a bad loop factor, then rescue it with a robust kernel; the Sparsity Scope — information-matrix fill-in as the elimination order changes.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> hand-rolled dense GN/LM on nalgebra → sparse via <code>faer</code>; then the same graph in <code>factrs</code> 0.3 (GTSAM-style typed factors) to show the production path.</p>
                             </section>
                             <section class="bd-chsec" id="ch-16" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.16</p>
                                 <h2 class="bd-h2">Scan Matching and Pose-Graph SLAM</h2>
                                 <p class="bd-p">Front-end/back-end architecture; ICP (point-to-point, point-to-plane) derived and implemented; NDT; scan-to-map matching; KISS-ICP-style odometry; loop-closure detection and verification; pose-graph SLAM end-to-end — the Cartographer/SLAM-Toolbox recipe, built by hand.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the ICP Stepper — correspondences → transform → iterate, scrub each iteration by hand; Loop Snap — drift accumulates around the Apartment, loop closure fires, and the rubber-band correction propagates back through the trajectory.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <strong>RustSLAM-2D</strong>: LiDAR odometry (ICP over <code>parry</code>-simulated scans) + pose graph on our Ch. 15 optimizer + occupancy submaps = the book's first complete SLAM system.</p>
                             </section>
                             <section class="bd-chsec" id="ch-17" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.17</p>
                                 <h2 class="bd-h2">FastSLAM and Rao-Blackwellization</h2>
                                 <p class="bd-p">Factoring the SLAM posterior: sample paths, close maps in closed form; Rao-Blackwellization as a theorem, not a trick; FastSLAM 1.0/2.0 with per-particle landmark EKFs and tree-shared maps; grid-based RBPF (the gmapping recipe) with improved proposals; when particle SLAM still wins.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> Parallel Universes — each particle drags its own private map; resampling picks which universe survives; loop closure is universe selection, made visible.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>FastSlam</code> (landmark version) + grid-RBPF on the Ch. 8 particle machinery; rayon-parallel per-particle maps.</p>
                             </section>
                             <section class="bd-chsec" id="ch-18" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.18</p>
                                 <h2 class="bd-h2">Visual and Visual-Inertial SLAM</h2>
                                 <p class="bd-p">The camera as a probabilistic sensor: projection factors and reprojection error; two-view geometry in 90 seconds; IMU preintegration as a factor (the Lupton/Forster idea); MSCKF vs. sliding-window smoothing; marginalization and its fill-in (SEIF's lesson resurfacing); ORB-SLAM3 and VINS as <em>systems</em> — architecture described, not dissected.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Reprojection Playground — drag a 3D point or a camera pose and watch residuals update live; the Preintegration Timeline — IMU samples compressing into one factor between keyframes.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> bundle-adjust a tiny synthetic scene with our Ch. 15 optimizer + <code>sophus</code> SE(3); factor graph with preintegrated IMU factors in <code>factrs</code>; deliberately smaller P section.</p>
                             </section>
                             <section class="bd-chsec" id="ch-19" data-reveal>
                                 <p class="bd-pt-h">PART V — MAPPING AND SLAM · CH.19</p>
                                 <h2 class="bd-h2">Modern Map Representations</h2>
                                 <p class="bd-p">Beyond flat grids: octrees/OctoMap; TSDF and ESDF fusion <em>as recursive estimation</em> (per-voxel weighted least squares — the Bayes filter in disguise); meshes; distance fields for planning; one principled section on differentiable rendering as a measurement model (NeRF/3DGS mapping) with survey pointers, not system worship.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the TSDF Sculptor — watch depth scans carve a signed-distance field, with a weight slider; the Representation Gallery — the same Apartment as a grid, an octree, a TSDF, and a mesh, memory and query cost measured side by side.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> 2D TSDF fusion + ESDF via distance transform; <code>three-d</code> for the one 3D showpiece.</p>
                             </section>
                             <section class="bd-chsec" id="ch-20" data-reveal>
                                 <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.20</p>
                                 <h2 class="bd-h2">Motion Planning: From Geometry to Probability</h2>
                                 <p class="bd-p">Configuration space (via Lynch/Choset); graph search done right (Dijkstra, A<em>, D</em> Lite mention); potential fields and their local minima; sampling-based planning: PRM, RRT, RRT<em> with probabilistic completeness and asymptotic optimality stated precisely; planning on Rusty's real constraints (nonholonomic RRT variants, Dubins/Reeds-Shepp primitives, hybrid-A</em> sketch).</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Planner Arena — same map, same query: A* on a lattice vs. PRM vs. RRT vs. RRT*, race mode plus a tree-growth animation; the Narrow Passage — why sampling struggles, with a visibility intuition.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>planning</code> module on <code>petgraph</code>/<code>pathfinding</code>; RRT* from scratch with <code>parry2d</code> collision; Dubins steering for Rusty.</p>
                             </section>
                             <section class="bd-chsec" id="ch-21" data-reveal>
                                 <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.21</p>
                                 <h2 class="bd-h2">Decision Making I: MDPs and Value Iteration</h2>
                                 <p class="bd-p">From plans to policies; rewards, discounting, the Bellman equation; value iteration and policy extraction; stochastic shortest paths; the gridworld that refuses to walk straight; policy iteration and asynchronous variants; the bridge: what if state itself is uncertain?</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Policy Painter — edit rewards and noise, watch the value function as a heatmap and the policy as arrows re-converge live.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>mdp</code> module: value/policy iteration over sparse transition models; Rusty navigating with slippery wheels.</p>
                             </section>
                             <section class="bd-chsec" id="ch-22" data-reveal>
                                 <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.22</p>
                                 <h2 class="bd-h2">Decision Making II: POMDPs and Belief-Space Planning</h2>
                                 <p class="bd-p">The belief MDP; the tiger problem played honestly; α-vectors and piecewise-linear-convex value functions; exact value iteration and why it explodes; point-based methods (PBVI); modern online solvers — POMCP and DESPOT — as the practical path; AMDP/coastal navigation (uncertainty- aware behavior emerging from planning in belief space).</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Tiger Door Console — play the POMDP yourself, then watch the optimal policy, a belief segment with the α-vector envelope underneath; the Coastal Navigator — why the optimal path hugs the wall.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> exact finite-world POMDP solver; POMCP over the book's particle machinery; Rusty choosing to relocalize before committing to a corridor.</p>
                             </section>
                             <section class="bd-chsec" id="ch-23" data-reveal>
                                 <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.23</p>
                                 <h2 class="bd-h2">Stochastic Model Predictive Control: MPPI and Friends</h2>
                                 <p class="bd-p">Receding-horizon control; DWA as the classical baseline; the path-integral idea: rollouts, costs, exponential weighting — MPPI as importance sampling over controls (the particle filter's twin); constraint handling; when MPPI beats gradient MPC and vice versa.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Rollout Storm — hundreds of candidate trajectories, cost-colored, collapsing into the chosen control every frame.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>Mppi</code> with rayon rollouts (single-thread on WASM, still real-time for 2D Rusty); obstacle costs from the Ch. 19 ESDF; Rusty tracking a path through clutter.</p>
                             </section>
                             <section class="bd-chsec" id="ch-24" data-reveal>
                                 <p class="bd-pt-h">PART VI — PLANNING AND ACTING UNDER UNCERTAINTY · CH.24</p>
                                 <h2 class="bd-h2">Exploration and Active SLAM</h2>
                                 <p class="bd-p">Where should Rusty go <em>to learn</em>? Information gain and expected entropy reduction; frontier exploration; active localization (choosing motions that disambiguate); active SLAM as decision- making over the Ch. 15 graph (utility = coverage + expected information); stopping criteria; the Placed et al. survey as the map of the field.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Frontier Chaser — frontiers highlighted, utilities scored, a target chosen while the map's entropy curve falls; Disambiguation Detour — active localization choosing the informative corridor over the short one.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> frontier detector + information-gain scorer over <code>OccGrid</code>; greedy explorer; hooks the Ch. 16 SLAM stack — Rusty maps a floorplan it has never seen, autonomously.</p>
                             </section>
                             <section class="bd-chsec" id="ch-25" data-reveal>
                                 <p class="bd-pt-h">PART VII — FRONTIERS AND INTEGRATION · CH.25</p>
                                 <h2 class="bd-h2">Learning in the Loop</h2>
                                 <p class="bd-p">Machine learning <em>inside</em> the Bayesian frame, not instead of it: learned and calibrated observation models (the Ch. 13 learned-inverse-model idea, modernized); calibration curves; differentiable filters (backprop through the KF/PF); diffusion policies as probabilistic action models; what stays principled and what is still alchemy.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Calibration Clinic — an overconfident vs. a calibrated sensor model, a reliability diagram live; the Differentiable Filter Trainer — watch the loss fall as the learned noise model adapts.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>candle</code>: train a small learned beam model from simulator data; differentiate through the Ch. 6 KF; honest benchmarks vs. the hand-tuned models.</p>
                             </section>
                             <section class="bd-chsec" id="ch-26" data-reveal>
                                 <p class="bd-pt-h">PART VII — FRONTIERS AND INTEGRATION · CH.26</p>
                                 <h2 class="bd-h2">Capstone: A Complete Autonomous Robot</h2>
                                 <p class="bd-p">Everything, integrated and honest: architecture of an autonomy stack (estimation, mapping, planning, control as concurrent tasks); Rusty dropped into an unknown apartment — explores (Ch. 24), SLAMs (Ch. 16), plans (Ch. 20), controls (Ch. 23), replans on surprise; failure modes tour (kidnaps, dynamic obstacles, sensor dropout) with the probabilistic machinery recovering; engineering retrospective: what Rust's type system caught, what it cost, where the ecosystem stands; where to go next (ROS 2 via <code>ros2-rust</code>, real hardware, 3D).</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the Grand Demo — a full-page finale: autonomous exploration of a randomized apartment, every subsystem's internals inspectable — belief, map, graph, frontier scores, MPPI rollouts.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>capstone</code> crate wiring every module of the workspace; the book's closing argument that the whole stack — teaching code included — runs at real-time in the browser.</p>
                             </section>
 
+                            <!-- ── appendices ── -->
+                            <section class="bd-chsec" id="app-a" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX A</p>
+                                <h2 class="bd-h2">Rust for Roboticists</h2>
+                                <p class="bd-p">A crash course for readers arriving from C++ or Python: ownership for filter state, traits vs. inheritance, const generics for dimensions, error handling, the workspace, WASM builds — and reading <code>nalgebra</code> type signatures without fear.</p>
+                            </section>
+                            <section class="bd-chsec" id="app-b" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX B</p>
+                                <h2 class="bd-h2">Matrix Identities &amp; Gaussian Calculus</h2>
+                                <p class="bd-p">The inversion lemma, the Schur complement, completing the square, Cholesky, and the marginal/conditional of a joint Gaussian — every identity the derivations use, proved once, referenced everywhere.</p>
+                            </section>
+                            <section class="bd-chsec" id="app-c" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX C</p>
+                                <h2 class="bd-h2">Lie Group Reference Card</h2>
+                                <p class="bd-p">SO(2)/SE(2)/SO(3)/SE(3): exp/log, adjoints, left/right Jacobians, ⊞/⊟ tables, and the numerical edge cases — the page every reader bookmarks.</p>
+                            </section>
+                            <section class="bd-chsec" id="app-d" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX D</p>
+                                <h2 class="bd-h2">The Simulator &amp; Widget Framework</h2>
+                                <p class="bd-p">An architecture reference for the <code>sim</code> crate and the shared widget chrome — autoplay, seed control, the book's color code, and static fallback rendering for readers without JS.</p>
+                            </section>
 
                             <!-- ── prev / next ── -->
                             <nav class="bd-pager" data-reveal aria-label="More books">
@@ -1761,30 +1854,26 @@
                 </div>
             </div>
 
-<!-- ═══════════ FOOTER — contact + strip ═══════════ -->
-            <footer>
-                <div id="contact" class="relative bg-graphite tex tex-cta py-20 md:py-28">
-                    <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
-                    <div class="relative max-w-[1240px] mx-auto px-6 grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
+            <!-- ═══════════ FOOTER ═══════════ -->
+            <footer id="contact" class="relative bg-graphite tex tex-cta">
+                <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
 
-                        <!-- ── left: pitch ── -->
+                <!-- ── top: contact CTA row ── -->
+                <div class="relative max-w-[1240px] mx-auto px-6 pt-20 md:pt-28 pb-16 md:pb-20">
+                    <div class="grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
+
+                        <!-- left: pitch -->
                         <div>
                             <p class="on-tex-accent text-[11px] tracking-[0.2em]" data-reveal>CONTACT</p>
                             <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-lg leading-snug mt-4" data-reveal>
                                 Have a challenge?<br>Let's build what's next.
                             </h2>
                             <p class="text-white/70 text-[13.5px] leading-7 max-w-md mt-5" data-reveal>
-                                Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem, we'd like to understand what you're building. Tell us what you're working on.
+                                Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem — tell us what you're working on.
                             </p>
-
-                            <div class="cta-fallback" data-reveal>
-                                <span>Prefer email? <a href="mailto:office@shannon.id">office@shannon.id</a></span>
-                                <span aria-hidden="true">·</span>
-                                <a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a>
-                            </div>
                         </div>
 
-                        <!-- ── right: the form itself ── -->
+                        <!-- right: form -->
                         <form class="glass-dark cta-form" id="contact-form" data-reveal novalidate>
                             <p class="cta-form-head">Send a Message</p>
                             <p class="cta-form-sub">Fill out the form and we'll get back to you.</p>
@@ -1821,14 +1910,60 @@
                     </div>
                 </div>
 
-                <div class="bg-white px-6 py-7">
-                    <div class="max-w-[1240px] mx-auto flex flex-col md:flex-row items-center justify-between gap-3 text-[11px] text-slatebg/50">
-                        <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
-                        <div class="flex gap-6">
-                            <a class="hover:text-slatebg transition-colors" href="#">Privacy</a>
-                            <a class="hover:text-slatebg transition-colors" href="#">Terms</a>
-                            <a class="hover:text-slatebg transition-colors" href="https://bohrlabs.id">Bohr Labs</a>
+                <!-- ── middle: navigation columns ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-14 md:py-16 grid grid-cols-2 md:grid-cols-4 gap-10 md:gap-8">
+
+                        <!-- col 1: brand -->
+                        <div class="col-span-2 md:col-span-1">
+                            <a href="#" class="inline-block">
+                                <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-6 w-auto" />
+                            </a>
+                            <p class="text-white/50 text-[12px] leading-relaxed mt-4 max-w-[220px]">
+                                Simulation-first engineering for robots and autonomous software.
+                            </p>
+                            <a href="mailto:office@shannon.id" class="inline-block mt-4 text-[12px] text-[#8FAEFF] hover:underline hover:underline-offset-2">office@shannon.id</a>
                         </div>
+
+                        <!-- col 2: company -->
+                        <div>
+                            <p class="foot-col-head">Company</p>
+                            <ul class="foot-col-list">
+                                <li><a href="#capabilities">Capabilities</a></li>
+                                <li><a href="#showcase">Products</a></li>
+                                <li><a href="#ecosystem">Ecosystem</a></li>
+                                <li><a href="#contact">Contact</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 3: library -->
+                        <div>
+                            <p class="foot-col-head">Library</p>
+                            <ul class="foot-col-list">
+                                <li><a href="library-books.html">Books</a></li>
+                                <li><a href="library-publications.html">Publications</a></li>
+                                <li><a href="library-open-source.html">Open Source</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 4: connect -->
+                        <div>
+                            <p class="foot-col-head">Connect</p>
+                            <ul class="foot-col-list">
+                                <li><a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a></li>
+                                <li><a href="#">Privacy</a></li>
+                                <li><a href="#">Terms</a></li>
+                            </ul>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- ── bottom: copyright bar ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-white/35">
+                        <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
+                        <span class="font-mono text-[10px] tracking-wider text-white/20">SIMULATION-FIRST</span>
                     </div>
                 </div>
             </footer>
