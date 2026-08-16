@@ -681,6 +681,19 @@
         .cta-status.is-err { background: rgba(252,165,165,.1); border: 1px solid rgba(252,165,165,.35); color: #FCA5A5; }
         @media (prefers-reduced-motion: reduce) { .cta-spin { animation: none; } }
 
+        /* ── footer navigation columns ── */
+        .foot-col-head {
+            font-family: "JetBrains Mono", monospace; font-size: 10px;
+            letter-spacing: .16em; color: rgba(255,255,255,.45); margin-bottom: 16px;
+            text-transform: uppercase;
+        }
+        .foot-col-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+        .foot-col-list a {
+            font-size: 13px; color: rgba(255,255,255,.65);
+            transition: color .2s ease;
+        }
+        .foot-col-list a:hover { color: #fff; }
+
         /* ═══════════════════════════════════════════════════════════════════
            HERO — engineering spec sheet
            Nothing is centred. A hard left-aligned statement carries the two
@@ -1360,73 +1373,116 @@
                 </div>
             </div>
 
-<!-- ═══════════ CTA BANNER — contact form ═══════════ -->
-            <div id="contact" class="relative bg-graphite tex tex-cta py-20 md:py-28">
+            <!-- ═══════════ FOOTER ═══════════ -->
+            <footer id="contact" class="relative bg-graphite tex tex-cta">
                 <canvas class="halftone absolute inset-0" data-speed="1.4"></canvas>
-                <div class="relative max-w-[1240px] mx-auto px-6 grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
 
-                    <!-- ── left: pitch + what happens next ── -->
-                    <div>
-                        <p class="on-tex-accent text-[11px] tracking-[0.2em]" data-reveal>CONTACT</p>
-                        <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-lg leading-snug mt-4" data-reveal>
-                            Have a challenge?<br>Let's build what's next.
-                        </h2>
-                        <p class="text-white/70 text-[13.5px] leading-7 max-w-md mt-5" data-reveal>
-                            Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem, we'd like to understand what you're building. Tell us what you're working on.
-                        </p>
+                <!-- ── top: contact CTA row ── -->
+                <div class="relative max-w-[1240px] mx-auto px-6 pt-20 md:pt-28 pb-16 md:pb-20">
+                    <div class="grid lg:grid-cols-[1fr_1fr] gap-14 lg:gap-20 items-start">
 
-                        <div class="cta-fallback" data-reveal>
-                            <span>Prefer email? <a href="mailto:office@shannon.id">office@shannon.id</a></span>
-                            <span aria-hidden="true">·</span>
-                            <a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a>
+                        <!-- left: pitch -->
+                        <div>
+                            <p class="on-tex-accent text-[11px] tracking-[0.2em]" data-reveal>CONTACT</p>
+                            <h2 class="text-white text-2xl md:text-4xl font-medium tracking-tight max-w-lg leading-snug mt-4" data-reveal>
+                                Have a challenge?<br>Let's build what's next.
+                            </h2>
+                            <p class="text-white/70 text-[13.5px] leading-7 max-w-md mt-5" data-reveal>
+                                Whether you're exploring an intelligent machine, developing a new digital product, or solving a complex engineering problem — tell us what you're working on.
+                            </p>
                         </div>
+
+                        <!-- right: form -->
+                        <form class="glass-dark cta-form" id="contact-form" data-reveal novalidate>
+                            <p class="cta-form-head">Send a Message</p>
+                            <p class="cta-form-sub">Fill out the form and we'll get back to you.</p>
+
+                            <div class="field">
+                                <label for="cf-name">Name</label>
+                                <input type="text" id="cf-name" name="name" autocomplete="name" required
+                                       placeholder="Your name" aria-describedby="cf-name-err" />
+                                <p class="field-err" id="cf-name-err">Tell us who's asking.</p>
+                            </div>
+
+                            <div class="field">
+                                <label for="cf-email">Email</label>
+                                <input type="email" id="cf-email" name="email" autocomplete="email" required
+                                       placeholder="you@company.com" aria-describedby="cf-email-err" />
+                                <p class="field-err" id="cf-email-err">A valid email gets you a reply.</p>
+                            </div>
+
+                            <div class="field">
+                                <label for="cf-message">Message</label>
+                                <textarea id="cf-message" name="message" required aria-describedby="cf-message-err"
+                                    placeholder="Write your message here..."></textarea>
+                                <p class="field-err" id="cf-message-err">A couple of sentences is plenty.</p>
+                            </div>
+
+                            <button type="submit" class="cta-submit">
+                                <span class="cta-spin" aria-hidden="true"></span>
+                                <span class="cta-submit-label">Send message →</span>
+                            </button>
+
+                            <div class="cta-status" id="cta-status" role="status" aria-live="polite"></div>
+                        </form>
+
                     </div>
-
-                    <!-- ── right: the form itself ── -->
-                    <form class="glass-dark cta-form" id="contact-form" data-reveal novalidate>
-                        <p class="cta-form-head">Send a Message</p>
-                        <p class="cta-form-sub">Fill out the form and we'll get back to you.</p>
-
-                        <div class="field">
-                            <label for="cf-name">Name</label>
-                            <input type="text" id="cf-name" name="name" autocomplete="name" required
-                                   placeholder="Your name" aria-describedby="cf-name-err" />
-                            <p class="field-err" id="cf-name-err">Tell us who's asking.</p>
-                        </div>
-
-                        <div class="field">
-                            <label for="cf-email">Email</label>
-                            <input type="email" id="cf-email" name="email" autocomplete="email" required
-                                   placeholder="you@company.com" aria-describedby="cf-email-err" />
-                            <p class="field-err" id="cf-email-err">A valid email gets you a reply.</p>
-                        </div>
-
-                        <div class="field">
-                            <label for="cf-message">Message</label>
-                            <textarea id="cf-message" name="message" required aria-describedby="cf-message-err"
-                                placeholder="Write your message here..."></textarea>
-                            <p class="field-err" id="cf-message-err">A couple of sentences is plenty.</p>
-                        </div>
-
-                        <button type="submit" class="cta-submit">
-                            <span class="cta-spin" aria-hidden="true"></span>
-                            <span class="cta-submit-label">Send message →</span>
-                        </button>
-
-<div class="cta-status" id="cta-status" role="status" aria-live="polite"></div>
-                    </form>
-
                 </div>
-            </div>
 
-            <!-- ═══════════ FOOTER STRIP ═══════════ -->
-            <footer class="bg-white px-6 py-7">
-                <div class="max-w-[1240px] mx-auto flex flex-col md:flex-row items-center justify-between gap-3 text-[11px] text-slatebg/50">
-                    <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
-                    <div class="flex gap-6">
-                        <a class="hover:text-slatebg transition-colors" href="#">Privacy</a>
-                        <a class="hover:text-slatebg transition-colors" href="#">Terms</a>
-                        <a class="hover:text-slatebg transition-colors" href="https://bohrlabs.id">Bohr Labs</a>
+                <!-- ── middle: navigation columns ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-14 md:py-16 grid grid-cols-2 md:grid-cols-4 gap-10 md:gap-8">
+
+                        <!-- col 1: brand -->
+                        <div class="col-span-2 md:col-span-1">
+                            <a href="#" class="inline-block">
+                                <img src="src/logo-horizontal-white.png" alt="Shannon Dynamics" class="h-6 w-auto" />
+                            </a>
+                            <p class="text-white/50 text-[12px] leading-relaxed mt-4 max-w-[220px]">
+                                Simulation-first engineering for robots and autonomous software.
+                            </p>
+                            <a href="mailto:office@shannon.id" class="inline-block mt-4 text-[12px] text-[#8FAEFF] hover:underline hover:underline-offset-2">office@shannon.id</a>
+                        </div>
+
+                        <!-- col 2: company -->
+                        <div>
+                            <p class="foot-col-head">Company</p>
+                            <ul class="foot-col-list">
+                                <li><a href="#capabilities">Capabilities</a></li>
+                                <li><a href="#showcase">Products</a></li>
+                                <li><a href="#ecosystem">Ecosystem</a></li>
+                                <li><a href="#contact">Contact</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 3: library -->
+                        <div>
+                            <p class="foot-col-head">Library</p>
+                            <ul class="foot-col-list">
+                                <li><a href="library-books.html">Books</a></li>
+                                <li><a href="library-publications.html">Publications</a></li>
+                                <li><a href="library-open-source.html">Open Source</a></li>
+                            </ul>
+                        </div>
+
+                        <!-- col 4: connect -->
+                        <div>
+                            <p class="foot-col-head">Connect</p>
+                            <ul class="foot-col-list">
+                                <li><a href="https://bohrlabs.id" target="_blank" rel="noopener">Bohr Labs ↗</a></li>
+                                <li><a href="#">Privacy</a></li>
+                                <li><a href="#">Terms</a></li>
+                            </ul>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- ── bottom: copyright bar ── -->
+                <div class="relative border-t border-white/10">
+                    <div class="max-w-[1240px] mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-white/35">
+                        <span>© 2026 Shannon Dynamics · A Bohr Labs Company</span>
+                        <span class="font-mono text-[10px] tracking-wider text-white/20">SIMULATION-FIRST</span>
                     </div>
                 </div>
             </footer>

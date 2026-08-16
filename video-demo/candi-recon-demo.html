@@ -1,0 +1,868 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Candi Recon — Product Demo Reel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   CANDI RECON — PRODUCT DEMO REEL
+   scan_candi_with_octomap_rust: a simulated drone orbits a candi in
+   MuJoCo, renders depth at every waypoint, and folds the frames into
+   a probabilistic 3D occupancy map.
+   Chapters: The flight → The map → The cross-check
+   Map images are the repository's own demo output (media/demo/).
+   Every figure comes from README.md — nothing invented.
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --us:1;
+  --bg:#0d1420; --panel:#121b29; --panel2:#16202f; --border:#24334a; --border2:#2e3f5a;
+  --fg:#e6edf5; --mfg:#8496ad;
+  --amber:#F2C14E; --green:#4ADE80; --violet:#A78BFA;
+  /* the map's own height palette — base terrace to summit */
+  --h1:#1e9fd8; --h2:#22c1a4; --h3:#7cc242; --h4:#efa72c; --h5:#e94f28;
+  --kw:#FF7B72; --fnc:#D2A8FF; --cmt:#7d8ea3;
+  --font:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1); --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-cam:cubic-bezier(.62,.02,.24,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#080d15;height:100%;-webkit-font-smoothing:antialiased;
+          -moz-osx-font-smoothing:grayscale}
+body{font-family:var(--font);display:flex;flex-direction:column;align-items:center;
+     justify-content:center;min-height:100vh;padding:24px;gap:16px}
+.ic{width:16px;height:16px;flex:none;stroke-width:2;fill:none;stroke:currentColor;
+    stroke-linecap:round;stroke-linejoin:round}
+
+#wrap{width:100%;max-width:1440px;aspect-ratio:16/9;position:relative;border-radius:14px;
+      overflow:hidden;background:#080d15;
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.07)}
+#root{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:top left;
+      background:#080d15;overflow:hidden}
+#cam{position:absolute;top:0;left:0;width:1440px;height:772px;transform-origin:0 0;
+     overflow:hidden;transition:transform 1.4s var(--ease-cam);will-change:transform;
+     backface-visibility:hidden}
+#drift{position:absolute;inset:0;transform-origin:50% 50%;
+       animation:drift 28s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:scale(1.008) translate(-3px,-2px)}
+                 50%{transform:scale(1.018) translate(3px,-3px)}
+                 100%{transform:scale(1.010) translate(3px,3px)}}
+
+#titlebar{height:38px;background:var(--panel);border-bottom:1px solid var(--border);
+          display:flex;align-items:center;gap:14px;padding:0 14px}
+.lights{display:flex;gap:7px}.lights i{width:10px;height:10px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}
+.lights i:nth-child(3){background:#28C840}
+#wtitle{flex:1;text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--mfg);
+        transition:opacity .25s}
+#wtitle b{color:var(--fg);font-weight:500}
+.wbadge{font-family:var(--mono);font-size:10px;color:var(--mfg);border:1px solid var(--border);
+        padding:2px 7px;border-radius:5px}
+
+#app{height:734px;background:var(--bg);position:relative;overflow:hidden}
+.scene{position:absolute;inset:0;overflow:hidden;opacity:0;visibility:hidden;
+       transform:translateX(24px) scale(.993);filter:blur(6px);
+       transition:opacity .45s ease,transform .65s var(--ease-out),filter .45s ease,visibility .45s}
+.scene.active{opacity:1;visibility:visible;transform:none;filter:blur(0)}
+.scene.out{transform:translateX(-16px) scale(.995);filter:blur(4px)}
+
+/* in-frame chapter tag — replaces the old caption bar */
+.stag{position:absolute;left:26px;top:22px;z-index:8;display:flex;align-items:center;gap:9px;
+      font-size:12px;font-weight:500;color:var(--fg);
+      background:rgba(13,20,32,.78);backdrop-filter:blur(6px);
+      border:1px solid var(--border);border-radius:999px;padding:5px 14px 5px 6px;
+      opacity:0;transform:translateY(-6px);transition:.55s var(--ease-out)}
+.stag.in{opacity:1;transform:none}
+.stag b{font-family:var(--mono);font-size:10px;font-weight:600;color:#0d1420;
+        background:var(--h4);border-radius:999px;padding:3px 8px}
+.plbl{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mfg);
+      font-weight:600;margin-bottom:11px}
+.pcard{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:14px 15px;
+       opacity:0;transform:translateX(10px);transition:.5s var(--ease-out)}
+.pcard.in{opacity:1;transform:none}
+.srow{display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:12.5px}
+.srow .k{color:var(--mfg)}
+.srow .v{font-family:var(--mono);font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.srow .v.hl{color:var(--amber)}
+
+/* ══ CHAPTER 1 · THE FLIGHT ═══════════════════════════════════════ */
+#flight{display:grid;grid-template-columns:1fr 352px}
+.stage{position:relative;display:flex;align-items:center;justify-content:center;
+       border-right:1px solid var(--border);overflow:hidden}
+#iso{width:100%;max-width:760px}
+.iso-fade{opacity:0;transition:opacity .6s var(--ease-out)}
+.iso-fade.in{opacity:1}
+.terrace{opacity:0;transform-box:fill-box;transform-origin:50% 100%;
+         transform:translateY(26px) scale(.94);
+         transition:opacity .55s var(--ease-out),transform .7s var(--ease-out)}
+.terrace.in{opacity:1;transform:none}
+#drone-f,#drone-b{opacity:0;transition:opacity .4s}
+#drone-f.in,#drone-b.in{opacity:1}
+.wp{opacity:0;transition:opacity .35s}
+.wp.in{opacity:1}
+
+.depth{width:100%;aspect-ratio:4/3;border-radius:6px;overflow:hidden;position:relative;
+       background:#0a1018;border:1px solid var(--border)}
+.depth .px{position:absolute;inset:0;
+  background:radial-gradient(circle at 50% 58%,#e94f28 0 7%,#efa72c 7% 18%,#7cc242 18% 31%,
+                             #22c1a4 31% 45%,#1e9fd8 45% 62%,#123a5e 62% 100%);
+  filter:blur(.4px);opacity:0;transition:opacity .45s}
+.depth .px.on{opacity:.92}
+.depth .scanline{position:absolute;left:0;right:0;height:2px;background:rgba(255,255,255,.35);
+                 top:0;opacity:0}
+.depth.live .scanline{opacity:1;animation:scan 1.4s linear infinite}
+@keyframes scan{0%{top:0}100%{top:100%}}
+.depth .tagd{position:absolute;left:8px;bottom:7px;font-family:var(--mono);font-size:10px;
+             color:#cfe0f0;background:rgba(10,16,24,.75);padding:2px 7px;border-radius:4px}
+.prog{height:5px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:11px}
+.prog i{display:block;height:100%;width:0;background:var(--amber);border-radius:3px}
+.wpcount{display:flex;align-items:baseline;gap:8px;margin-top:10px}
+.wpcount .n{font-family:var(--mono);font-size:25px;font-weight:600;color:var(--fg);
+            font-variant-numeric:tabular-nums}
+.wpcount .of{font-size:12px;color:var(--mfg)}
+.fpanel{padding:26px 22px;display:flex;flex-direction:column;gap:18px;background:var(--panel);
+        justify-content:center}
+
+/* ══ CHAPTER 2 · THE MAP ══════════════════════════════════════════ */
+#mapsc{display:grid;grid-template-columns:1fr 376px}
+.mapstage{position:relative;display:flex;align-items:center;justify-content:center;
+          border-right:1px solid var(--border)}
+#mapbox{position:relative;width:560px;height:560px}
+#maptop{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;
+        border:1px solid var(--border);opacity:0;transition:opacity .5s}
+#maptop.in{opacity:1}
+#mapside{position:absolute;right:-8px;bottom:-8px;width:180px;image-rendering:pixelated;
+         border:1px solid var(--border2);box-shadow:0 12px 34px rgba(0,0,0,.55);
+         opacity:0;transform:translateY(14px);transition:.55s var(--ease-out);z-index:3}
+#mapside.in{opacity:1;transform:none}
+#unob{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;
+      border:1.5px dashed var(--violet);border-radius:50%;opacity:0;z-index:4;
+      transition:opacity .5s;display:flex;align-items:flex-end;justify-content:center}
+#unob.on{opacity:1}
+#unob span{font-family:var(--mono);font-size:10.5px;color:#cbbcfb;
+           background:rgba(13,20,32,.92);padding:3px 8px;border-radius:4px;
+           transform:translateY(22px);white-space:nowrap}
+.pipe{padding:26px 22px;display:flex;flex-direction:column;gap:9px;background:var(--panel);
+      justify-content:center}
+.pstep{display:flex;align-items:flex-start;gap:11px;padding:10px 12px;border-radius:7px;
+       background:var(--panel2);border:1px solid var(--border);
+       opacity:0;transform:translateX(10px);
+       transition:opacity .45s,transform .5s var(--ease-out),border-color .35s,background .35s}
+.pstep.in{opacity:1;transform:none}
+.pstep.on{border-color:var(--h4);background:rgba(239,167,44,.10)}
+.pstep .nn{width:19px;height:19px;border-radius:4px;background:var(--border);color:var(--mfg);
+           font-family:var(--mono);font-size:10px;font-weight:600;display:flex;
+           align-items:center;justify-content:center;flex:none;margin-top:1px;transition:.35s}
+.pstep.on .nn{background:var(--h4);color:#0d1420}
+.pstep .tt{font-size:12.5px;font-weight:500;color:var(--fg);line-height:1.35}
+.pstep .dd{font-size:11px;color:var(--mfg);margin-top:2px;line-height:1.45;font-family:var(--mono)}
+.pstep.fork{border-style:dashed}
+
+/* ══ CHAPTER 3 · THE CROSS-CHECK ══════════════════════════════════ */
+#check{padding:56px 34px 30px;display:flex;flex-direction:column;gap:18px}
+.ctable{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+        padding:20px 24px;opacity:0;transform:translateY(12px);transition:.5s var(--ease-out)}
+.ctable.in{opacity:1;transform:none}
+.ctable .cmd{font-family:var(--mono);font-size:12px;color:var(--mfg);margin-bottom:14px}
+.ctable .cmd .p{color:var(--green)} .ctable .cmd .c{color:var(--fg)}
+.crow{display:grid;grid-template-columns:1fr 200px 200px;gap:16px;align-items:center;
+      padding:10px 0;border-top:1px solid var(--border);font-family:var(--mono);font-size:14px;
+      opacity:0;transform:translateY(6px);transition:.4s var(--ease-out)}
+.crow.in{opacity:1;transform:none}
+.crow.hdr{border-top:0;font-size:11px;color:var(--mfg);letter-spacing:.04em;padding-bottom:6px}
+.crow .lbl{color:var(--mfg);font-family:var(--font);font-size:13px}
+.crow .a,.crow .b{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:var(--fg)}
+.crow.match .a,.crow.match .b{color:var(--green)}
+.crow .a.dim,.crow .b.dim{color:var(--mfg);font-weight:400}
+.matchline{display:flex;align-items:center;gap:11px;margin-top:15px;padding-top:14px;
+           border-top:1px solid var(--border);font-size:13px;color:var(--green);
+           opacity:0;transform:translateY(6px);transition:.5s var(--ease-out)}
+.matchline b{font-family:var(--mono)}
+.matchline.in{opacity:1;transform:none}
+.cgrid{display:grid;grid-template-columns:1.15fr 1fr;gap:18px;flex:1;min-height:0}
+.cc{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px 20px;
+    opacity:0;transform:translateY(14px);transition:.5s var(--ease-out);display:flex;
+    flex-direction:column}
+.cc.in{opacity:1;transform:none}
+.cc .h{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.cc .h .ic{width:15px;height:15px}
+.cc .t{font-size:13.5px;font-weight:600}
+.cc .sm{font-size:12px;color:var(--mfg);line-height:1.6}
+.cc .sm b{color:var(--fg);font-weight:500}
+.art{display:flex;align-items:center;gap:10px;padding:8px 0;font-size:12.5px;
+     border-top:1px solid var(--border);opacity:0;transform:translateX(-6px);
+     transition:.4s var(--ease-out)}
+.art.in{opacity:1;transform:none}
+.art:first-of-type{border-top:0}
+.art .fn{font-family:var(--mono);color:var(--fg)}
+.art .ds{margin-left:auto;color:var(--mfg);font-size:11.5px}
+.stack{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.stack span{font-family:var(--mono);font-size:10.5px;color:var(--mfg);
+            border:1px solid var(--border);padding:3px 8px;border-radius:5px;
+            opacity:0;transform:translateY(5px);transition:.35s var(--ease-out)}
+.stack span.in{opacity:1;transform:none}
+.stack span b{color:var(--h2);font-weight:500}
+
+/* ══ PRESENTATION LAYER ═══════════════════════════════════════════ */
+#spot{position:absolute;border-radius:8px;box-shadow:0 0 0 9999px rgba(4,8,14,.62);opacity:0;
+      pointer-events:none;z-index:14;transition:left .6s var(--ease-out),top .6s var(--ease-out),
+      width .6s var(--ease-out),height .6s var(--ease-out),opacity .45s ease}
+#spot.on{opacity:1}
+
+/* ══ Bookends ═════════════════════════════════════════════════════ */
+.overlay{position:absolute;inset:0;z-index:16;background:#080d15;color:#fff;opacity:0;
+         visibility:hidden;transition:opacity .6s ease,visibility .6s}
+.overlay.active{opacity:1;visibility:visible}
+.overlay::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(780px 500px at 50% 44%,rgba(239,167,44,.18),transparent 70%)}
+.overlay::after{content:"";position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);
+  background-size:40px 40px}
+.ostage{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;transform-origin:50% 48%}
+#open.active .ostage{animation:pullBack 3.4s var(--ease-out) forwards}
+#end.active .ostage{animation:pushIn 5.2s var(--ease-out) forwards}
+@keyframes pullBack{from{transform:scale(1.085)}to{transform:scale(1)}}
+@keyframes pushIn{from{transform:scale(1)}to{transform:scale(1.05)}}
+/* mark: the candi in plan — four terraces stepping up to the summit */
+.omark{width:88px;height:88px;position:relative;opacity:0;transform:scale(.72) rotate(-7deg);
+       transition:opacity .6s,transform .95s var(--ease-out)}
+.omark.in{opacity:1;transform:none}
+.omark i{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:block}
+.omark i:nth-child(1){width:88px;height:88px;background:var(--h1)}
+.omark i:nth-child(2){width:67px;height:67px;background:var(--h2)}
+.omark i:nth-child(3){width:46px;height:46px;background:var(--h3)}
+.omark i:nth-child(4){width:27px;height:27px;background:var(--h4)}
+.omark i:nth-child(5){width:12px;height:12px;background:var(--h5);border-radius:50%}
+.owm{margin-top:28px;font-size:52px;font-weight:700;letter-spacing:-.038em;display:flex;
+     overflow:hidden}
+.owm i{display:inline-block;font-style:normal;opacity:0;transform:translateY(28px);
+       transition:opacity .45s,transform .6s var(--ease-out)}
+.owm.in i{opacity:1;transform:none}
+.rule{width:0;height:1px;background:rgba(255,255,255,.18);margin-top:24px;
+      transition:width .9s var(--ease-out)}
+.rule.in{width:400px}
+.oeb{margin-top:22px;font-size:11.5px;letter-spacing:.2em;color:#93a4b6;font-weight:500;
+     display:flex;align-items:center;gap:11px;opacity:0;transform:translateY(8px);
+     transition:.6s var(--ease-out);text-align:center}
+.oeb.in{opacity:1;transform:none}
+.oeb i{width:6px;height:6px;border-radius:50%;background:var(--h4);display:block;flex:none}
+.orepo{margin-top:14px;font-family:var(--mono);font-size:11px;color:#5f7089;opacity:0;
+       transition:opacity .6s}
+.orepo.in{opacity:1}
+#end .tag{margin-top:26px;font-size:34px;font-weight:600;letter-spacing:-.03em;text-align:center;
+          line-height:1.32;max-width:940px;opacity:0;transform:translateY(14px);
+          transition:.7s var(--ease-out)}
+#end .tag.in{opacity:1;transform:none}
+#end .tag b{font-weight:600;box-shadow:inset 0 -3px 0 var(--violet)}
+#end .sb{margin-top:20px;font-size:14.5px;color:#93a4b6;max-width:700px;text-align:center;
+         line-height:1.6;opacity:0;transform:translateY(10px);transition:.7s var(--ease-out)}
+#end .sb.in{opacity:1;transform:none}
+
+#bar{display:flex;align-items:center;gap:14px;color:#8496ad;font-size:12px;width:100%;
+     max-width:1440px}
+#bar button{background:#131c2b;border:1px solid #24334a;color:#d4dde6;height:32px;padding:0 14px;
+            border-radius:8px;font:500 12px var(--font);cursor:pointer;transition:.15s}
+#bar button:hover{background:#1a2436;border-color:#33455f}
+#bar button:focus-visible{outline:2px solid var(--h4);outline-offset:2px}
+#track{flex:1;height:3px;background:#18202e;border-radius:2px;overflow:hidden}
+#fill{height:100%;width:0;background:var(--h4)}
+#bar .t{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+body.embed #bar{display:none}
+body.embed{padding:0;height:100%;gap:0;display:block}
+/* In a host panel the reel fills the box: no aspect lock, no matting. */
+body.embed #wrap{width:100%;height:100%;max-width:none;aspect-ratio:auto;
+                 border-radius:0;box-shadow:none}
+#poster{position:absolute;inset:0;z-index:30;background:rgba(8,13,21,.94);display:none;
+        align-items:center;justify-content:center;flex-direction:column;gap:18px}
+#poster.on{display:flex}
+#poster p{font-size:14px;color:#93a4b6;max-width:380px;text-align:center;line-height:1.6}
+#poster button{height:44px;padding:0 26px;border-radius:999px;background:var(--h4);color:#0d1420;
+               border:0;font:600 14px var(--font);cursor:pointer;display:flex;
+               align-items:center;gap:9px}
+@media (prefers-reduced-motion:reduce){
+  #drift,.depth.live .scanline{animation:none!important}
+  #cam{transition:none!important;transform:none!important}
+  .ostage{animation:none!important} .scene{filter:none!important}
+}
+</style>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 3v18M7 7h10"/><path d="m4 12 3-5 3 5a3 3 0 0 1-6 0M14 12l3-5 3 5a3 3 0 0 1-6 0"/></symbol>
+  <symbol id="i-files" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/></symbol>
+</svg>
+
+<div id="wrap"><div id="root">
+
+  <div id="cam"><div id="drift">
+
+    <div id="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div id="wtitle"><b>scan_candi_with_octomap_rust</b> — cargo run -p candi-sim --bin live_scan</div>
+      <span class="wbadge">rustc 1.85 · edition 2024</span>
+    </div>
+
+    <div id="app">
+
+      <!-- ══ CHAPTER 1 · THE FLIGHT ═══════════════════════════ -->
+      <section class="scene" id="flight">
+        <div class="stag" id="tag1"><b>01</b> The flight</div>
+        <div class="stage">
+          <svg id="iso" viewBox="0 0 760 560" aria-label="A drone orbiting a stepped candi"></svg>
+        </div>
+        <div class="fpanel">
+          <div>
+            <div class="plbl">MuJoCo scene</div>
+            <div class="pcard" id="fp1">
+              <div class="srow"><span class="k">Candi</span><span class="v">15.00 × 15.00 × 6.00 m</span></div>
+              <div class="srow"><span class="k">Orbit radius</span><span class="v">16.53 m</span></div>
+              <div class="srow"><span class="k">Waypoints</span><span class="v">288</span></div>
+              <div class="srow"><span class="k">Voxel size</span><span class="v">0.10 m</span></div>
+            </div>
+          </div>
+          <div>
+            <div class="plbl">Depth camera · 640 × 480</div>
+            <div class="pcard" id="fp2" style="padding:12px">
+              <div class="depth" id="depth">
+                <div class="px"></div><div class="scanline"></div>
+                <div class="tagd">waypoint <span id="dwp">000</span> · 640×480</div>
+              </div>
+              <div class="prog"><i id="prog"></i></div>
+              <div class="wpcount"><span class="n" id="wpn">0</span>
+                <span class="of">of 288 waypoints rendered</span></div>
+            </div>
+          </div>
+          <div class="pcard" id="fp3" style="font-family:var(--mono);font-size:11.5px;
+               line-height:1.75;color:var(--mfg)">
+            <span style="color:var(--cmt)">// pose is an input, not a result —</span><br>
+            <span style="color:var(--cmt)">// no SLAM, no localization here</span><br>
+            <span style="color:var(--kw)">for</span> wp <span style="color:var(--kw)">in</span>
+            orbit.<span style="color:var(--fnc)">waypoints</span>() {<br>
+            &nbsp;&nbsp;<span style="color:var(--kw)">let</span> depth = cam.<span style="color:var(--fnc)">render</span>(wp);<br>
+            &nbsp;&nbsp;map.<span style="color:var(--fnc)">insert_point_cloud</span>(..);<br>
+            }
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ CHAPTER 2 · THE MAP ══════════════════════════════ -->
+      <section class="scene" id="mapsc">
+        <div class="stag" id="tag2"><b>02</b> The map</div>
+        <div class="mapstage">
+          <div id="mapbox">
+            <img id="maptop" alt="Reconstructed occupancy map, seen from above"
+                 src="data:image/png;base64,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AwAQERoAgIjQAABEhAYAILKVIuS+HKwpsytXBabTPcHys6t3WgKN2s5v2UgDABARGgCAiNAAAESEBgAgspUi5Cdvf7fA+vzVv5am9K5y+fjt7xegHUYaAICI0AAARIQGACDiKpfA+ewtqwYtM9IAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiNwqAAD/649DDxppAAAiQgMAEBEaAICITgMA8H++NvSgkQYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAg8qQVIT/s3P764DO718UaXE8K2KzdxeH9jwpQlw+HHjTSAABEhAYAICI0AACR3eXlZQEAeBIjDQBARGgAACJCAwAQERoAgMh/A4IUQdn1LhKoAAAAAElFTkSuQmCC">
+            <div id="unob"><span>never observed</span></div>
+            <img id="mapside" alt="The same map from the side"
+                 src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAArwAAAK8CAIAAACC2PsUAAAZhElEQVR4nO3dPa8k21UG4H3QxXhmsIWO/A+MZPwRmRQCBFyZhARiDBEi4PcgIjAxJCRYFxBIkOLIH1iCf2Ah5NHMXIPkQcZItM+4dr+9au3+mH6ebG5XrdpVtXedV33qrvPB4+PjAAA45mcGAEBAaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAIyE0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAAIkIDABARGgCAiNAAAESEBgAgIjQAABGhAQCICA0AQERoAAAiQgMAEBEaAICI0AAARIQGACAiNAAAEaEBAIgIDQBARGgAACJCAwAQERoAgIjQAABEhAYAICI0AAARoQEAiAgNAEBEaAAA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">
+          </div>
+        </div>
+        <div class="pipe">
+          <div class="plbl" style="margin-bottom:2px">Per waypoint</div>
+          <div class="pstep" id="ps1"><span class="nn">1</span>
+            <div><div class="tt">Render a depth image</div>
+              <div class="dd">MuJoCo · 640×480</div></div></div>
+          <div class="pstep" id="ps2"><span class="nn">2</span>
+            <div><div class="tt">Unproject to a world-frame cloud</div>
+              <div class="dd">frame conventions matter here</div></div></div>
+          <div class="pstep" id="ps3"><span class="nn">3</span>
+            <div><div class="tt">Ground-plane filter</div>
+              <div class="dd">without it the map is mostly floor</div></div></div>
+          <div class="pstep fork" id="ps4"><span class="nn">4</span>
+            <div><div class="tt">Insert into octomap-core</div>
+              <div class="dd">occupied / free / unknown</div></div></div>
+          <div class="pstep fork" id="ps5"><span class="nn">5</span>
+            <div><div class="tt">…and into a hash grid</div>
+              <div class="dd">the comparison baseline</div></div></div>
+          <div class="pstep" id="ps6"><span class="nn">6</span>
+            <div><div class="tt">Write the artefacts</div>
+              <div class="dd">2 PNG projections + a Rerun .rrd</div></div></div>
+          <div class="pcard" id="mstat" style="margin-top:4px">
+            <div class="srow"><span class="k">Points integrated</span>
+              <span class="v hl" id="mPts">0</span></div>
+            <div class="srow"><span class="k">Occupied voxels</span>
+              <span class="v hl" id="mVox">0</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ CHAPTER 3 · THE CROSS-CHECK ══════════════════════ -->
+      <section class="scene" id="check">
+        <div class="stag" id="tag3"><b>03</b> The cross-check</div>
+        <div class="ctable" id="ctable">
+          <div class="cmd"><span class="p">$</span> <span class="c">cargo run --release -p candi-sim --bin live_scan -- --octree-no-carve</span></div>
+          <div class="crow hdr" id="cr0"><span class="lbl"></span>
+            <span class="a">octomap-core</span><span class="b">hash grid</span></div>
+          <div class="crow" id="cr1"><span class="lbl">occupied leaves / entries</span>
+            <span class="a dim">60,288</span><span class="b dim">76,920</span></div>
+          <div class="crow match" id="cr2"><span class="lbl">occupied voxels at 0.1 m</span>
+            <span class="a">76,920</span><span class="b">76,920</span></div>
+          <div class="matchline" id="mline">
+            <svg class="ic" style="width:16px;height:16px"><use href="#i-scale"/></svg>
+            <span><b>76,920</b> voxels from both, out of <b>2.9 million</b> points —
+              two independently written implementations, same input, same answer.</span>
+          </div>
+        </div>
+
+        <div class="cgrid">
+          <div class="cc" id="cc1">
+            <div class="h"><svg class="ic" style="color:var(--h2)"><use href="#i-layers"/></svg>
+              <span class="t">The gap on the octree side is pruning</span></div>
+            <div class="sm">60,288 leaves standing for 76,920 voxels. One merged node stands for
+              eight base voxels — or eight thousand. <b>A leaf is not a voxel.</b></div>
+            <div class="sm" style="margin-top:12px">With free-space carving switched back on the
+              two maps diverge on purpose: a ray passing through erases a voxel one viewpoint saw
+              as occupied while others prove the space empty. <b>Only the octree carves.</b></div>
+          </div>
+          <div class="cc" id="cc2">
+            <div class="h"><svg class="ic" style="color:var(--h4)"><use href="#i-files"/></svg>
+              <span class="t">What a run leaves behind</span></div>
+            <div class="art"><span class="fn">out/map_top.png</span>
+              <span class="ds">terraces, staircases, summit</span></div>
+            <div class="art"><span class="fn">out/map_side.png</span>
+              <span class="ds">the stepped profile</span></div>
+            <div class="art"><span class="fn">out/candi_scan.rrd</span>
+              <span class="ds">288-frame Rerun recording</span></div>
+            <div class="stack">
+              <span>Rust <b>1.85</b></span><span>MuJoCo <b>3.9.0</b></span>
+              <span>rerun <b>0.35</b></span><span>octomap-core</span>
+              <span>ROS 2 <b>Jazzy</b></span><span>Python: <b>offline only</b></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <div id="spot"></div>
+
+  </div></div>
+
+  <div class="overlay active" id="open"><div class="ostage">
+    <div class="omark" id="omark"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="owm" id="owm"></div>
+    <div class="rule" id="orule"></div>
+    <div class="oeb" id="oeb"><i></i> AERIAL OCCUPANCY MAPPING, END TO END IN RUST</div>
+    <div class="orepo" id="orepo">a reference application for octo_map_rust</div>
+  </div></div>
+
+  <div class="overlay" id="end"><div class="ostage">
+    <div class="omark" id="emark"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="tag" id="etag">Four terraces, four staircases,<br>and one patch it
+      <b>will not guess at</b>.</div>
+    <div class="sb" id="esub">288 simulated depth frames folded into a probabilistic occupancy
+      map — and cross-checked, voxel for voxel, against an independent implementation.</div>
+  </div></div>
+
+  <div id="poster">
+    <button id="pplay"><svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:currentColor">
+      <path d="M6 3l14 9-14 9z"/></svg> Play the demo</button>
+    <p>Motion is reduced in your system settings, so the reel doesn't start on its own.</p>
+  </div>
+
+</div></div>
+
+<div id="bar">
+  <button id="btnPlay">Pause</button>
+  <button id="btnReplay">Replay</button>
+  <div id="track"><div id="fill"></div></div>
+  <span class="t" id="clock">0:00 / 0:45</span>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const DUR = 45000;
+let APPH = 772, MINZ = 1;
+
+const wrap = $("#wrap"), root = $("#root");
+/* Embed mode: an explicit flag, or simply being inside an iframe. */
+if (location.hash === "#clean" || /[?&]embed=1/.test(location.search)
+    || window.self !== window.top)
+  document.body.classList.add("embed");
+
+const timers = [];
+const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+const on  = (sel, c="in") => $$(sel).forEach(e => e.classList.add(c));
+const off = (sel, c="in") => $$(sel).forEach(e => e.classList.remove(c));
+const stag = (sel, step, c="in") => $$(sel).forEach((e,i) => later(i*step, () => e.classList.add(c)));
+
+function count(el, to, ms){
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1,(now-t0)/ms);
+    el.textContent = Math.round(to*(1-Math.pow(1-p,3))).toLocaleString();
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function scene(id){
+  $$(".scene").forEach(s => {
+    const isIn = s.id === id;
+    if (!isIn && s.classList.contains("active")){
+      s.classList.remove("active"); s.classList.add("out");
+      later(680, () => s.classList.remove("out"));
+    }
+    s.classList.toggle("active", isIn);
+  });
+}
+function title(t){
+  const w = $("#wtitle");
+  w.style.opacity = 0;
+  later(220, () => { w.innerHTML = t; w.style.opacity = 1; });
+}
+
+/* ── geometry ────────────────────────────────────────────────────── */
+const camEl = $("#cam"), drift = $("#drift");
+function rectIn(el){
+  const a = el.getBoundingClientRect(), b = drift.getBoundingClientRect();
+  const s = b.width / 1440;
+  return { x:(a.left-b.left)/s, y:(a.top-b.top)/s, w:a.width/s, h:a.height/s,
+           cx:(a.left-b.left)/s + a.width/(2*s), cy:(a.top-b.top)/s + a.height/(2*s) };
+}
+const clamp = (v,lo,hi) => Math.min(hi, Math.max(lo,v));
+
+/* ── responsive fit ───────────────────────────────────────────────
+   Fixed 1440 design WIDTH; the HEIGHT comes from the host box, so the
+   reel fills a 56%x500 desktop panel or a 100%x236 mobile one exactly. */
+const appEl = $("#app");
+function layout(){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!w || !h) return;
+  let dh = clamp(Math.round(h / (w/1440)), 690, 1260);
+  const s = Math.min(w/1440, h/dh);
+  APPH = dh;
+  MINZ = w < 620 ? 1.5 : w < 900 ? 1.16 : 1;
+  root.style.height = dh + "px";
+  root.style.transform = `translate(${(w-1440*s)/2}px, ${(h-dh*s)/2}px) scale(${s})`;
+  camEl.style.height = APPH + "px";
+  appEl.style.height = (APPH - 38) + "px";
+  document.documentElement.style.setProperty("--us", (1/s).toFixed(3));
+}
+new ResizeObserver(layout).observe(wrap);
+layout();
+
+function cam(z, x, y, ms=1400){
+  camEl.style.transitionDuration = ms + "ms";
+  camEl.style.transform = `translate(${clamp(720-x*z,1440-1440*z,0)}px,` +
+                          `${clamp(APPH/2-y*z, APPH-APPH*z, 0)}px) scale(${z})`;
+}
+const camWide = (ms=1300) => cam(MINZ, MINZ > 1 ? 800 : 720, APPH/2, ms);
+function focus(sel, pad=70, ms=1450, maxZ=1.65){
+  const el = $(sel); if (!el) return;
+  const r = rectIn(el);
+  const lim = MINZ > 1 ? maxZ * 1.3 : maxZ;
+  const z = clamp(Math.min(1440/(r.w+pad*2), APPH/(r.h+pad*2)), MINZ, lim);
+  cam(z, r.cx, r.cy, ms);
+}
+const spotEl = $("#spot");
+function spot(sel, pad=10){
+  const el = $(sel); if (!el) return;
+  const r = rectIn(el);
+  spotEl.style.left = (r.x-pad)+"px"; spotEl.style.top = (r.y-pad)+"px";
+  spotEl.style.width = (r.w+pad*2)+"px"; spotEl.style.height = (r.h+pad*2)+"px";
+  spotEl.classList.add("on");
+}
+const unspot = () => spotEl.classList.remove("on");
+
+/* ══ the candi, in isometric ══════════════════════════════════════
+   Four terraces stepping up to a domed summit, drawn as stacked
+   isometric plates: a diamond top face and two shaded side faces.  */
+const NS = "http://www.w3.org/2000/svg";
+const CX = 380, CY = 380, KX = 1, KY = 0.5, T = 30;
+const TERR = [
+  { s:230, c:"#1e9fd8", l:"#1878a6", r:"#155f85" },
+  { s:184, c:"#22c1a4", l:"#1a9480", r:"#157766" },
+  { s:138, c:"#7cc242", l:"#5f9432", r:"#4c7728" },
+  { s:92,  c:"#efa72c", l:"#c08420", r:"#9c6a1a" },
+];
+const el = (n, a) => { const e = document.createElementNS(NS, n);
+                       for (const k in a) e.setAttribute(k, a[k]); return e; };
+const pt = (x,y) => x + "," + y;
+
+function plate(g, s, h, cls){
+  const top = CY - h;
+  /* the diamond top face */
+  const N = [CX, top - s*KY], E = [CX + s*KX, top], S = [CX, top + s*KY], W = [CX - s*KX, top];
+  const t = TERR.find(x => x.s === s) || TERR[0];
+  g.appendChild(el("polygon", { points:[N,E,S,W].map(p=>pt(p[0],p[1])).join(" "),
+                                fill:t.c, class:cls }));
+  /* the two visible side faces */
+  g.appendChild(el("polygon", { points:[pt(W[0],W[1]),pt(S[0],S[1]),
+                                        pt(S[0],S[1]+T),pt(W[0],W[1]+T)].join(" "),
+                                fill:t.l, class:cls }));
+  g.appendChild(el("polygon", { points:[pt(S[0],S[1]),pt(E[0],E[1]),
+                                        pt(E[0],E[1]+T),pt(S[0],S[1]+T)].join(" "),
+                                fill:t.r, class:cls }));
+}
+function orbitPoint(a, rx, ry, lift){
+  return [CX + Math.cos(a)*rx, CY - lift + Math.sin(a)*ry];
+}
+const RX = 330, RY = 165, LIFT = 96;
+(function buildIso(){
+  const svg = $("#iso");
+
+  /* a faint ground grid, the way the MuJoCo floor reads */
+  const gGround = el("g", { class:"iso-fade", id:"ground" });
+  for (let i = -6; i <= 6; i++){
+    const o = i * 62;
+    gGround.appendChild(el("line", { x1:CX+o, y1:CY+o*KY - 380*KY, x2:CX+o+380*KX,
+      y2:CY+o*KY, stroke:"rgba(255,255,255,.05)", "stroke-width":1 }));
+    gGround.appendChild(el("line", { x1:CX+o, y1:CY+o*KY - 380*KY, x2:CX+o-380*KX,
+      y2:CY+o*KY, stroke:"rgba(255,255,255,.05)", "stroke-width":1 }));
+  }
+  svg.appendChild(gGround);
+
+  /* orbit: the far half sits behind the structure */
+  const arc = (from, to, id) => {
+    const p = [];
+    for (let i = 0; i <= 60; i++){
+      const a = from + (to-from)*i/60;
+      const q = orbitPoint(a, RX, RY, LIFT);
+      p.push((i ? "L" : "M") + q[0].toFixed(1) + " " + q[1].toFixed(1));
+    }
+    return el("path", { d:p.join(" "), fill:"none", stroke:"rgba(242,193,78,.40)",
+                        "stroke-width":1.5, "stroke-dasharray":"5 6", class:"iso-fade", id });
+  };
+  svg.appendChild(arc(Math.PI, Math.PI*2, "orbit-back"));
+
+  const gBack = el("g", { id:"gback" });
+  gBack.appendChild(el("g", { id:"drone-b" }));
+  svg.appendChild(gBack);
+
+  /* the candi itself, bottom terrace first */
+  const gCandi = el("g", { id:"gcandi" });
+  TERR.forEach((t,i) => {
+    const g = el("g", { class:"terrace", "data-i":i });
+    plate(g, t.s, i*T, "");
+    gCandi.appendChild(g);
+  });
+  /* the domed summit */
+  const gDome = el("g", { class:"terrace", "data-i":"4" });
+  const domeY = CY - TERR.length*T;
+  gDome.appendChild(el("ellipse", { cx:CX, cy:domeY, rx:56, ry:28, fill:"#c9421f" }));
+  gDome.appendChild(el("ellipse", { cx:CX, cy:domeY - 16, rx:56, ry:28, fill:"#e94f28" }));
+  gCandi.appendChild(gDome);
+  svg.appendChild(gCandi);
+
+  svg.appendChild(arc(0, Math.PI, "orbit-front"));
+
+  const gFront = el("g", { id:"gfront" });
+  gFront.appendChild(el("g", { id:"drone-f" }));
+  svg.appendChild(gFront);
+
+  /* the waypoint trail */
+  const gWp = el("g", { id:"gwp" });
+  for (let i = 0; i < 48; i++){
+    const q = orbitPoint(i/48 * Math.PI*2, RX, RY, LIFT);
+    gWp.appendChild(el("circle", { cx:q[0], cy:q[1], r:2.6,
+                                   fill:"rgba(242,193,78,.55)", class:"wp" }));
+  }
+  svg.appendChild(gWp);
+})();
+
+/* the drone, and the sensor cone pointing at the structure */
+function drawDrone(a){
+  const q = orbitPoint(a, RX, RY, LIFT);
+  const back = Math.sin(a) < 0;                 /* far side of the orbit */
+  const host = back ? $("#drone-b") : $("#drone-f");
+  const other = back ? $("#drone-f") : $("#drone-b");
+  other.innerHTML = "";
+  const target = [CX, CY - 46];
+  const dx = target[0]-q[0], dy = target[1]-q[1];
+  const len = Math.hypot(dx,dy) || 1, ux = dx/len, uy = dy/len;
+  const px = -uy, py = ux, sp = 54;
+  host.innerHTML = "";
+  host.appendChild(el("polygon", {
+    points:[pt(q[0],q[1]),
+            pt(target[0]+px*sp, target[1]+py*sp),
+            pt(target[0]-px*sp, target[1]-py*sp)].join(" "),
+    fill:"rgba(242,193,78,.16)" }));
+  host.appendChild(el("line", { x1:q[0], y1:q[1], x2:target[0], y2:target[1],
+                                stroke:"rgba(242,193,78,.35)", "stroke-width":1 }));
+  host.appendChild(el("circle", { cx:q[0], cy:q[1], r:7, fill:"#F2C14E" }));
+  host.appendChild(el("circle", { cx:q[0], cy:q[1], r:13, fill:"none",
+                                  stroke:"rgba(242,193,78,.4)", "stroke-width":1.5 }));
+  host.classList.add("in");
+}
+
+/* ── the orbit runs on the master clock, so Pause pauses the flight ─ */
+const WAYPOINTS = 288;
+let flown = 0, flying = false, flightT0 = -1, flightDur = 0;
+function startFlight(dur){ flying = true; flightDur = dur; flightT0 = -1; }
+function setFlight(f){
+  drawDrone(f * Math.PI*2 - Math.PI/2);
+  const n = Math.round(f * WAYPOINTS);
+  if (n !== flown){
+    flown = n;
+    $("#wpn").textContent = n;
+    $("#dwp").textContent = String(n).padStart(3,"0");
+    $("#prog").style.width = (f*100)+"%";
+  }
+}
+function tickFlight(t){
+  if (!flying) return;
+  if (flightT0 < 0) flightT0 = t;
+  const f = clamp((t-flightT0)/flightDur, 0, 1);
+  setFlight(f);
+  if (f >= 1) flying = false;
+}
+
+/* ── the map reveals in wedges, the way an orbit fills it in ────── */
+function revealMap(frac){
+  const deg = frac*360;
+  const m = `conic-gradient(from -90deg, #000 0deg, #000 ${deg}deg, transparent ${deg}deg)`;
+  const e = $("#maptop");
+  e.style.webkitMaskImage = m; e.style.maskImage = m;
+}
+let revealing = false, revT0 = -1, revDur = 0;
+function startReveal(dur){ revealing = true; revDur = dur; revT0 = -1; }
+function tickReveal(t){
+  if (!revealing) return;
+  if (revT0 < 0) revT0 = t;
+  const f = clamp((t-revT0)/revDur, 0, 1);
+  revealMap(f);
+  if (f >= 1) revealing = false;
+}
+
+/* ══ CUE SHEET ════════════════════════════════════════════════════ */
+const CUES = [];
+const at = (t, fn) => CUES.push({ t, fn, done:false });
+
+/* ─ TITLE ─ */
+at(300, () => on("#omark"));
+at(800, () => {
+  const wm = $("#owm"); wm.innerHTML = "";
+  "Candi Recon".split("").forEach((ch,i) => {
+    const s = document.createElement("i");
+    s.textContent = ch === " " ? "\u00A0" : ch;
+    s.style.transitionDelay = (i*46)+"ms";
+    wm.appendChild(s);
+  });
+  requestAnimationFrame(() => wm.classList.add("in"));
+});
+at(1800, () => on("#orule"));
+at(2050, () => on("#oeb"));
+at(2450, () => on("#orepo"));
+at(3400, () => $("#open").classList.remove("active"));
+
+/* ─ 01 · THE FLIGHT ─ */
+at(3500, () => { scene("flight"); on("#tag1"); on("#ground"); });
+at(3700, () => $$(".terrace").forEach((t,i) => later(i*160, () => t.classList.add("in"))));
+at(4600, () => { on("#fp1"); focus("#iso", 30, 1600, 1.3); });
+at(5200, () => { on("#orbit-back"); on("#orbit-front"); stag(".wp", 34); setFlight(0); });
+at(6000, () => { on("#fp2"); $(".depth .px").classList.add("on");
+                 $("#depth").classList.add("live"); });
+at(6400, () => startFlight(7800));
+at(8000, () => focus("#fp2", 60, 1500, 1.7));
+at(10400, () => focus("#iso", 30, 1600, 1.3));
+at(12600, () => { on("#fp3"); focus("#fp3", 70, 1400, 1.8); });
+at(14400, () => camWide(1300));
+
+/* ─ 02 · THE MAP ─ */
+at(15200, () => {
+  scene("mapsc"); on("#tag2");
+  title('<b>scan_candi</b> — out/map_top.png · orthographic, 0.10 m voxels');
+  revealMap(0); $("#maptop").classList.add("in");
+});
+at(15600, () => { startReveal(4400); stag(".pstep", 130); focus("#mapbox", 40, 1600, 1.35); });
+at(16000, () => { on("#mstat"); count($("#mPts"), 2900000, 4000);
+                  count($("#mVox"), 76920, 4000); });
+at(16400, () => ["#ps1","#ps2","#ps3","#ps4","#ps5","#ps6"].forEach((id,i) =>
+  later(i*680, () => { $$(".pstep").forEach(p => p.classList.remove("on"));
+                       $(id).classList.add("on"); })));
+at(20800, () => focus("#mapbox", 30, 1600, 1.4));
+at(22400, () => { on("#mapside"); focus("#mapside", 70, 1400, 1.9); });
+/* ★ SIGNATURE: the patch no ray ever reached */
+at(24200, () => focus("#mapbox", 30, 1500, 1.4));
+at(25400, () => { $("#unob").classList.add("on");
+                  focus("#unob", 110, 1500, 2.0); spot("#unob", 14); });
+at(28600, () => { unspot(); camWide(1400); });
+
+/* ─ 03 · THE CROSS-CHECK ─ */
+at(30000, () => {
+  scene("check"); on("#tag3");
+  title('<b>scan_candi</b> — cargo run … -- --octree-no-carve');
+});
+at(30400, () => { on("#ctable"); later(200, () => stag(".crow", 280)); });
+at(31600, () => focus("#ctable", 44, 1500, 1.6));
+at(33200, () => { on("#mline"); focus("#mline", 90, 1400, 1.9); });
+at(35400, () => { on("#cc1"); focus("#cc1", 60, 1400, 1.7); });
+at(37600, () => { on("#cc2"); later(200, () => stag(".art", 220));
+                  later(600, () => stag(".stack span", 90));
+                  focus("#cc2", 60, 1400, 1.7); });
+at(39800, () => camWide(1400));
+
+/* ─ END CARD ─ */
+at(40900, () => { $("#end").classList.add("active"); on("#emark"); });
+at(41500, () => on("#etag"));
+at(42100, () => on("#esub"));
+
+/* ── reset ───────────────────────────────────────────────────────── */
+function reset(){
+  timers.forEach(clearTimeout); timers.length = 0;
+  off(".terrace"); off("#ground"); off("#orbit-back"); off("#orbit-front"); off(".wp");
+  off("#drone-f"); off("#drone-b"); off(".stag");
+  off("#fp1"); off("#fp2"); off("#fp3"); off(".pstep"); off("#mstat"); off("#maptop");
+  off("#mapside"); off("#ctable"); off(".crow"); off("#mline"); off("#cc1"); off("#cc2");
+  off(".art"); off(".stack span");
+  off("#omark"); off("#orule"); off("#oeb"); off("#orepo");
+  off("#emark"); off("#etag"); off("#esub");
+  $$(".pstep").forEach(p => p.classList.remove("on"));
+  $(".depth .px").classList.remove("on"); $("#depth").classList.remove("live");
+  $("#unob").classList.remove("on");
+  $("#drone-f").innerHTML = ""; $("#drone-b").innerHTML = "";
+  flying = false; revealing = false; flown = 0;
+  revealMap(0);
+  $("#wpn").textContent = "0"; $("#dwp").textContent = "000"; $("#prog").style.width = "0";
+  $("#mPts").textContent = "0"; $("#mVox").textContent = "0";
+  $("#owm").innerHTML = "";
+  $("#end").classList.remove("active"); $("#open").classList.add("active");
+  $$(".scene").forEach(s => s.classList.remove("active","out"));
+  title('<b>scan_candi_with_octomap_rust</b> — cargo run -p candi-sim --bin live_scan');
+  unspot();
+  cam(MINZ, MINZ > 1 ? 800 : 720, APPH/2, 0);
+  requestAnimationFrame(() => camEl.style.transitionDuration = "1400ms");
+  CUES.forEach(c => c.done = false);
+}
+
+/* ── clock ───────────────────────────────────────────────────────── */
+let t0 = performance.now(), paused = false, pausedAt = 0;
+const fill = $("#fill"), clock = $("#clock");
+const fmt = ms => Math.floor(ms/60000)+":"+String(Math.floor(ms/1000)%60).padStart(2,"0");
+function frame(now){
+  requestAnimationFrame(frame);
+  if (paused) return;
+  let t = now - t0;
+  if (t >= DUR){ reset(); t0 = now; t = 0; }
+  for (const c of CUES) if (!c.done && t >= c.t){ c.done = true; c.fn(); }
+  tickFlight(t); tickReveal(t);
+  fill.style.width = (t/DUR*100)+"%";
+  clock.textContent = fmt(t)+" / 0:45";
+}
+requestAnimationFrame(frame);
+
+$("#btnPlay").addEventListener("click", e => {
+  paused = !paused;
+  if (paused) pausedAt = performance.now(); else t0 += performance.now()-pausedAt;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+$("#btnReplay").addEventListener("click", () => {
+  reset(); t0 = performance.now(); paused = false; $("#btnPlay").textContent = "Pause";
+});
+if (matchMedia("(prefers-reduced-motion: reduce)").matches){
+  paused = true; pausedAt = performance.now();
+  $("#poster").classList.add("on"); $("#btnPlay").textContent = "Play";
+  $("#pplay").addEventListener("click", () => {
+    $("#poster").classList.remove("on");
+    t0 += performance.now()-pausedAt; paused = false;
+    $("#btnPlay").textContent = "Pause";
+  });
+}
+})();
+</script>
