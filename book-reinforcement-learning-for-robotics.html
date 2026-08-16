@@ -1183,46 +1183,15 @@
         .bd-ch:hover { color: #10181b; border-color: rgba(76,126,255,.5); }
         .bd-ch.on { color: #4C7EFF; border-color: #4C7EFF; font-weight: 600; }
         .bd-hero { display: grid; gap: 36px; }
-        @media (min-width: 760px) { .bd-hero { grid-template-columns: 160px minmax(0, 1fr); align-items: start; } }
-        /* ── flat 2D book cover ── */
+        @media (min-width: 760px) { .bd-hero { grid-template-columns: 210px minmax(0, 1fr); align-items: start; } }
+        /* ── book cover — rendered artwork, not a CSS mockup ── */
         .bd-book-3d-scene {
-            width: min(160px, 47vw); aspect-ratio: 3 / 4.2;
+            width: min(210px, 54vw); aspect-ratio: 3 / 4.2;
         }
-        .bd-book-3d {
-            position: relative; width: 100%; height: 100%;
-        }
-        .bd-book-3d-front {
-            position: absolute; inset: 0;
-            background: #f2f2f3;
-            border-radius: 4px; overflow: hidden;
-            display: flex; flex-direction: column;
-            padding: 5% 6% 4%;
+        .bd-cover-img {
+            display: block; width: 100%; height: 100%; object-fit: cover;
+            border-radius: 4px;
             box-shadow: 0 26px 48px -22px rgba(16,24,27,.65);
-        }
-        .bd-book-3d-front::after {
-            content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 12px; z-index: 5;
-            background: linear-gradient(90deg, rgba(0,0,0,.3), rgba(0,0,0,.04) 70%, rgba(255,255,255,.08));
-        }
-        /* cover design elements — detail page scale */
-        .bd-cv-header {
-            font-family: "JetBrains Mono", monospace; font-size: 4.5px; letter-spacing: .14em;
-            text-transform: uppercase; color: #416180;
-            border-bottom: 1px solid rgba(16,24,27,.16); padding-bottom: 3px;
-        }
-        .bd-cv-title {
-            margin: 10% 0 0; font-weight: 800;
-            font-size: 12px; line-height: .92;
-            letter-spacing: -.01em; text-transform: uppercase; color: #1d1f20;
-        }
-        .bd-cv-diagram {
-            flex: 1; min-height: 0; margin-top: 6%;
-            border: 1px solid rgba(16,24,27,.14); overflow: hidden;
-        }
-        .bd-cv-diagram svg, .bd-cv-diagram img { display: block; width: 100%; height: 100%; object-fit: cover; }
-        .bd-cv-footer {
-            border-top: 1px solid rgba(16,24,27,.18); padding-top: 3px; margin-top: 4%;
-            font-family: "JetBrains Mono", monospace; font-size: 4px;
-            letter-spacing: .1em; text-transform: uppercase; color: #5d5d60;
         }
         .bd-kicker { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em;
                      color: rgba(16,24,27,.42); margin-bottom: 14px; }
@@ -1410,16 +1379,7 @@
                         <main>
                             <section id="overview" class="bd-hero" data-reveal style="scroll-margin-top:110px">
                                 <div class="bd-book-3d-scene">
-                                    <div class="bd-book-3d">
-                                        <div class="bd-book-3d-front">
-                                            <div class="bd-cv-header">Shannon Dynamics</div>
-                                            <h3 class="bd-cv-title">Reinforcement<br>Learning for<br>Robotics</h3>
-                                            <div class="bd-cv-diagram">
-                                                <img src="src/cover-rl-gridworld.svg" alt="Gridworld value iteration diagram">
-                                            </div>
-                                            <div class="bd-cv-footer">22 Chapters · Rust throughout</div>
-                                        </div>
-                                    </div>
+                                    <img class="bd-cover-img" src="book-cover/reinforcement-learning-for-robotics-cover.png" alt="Reinforcement Learning for Robotics — book cover">
                                 </div>
                                 <div>
                                     <p class="bd-kicker">SHANNON PRESS · 2026 · 22 CHAPTERS</p>
