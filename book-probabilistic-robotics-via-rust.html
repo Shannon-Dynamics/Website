@@ -1060,8 +1060,9 @@
         .lp-banner-in { position: relative; max-width: 1240px; margin: 0 auto; height: 100%; padding: 0 24px;
                         display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 46px; }
         .lp-crumb { display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
-                    font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .2em; color: rgba(255,255,255,.72); }
-        .lp-crumb a { color: rgba(255,255,255,.72); transition: color .25s; }
+                    font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .2em; color: rgba(255,255,255,.72);
+                    position: relative; z-index: 10; }
+        .lp-crumb a { color: rgba(255,255,255,.72); transition: color .25s; pointer-events: auto; }
         .lp-crumb a:hover { color: #fff; }
         .lp-crumb span.on { color: #A9C3FF; }
         .lp-title { color: #fff; font-size: clamp(30px, 4vw, 52px); font-weight: 500; letter-spacing: -.02em; line-height: 1.08; max-width: 18ch; }
