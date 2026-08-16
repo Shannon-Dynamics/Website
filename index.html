@@ -913,7 +913,7 @@
            description, capabilities and CTA. Panels are stacked in one fixed
            box so the section never reflows as you sweep across the row.
            ═══════════════════════════════════════════════════════════════════ */
-        .ps-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+        .ps-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
         .ps-card {
             position: relative; text-align: left; min-height: 158px;
             display: flex; flex-direction: column; justify-content: space-between;
@@ -1364,36 +1364,43 @@
                             <span class="sec-num">02</span>
                             <span class="sec-dash"></span>
                             <span class="sec-label">PRODUCTS</span>
-                            <span class="sec-meta">SIM / SEN / SCT / FCT</span>
+                            <span class="sec-meta">OCT / CND / SEN / SCT / FCT</span>
                         </div>
                         <h2 class="sec-title">Systems in production</h2>
                     </div>
 
                     <!-- ── trigger row: hover/tap a card to load it below ── -->
                     <div class="ps-row" id="ps-row" role="tablist" aria-label="Shannon systems" data-reveal>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sim">
+                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-oct">
                             <span class="ps-num">001</span>
                             <span>
-                                <h3>Shannon Sim</h3>
-                                <p>The robotics simulator beneath every Shannon invention.</p>
+                                <h3>OctoMap Rust</h3>
+                                <p>Pure-Rust 3D occupancy mapping — no unsafe, no C++ toolchain.</p>
+                            </span>
+                        </button>
+                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-cnd">
+                            <span class="ps-num">002</span>
+                            <span>
+                                <h3>Scan Candi</h3>
+                                <p>A MuJoCo drone reconstructs a temple into a 3D occupancy map.</p>
                             </span>
                         </button>
                         <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sen">
-                            <span class="ps-num">002</span>
+                            <span class="ps-num">003</span>
                             <span>
                                 <h3>Shannon Sentinel</h3>
                                 <p>An agentic security operations center under governed autonomy.</p>
                             </span>
                         </button>
                         <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sct">
-                            <span class="ps-num">003</span>
+                            <span class="ps-num">004</span>
                             <span>
                                 <h3>Shannon Scout</h3>
                                 <p>Interviews recorded, transcribed, and scored — bilingual by design.</p>
                             </span>
                         </button>
                         <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-fct">
-                            <span class="ps-num">004</span>
+                            <span class="ps-num">005</span>
                             <span>
                                 <h3>Shannon Factory</h3>
                                 <p>A company run by AI agents — org chart, budgets, and approvals.</p>
@@ -1405,53 +1412,84 @@
                     <div class="ps-detail" data-reveal>
                         <!-- filmstrip: the frame stays put, the four panels ride this track -->
                         <div class="ps-track">
-                            <article class="ps-panel" id="ps-sim" role="tabpanel">
+                            <article class="ps-panel" id="ps-oct" role="tabpanel">
                             <div class="ps-shot">
                             <div class="win ps-win flex flex-col">
                                 <div class="win-bar">
                                     <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
-                                    <span class="font-mono text-[10px] text-white/35 ml-2">shannon-sim · warehouse_04</span>
+                                    <span class="font-mono text-[10px] text-white/35 ml-2">octo_map_rust · cargo build --release</span>
                                 </div>
                                 <div class="relative flex-1 flex">
-                                    <span class="anno-chip" style="top:14px; right:14px">PHYSICS 0.5MS</span>
-                                    <span class="anno-chip" style="bottom:14px; left:14px">256 ENVS PARALLEL</span>
-                                    <div class="relative w-28 border-r border-white/10 p-3 space-y-2">
-                                        <div class="skel-blue h-2 w-14"></div>
-                                        <div class="skel h-2 w-16"></div><div class="skel h-2 w-12"></div>
-                                        <div class="skel h-2 w-16"></div><div class="skel h-2 w-10"></div>
-                                    </div>
-                                    <div class="relative flex-1 p-4 flex flex-col gap-3">
-                                        <div class="flex gap-3">
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                            <div class="skel h-12 flex-1 rounded"></div>
-                                        </div>
-                                        <div class="flex-1 pb-5">
-                                            <!-- training curve drawn out of the dot field, not flat bars -->
-                                            <svg class="dot-chart" viewBox="0 0 300 110" preserveAspectRatio="none" aria-hidden="true">
-                                                <path d="M0,110 L0.0,88 L20.0,74 L40.0,79 L60.0,58 L80.0,63 L100.0,41 L120.0,46 L140.0,30 L160.0,34 L180.0,22 L200.0,26 L220.0,16 L240.0,18 L260.0,13 L280.0,14 L300.0,11 L300,110 Z" fill="url(#dot-blue)" opacity=".55"/>
-                                                <polyline points="0.0,88 20.0,74 40.0,79 60.0,58 80.0,63 100.0,41 120.0,46 140.0,30 160.0,34 180.0,22 200.0,26 220.0,16 240.0,18 260.0,13 280.0,14 300.0,11" fill="none" stroke="#4C7EFF"
-                                                          stroke-width="3.2" stroke-linecap="round" stroke-dasharray="0 7"
-                                                          vector-effect="non-scaling-stroke"/>
-                                            </svg>
-                                        </div>
+                                    <span class="anno-chip" style="top:14px; right:14px">PURE RUST</span>
+                                    <span class="anno-chip" style="bottom:14px; left:14px">NO UNSAFE CODE</span>
+                                    <div class="relative flex-1 p-4 font-mono text-[11px] leading-5 text-green-400/80 overflow-hidden">
+                                        <p class="text-white/40">$ cargo build --release</p>
+                                        <p>&nbsp;&nbsp;&nbsp;Compiling octo_map_rust v1.10.0</p>
+                                        <p>&nbsp;&nbsp;&nbsp;Compiling octree v0.1.0</p>
+                                        <p>&nbsp;&nbsp;&nbsp;Compiling pointcloud v0.1.0</p>
+                                        <p class="text-green-400">&nbsp;&nbsp;&nbsp;&nbsp;Finished release [optimized] target(s)</p>
+                                        <p class="mt-2 text-white/40">$ cargo test</p>
+                                        <p>running 42 tests</p>
+                                        <p class="text-green-400">test result: ok. 42 passed; 0 failed</p>
+                                        <p class="mt-2 text-white/40">$ file output/map.bt</p>
+                                        <p>output/map.bt: OctoMap binary, byte-identical to C++ 1.10.0</p>
                                     </div>
                                 </div>
                             </div>
-                        
+
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">SIM.01 · FLAGSHIP</span>
-                                <h3 class="ps-title">Shannon Sim</h3>
-                                <p class="ps-desc">The robotics simulator beneath every Shannon invention. Physics-accurate worlds where machines are designed, trained, and validated before the first bolt is tightened.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                <span class="ps-eyebrow">OCT.01 · OPEN SOURCE</span>
+                                <h3 class="ps-title">OctoMap Rust</h3>
+                                <p class="ps-desc">Pure-Rust port of OctoMap C++ 1.10.0 — 3D occupancy mapping with no unsafe code, no C++ toolchain, and byte-identical .bt/.ot file compatibility.</p>
+                                <a href="https://github.com/Shannon-Dynamics/octo_map_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
                                 <div class="ps-caps">
-                                    <div class="ps-cap"><span>C.01</span><p>Deterministic solver · 0.5ms physics step</p></div>
-                                    <div class="ps-cap"><span>C.02</span><p>256+ GPU-batched environments per node</p></div>
-                                    <div class="ps-cap"><span>C.03</span><p>CAD / URDF import with validated asset library</p></div>
-                                    <div class="ps-cap"><span>C.04</span><p>Sim-to-real gap measured at 2.1%</p></div>
+                                    <div class="ps-cap"><span>C.01</span><p>100% safe Rust — zero unsafe blocks</p></div>
+                                    <div class="ps-cap"><span>C.02</span><p>Byte-identical .bt / .ot file compatibility with C++ 1.10.0</p></div>
+                                    <div class="ps-cap"><span>C.03</span><p>No C++ toolchain required — pure cargo build</p></div>
+                                    <div class="ps-cap"><span>C.04</span><p>Apache 2.0 licensed · open source</p></div>
                                 </div>
-                            
+
+                            </div>
+                        </article>
+
+                            <article class="ps-panel" id="ps-cnd" role="tabpanel">
+                            <div class="ps-shot">
+                            <div class="win ps-win flex flex-col">
+                                <div class="win-bar">
+                                    <span class="win-dot"></span><span class="win-dot"></span><span class="win-dot"></span>
+                                    <span class="font-mono text-[10px] text-white/35 ml-2">scan_candi · mujoco flight loop</span>
+                                </div>
+                                <div class="relative flex-1 flex">
+                                    <span class="anno-chip" style="top:14px; right:14px">MUJOCO DRONE</span>
+                                    <span class="anno-chip" style="bottom:14px; left:14px">3D RECONSTRUCTION</span>
+                                    <div class="relative flex-1 p-4 font-mono text-[11px] leading-5 text-green-400/80 overflow-hidden">
+                                        <p class="text-white/40">$ cargo run --release -- --scene candi</p>
+                                        <p>&nbsp;&nbsp;▸ Loading MuJoCo scene … done</p>
+                                        <p>&nbsp;&nbsp;▸ Orbit radius: 8.0 m, altitude: 4.5 m</p>
+                                        <p>&nbsp;&nbsp;▸ Rendering depth frames … 360 / 360</p>
+                                        <p>&nbsp;&nbsp;▸ Inserting into OctoMap …</p>
+                                        <p class="text-cyan-400">&nbsp;&nbsp;&nbsp;&nbsp;resolution: 0.05 m · voxels: 1.2 M</p>
+                                        <p class="text-green-400">&nbsp;&nbsp;▸ Saved: output/candi_temple.bt (4.8 MB)</p>
+                                        <p class="mt-2 text-white/40">$ open output/candi_temple_viz.png</p>
+                                        <p class="text-blue-400">&nbsp;&nbsp;▸ 3D occupancy map rendered ✓</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            </div>
+                            <div class="ps-body">
+                                <span class="ps-eyebrow">CND.02 · OPEN SOURCE</span>
+                                <h3 class="ps-title">Scan Candi</h3>
+                                <p class="ps-desc">End-to-end Rust demo of octo_map_rust: a MuJoCo drone orbits a temple, renders depth frames, and reconstructs a 3D occupancy map — rendering, mapping, and visualisation all in Rust.</p>
+                                <a href="https://github.com/Shannon-Dynamics/scan_candi_with_octomap_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                <div class="ps-caps">
+                                    <div class="ps-cap"><span>C.01</span><p>MuJoCo physics simulation for drone flight path</p></div>
+                                    <div class="ps-cap"><span>C.02</span><p>Depth-frame rendering and point-cloud extraction</p></div>
+                                    <div class="ps-cap"><span>C.03</span><p>3D occupancy reconstruction via octo_map_rust</p></div>
+                                    <div class="ps-cap"><span>C.04</span><p>Apache 2.0 licensed · open source</p></div>
+                                </div>
+
                             </div>
                         </article>
 
@@ -1463,7 +1501,7 @@
                                         title="Shannon Sentinel product demo" loading="lazy"></iframe>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">SEN.02 · ACTIVE</span>
+                                <span class="ps-eyebrow">SEN.03 · ACTIVE</span>
                                 <h3 class="ps-title">Shannon Sentinel</h3>
                                 <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
                                 <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
@@ -1488,7 +1526,7 @@
                                         title="Shannon Scout product demo" loading="lazy"></iframe>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">SCT.03 · BETA</span>
+                                <span class="ps-eyebrow">SCT.04 · BETA</span>
                                 <h3 class="ps-title">Shannon Scout</h3>
                                 <p class="ps-desc">An AI recruiter that sits in on every interview. It transcribes and scores the conversation as it happens — in Bahasa Indonesia and English, code-switching included — then hands you a ranked shortlist with the reasoning attached.</p>
                                 <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
@@ -1510,7 +1548,7 @@
                                         title="Shannon Factory product demo" loading="lazy"></iframe>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">FCT.04 · IN BUILD</span>
+                                <span class="ps-eyebrow">FCT.05 · IN BUILD</span>
                                 <h3 class="ps-title">Shannon Factory</h3>
                                 <p class="ps-desc">A company staffed by AI agents — a CEO, a PM, an engineering lead, a designer — each with a role, a budget, and a place in the org chart. When an agent asks for more than it's allowed to spend, the work stops until a human decides.</p>
                                 <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
@@ -1524,7 +1562,7 @@
                             </div>
                         </article>
                         </div>
-                        <span class="anno-chip ps-counter">01 / 04</span>
+                        <span class="anno-chip ps-counter">01 / 05</span>
                     </div>
                 </div>
             </div>
@@ -1586,7 +1624,7 @@
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">PREPRINT</span>
+                                        <span class="pub-tag">PAPER</span>
                                         <span>
                                             <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
                                             <span class="pub-by">Shannon Dynamics</span>
@@ -1596,7 +1634,7 @@
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">NOTE</span>
+                                        <span class="pub-tag">PAPER</span>
                                         <span>
                                             <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
                                             <span class="pub-by">Shannon Dynamics</span>
@@ -1606,7 +1644,7 @@
 
                                 <div class="pub-item">
                                     <button class="pub-head" type="button" aria-expanded="false">
-                                        <span class="pub-tag">NOTE</span>
+                                        <span class="pub-tag">PAPER</span>
                                         <span>
                                             <span class="pub-title" style="color:rgba(16,24,27,.35)">Coming Soon</span>
                                             <span class="pub-by">Shannon Dynamics</span>
@@ -1799,30 +1837,6 @@
                             Reach out and a Shannon engineer will respond.
                         </p>
 
-                        <div class="cta-steps" data-reveal>
-                            <div class="cta-step">
-                                <span class="cta-step-num">01</span>
-                                <div>
-                                    <h3>Share your challenge</h3>
-                                    <p>What you're building and what you need.</p>
-                                </div>
-                            </div>
-                            <div class="cta-step">
-                                <span class="cta-step-num">02</span>
-                                <div>
-                                    <h3>Talk to an engineer</h3>
-                                    <p>A Shannon engineer, directly.</p>
-                                </div>
-                            </div>
-                            <div class="cta-step">
-                                <span class="cta-step-num">03</span>
-                                <div>
-                                    <h3>See it on your use case</h3>
-                                    <p>Shannon, on your own use case.</p>
-                                </div>
-                            </div>
-                        </div>
-
                         <div class="cta-fallback" data-reveal>
                             <span>Prefer email? <a href="mailto:office@shannon.id">office@shannon.id</a></span>
                             <span aria-hidden="true">·</span>
@@ -1861,8 +1875,7 @@
                             <span class="cta-submit-label">Send message →</span>
                         </button>
 
-                        <p class="cta-hint">OPENS YOUR EMAIL — JUST HIT SEND</p>
-                        <div class="cta-status" id="cta-status" role="status" aria-live="polite"></div>
+<div class="cta-status" id="cta-status" role="status" aria-live="polite"></div>
                     </form>
 
                 </div>
@@ -2093,7 +2106,7 @@
                     p.classList.toggle("is-on", j === i);
                     p.toggleAttribute("inert", j !== i);
                 });
-                if (counter) counter.textContent = String(i + 1).padStart(2, "0") + " / 04";
+                if (counter) counter.textContent = String(i + 1).padStart(2, "0") + " / 05";
             }
 
             tabs.forEach((tab, i) => {
