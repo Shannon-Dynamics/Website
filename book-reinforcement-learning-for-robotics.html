@@ -1166,12 +1166,85 @@
         .bd-ch.on { color: #4C7EFF; border-color: #4C7EFF; font-weight: 600; }
         .bd-hero { display: grid; gap: 36px; }
         @media (min-width: 760px) { .bd-hero { grid-template-columns: 160px minmax(0, 1fr); align-items: start; } }
-        .bd-cover.book-cover { width: min(160px, 47vw); aspect-ratio: 3 / 4.2; height: auto;
-            border-radius: 3px 8px 8px 3px; transform: none; overflow: hidden;
-            box-shadow: 0 26px 48px -26px rgba(16,24,27,.75); }
-        .bd-cover.book-cover::after { content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 17px; z-index: 3;
-            background: linear-gradient(90deg, rgba(0,0,0,.34), rgba(0,0,0,.05) 70%, rgba(255,255,255,.1)); }
-        .bd-cover .book-cover-t { left: 30px; right: 18px; bottom: 20px; font-size: 14px; font-weight: 600; line-height: 1.35; }
+        /* ── 3D book cover ── */
+        .bd-book-3d-scene {
+            perspective: 900px; perspective-origin: 50% 50%;
+            width: min(160px, 47vw); aspect-ratio: 3 / 4.2;
+        }
+        .bd-book-3d {
+            position: relative; width: 100%; height: 100%;
+            transform-style: preserve-3d;
+            transform: rotateY(-6deg) rotateX(1deg);
+            transition: transform .7s cubic-bezier(.76,0,.24,1);
+        }
+        .bd-book-3d-scene:hover .bd-book-3d { transform: rotateY(-14deg) rotateX(3deg); }
+        .bd-book-3d-front {
+            position: absolute; inset: 0;
+            background: #f2f2f3;
+            border-radius: 2px 6px 6px 2px; overflow: hidden;
+            backface-visibility: hidden;
+            display: flex; flex-direction: column;
+            padding: 5% 6% 4%;
+            box-shadow: 0 26px 48px -22px rgba(16,24,27,.65);
+        }
+        .bd-book-3d-front::after {
+            content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: 12px; z-index: 5;
+            background: linear-gradient(90deg, rgba(0,0,0,.3), rgba(0,0,0,.04) 70%, rgba(255,255,255,.08));
+        }
+        .bd-book-3d-spine {
+            position: absolute; top: 0; bottom: 0; left: 0; width: 20px;
+            background: #1d2d3d;
+            transform: rotateY(-90deg) translateX(-10px);
+            transform-origin: left center;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 6px 0 0 6px;
+        }
+        .bd-book-3d-spine span {
+            writing-mode: vertical-rl;
+            font-family: "Inter", sans-serif; font-size: 5.5px; font-weight: 700;
+            letter-spacing: .12em; text-transform: uppercase;
+            color: rgba(255,255,255,.85); white-space: nowrap;
+        }
+        .bd-book-3d-pages {
+            position: absolute; top: 2px; bottom: 2px; right: 0; width: 10px;
+            background: linear-gradient(90deg, #e8e8e8, #f5f5f5);
+            transform: rotateY(90deg) translateX(5px);
+            transform-origin: right center; border-radius: 0 2px 2px 0;
+        }
+        .bd-book-3d-pages::before {
+            content: ''; position: absolute; inset: 4px 0;
+            background: repeating-linear-gradient(180deg, rgba(16,24,27,.06) 0px, transparent 1px, transparent 3px);
+        }
+        .bd-book-3d-bottom {
+            position: absolute; bottom: 0; left: 0; right: 0; height: 10px;
+            background: linear-gradient(180deg, #e4e4e4, #eee);
+            transform: rotateX(90deg) translateY(5px);
+            transform-origin: bottom center;
+        }
+        /* cover design elements — detail page scale */
+        .bd-cv-header {
+            font-family: "JetBrains Mono", monospace; font-size: 4.5px; letter-spacing: .14em;
+            text-transform: uppercase; color: #416180;
+            border-bottom: 1px solid rgba(16,24,27,.16); padding-bottom: 3px;
+        }
+        .bd-cv-title {
+            margin: 10% 0 0; font-weight: 800;
+            font-size: 12px; line-height: .92;
+            letter-spacing: -.01em; text-transform: uppercase; color: #1d1f20;
+        }
+        .bd-cv-diagram {
+            flex: 1; min-height: 0; margin-top: 6%;
+            border: 1px solid rgba(16,24,27,.14); overflow: hidden;
+        }
+        .bd-cv-diagram svg, .bd-cv-diagram img { display: block; width: 100%; height: 100%; object-fit: cover; }
+        .bd-cv-footer {
+            border-top: 1px solid rgba(16,24,27,.18); padding-top: 3px; margin-top: 4%;
+            font-family: "JetBrains Mono", monospace; font-size: 4px;
+            letter-spacing: .1em; text-transform: uppercase; color: #5d5d60;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .bd-book-3d { transition-duration: .01ms; transform: none; }
+        }
         .bd-kicker { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: .18em;
                      color: rgba(16,24,27,.42); margin-bottom: 14px; }
         .bd-h2 { font-size: 21px; font-weight: 600; letter-spacing: -.015em; margin-bottom: 14px;
@@ -1315,6 +1388,7 @@
                         <aside class="bd-side" data-reveal aria-label="Book contents">
                             <p class="bd-side-h">THIS BOOK</p>
                             <a class="bd-side-top" href="#overview">Overview</a>
+                            <a class="bd-side-top" href="#vision">Vision &amp; method</a>
                             <a class="bd-side-top" href="#contents">Table of contents</a>
                             <p class="bd-part">PART I — FOUNDATIONS OF SEQUENTIAL DECISION-MAKING</p>
                             <a class="bd-ch" href="#ch-01">Why Reinforcement Learning for Robotics?</a>
@@ -1343,12 +1417,30 @@
                             <p class="bd-part">PART V — FRONTIERS & CAPSTONE</p>
                             <a class="bd-ch" href="#ch-21">Frontiers: HRI, Multi-Robot & Foundation Models</a>
                             <a class="bd-ch" href="#ch-22">Capstone: An End-to-End Learned Robot in Rust</a>
+                            <p class="bd-part">APPENDICES</p>
+                            <a class="bd-ch" href="#app-a">A — Rust for Scientists</a>
+                            <a class="bd-ch" href="#app-b">B — The Crate Compendium</a>
+                            <a class="bd-ch" href="#app-c">C — Notation & Math Reference</a>
                         </aside>
 
                         <!-- ── main ── -->
                         <main>
                             <section id="overview" class="bd-hero" data-reveal style="scroll-margin-top:110px">
-                                <span class="book-cover bd-cover bc-ink bc-v3"><span class="book-cover-t">Reinforcement Learning for Robotics</span></span>
+                                <div class="bd-book-3d-scene" data-book3d>
+                                    <div class="bd-book-3d">
+                                        <div class="bd-book-3d-front">
+                                            <div class="bd-cv-header">Shannon Dynamics</div>
+                                            <h3 class="bd-cv-title">Reinforcement<br>Learning for<br>Robotics</h3>
+                                            <div class="bd-cv-diagram">
+                                                <img src="src/cover-rl-gridworld.svg" alt="Gridworld value iteration diagram">
+                                            </div>
+                                            <div class="bd-cv-footer">22 Chapters · Rust throughout</div>
+                                        </div>
+                                        <div class="bd-book-3d-spine"><span>Reinforcement Learning for Robotics</span></div>
+                                        <div class="bd-book-3d-pages"></div>
+                                        <div class="bd-book-3d-bottom"></div>
+                                    </div>
+                                </div>
                                 <div>
                                     <p class="bd-kicker">SHANNON PRESS · 2026 · 22 CHAPTERS</p>
                                     <h2 class="bd-h2">About this book</h2>
@@ -1359,6 +1451,16 @@
                                         <a class="bd-btn" href="index.html#contact">REQUEST ACCESS ↗</a>
                                     </div>
                                 </div>
+                            </section>
+
+                            <section id="vision" class="bd-toc" data-reveal style="scroll-margin-top:110px">
+                                <p class="bd-kicker">PART 0</p>
+                                <h2 class="bd-h2">Vision &amp; method</h2>
+                                <p class="bd-p">This book modernizes and unifies four baseline references into one coherent, interactive learning path: <strong>Sutton &amp; Barto's</strong> <em>Reinforcement Learning: An Introduction</em> supplies the mathematical spine of Parts I–II (bandits → MDPs → DP/MC/TD → function approximation → policy gradients); <strong>Kober, Bagnell &amp; Peters'</strong> 2013 robotics survey builds the bridge in Part III (the four curses, representation and prior knowledge, the ball-in-a-cup case study); <strong>Tang et al.'s</strong> 2024 survey supplies the modern taxonomy of Part IV (locomotion, navigation, manipulation, mobile manipulation, HRI, multi-robot, and the L0–L5 ladder of real-world success); and <strong>Akinola's</strong> Columbia lectures frame the pedagogy — see–think–act, learning-from-demonstration vs. RL vs. hybrid, simulators and sim-to-real.</p>
+                                <p class="bd-p">Where the references stop — 2013 survey methods, tabular-era pedagogy — the book continues: PPO and SAC as the modern workhorses, world models, offline RL, teacher–student sim-to-real, massively parallel simulation, and the foundation-model frontier, each still grounded in the same mathematical spine.</p>
+                                <p class="bd-p"><strong>The FCP method.</strong> Every chapter delivers three interleaved layers. <strong>Foundation</strong> is the full mathematical formalism — definitions, theorems, derivations worked in the actual algebra (not proof sketches), convergence conditions, and the assumptions robots violate. <strong>Conceptual</strong> puts a visual on every hard idea — an interactive web widget, animation, or live dashboard the reader manipulates directly: drag a policy and watch value functions ripple, randomize physics parameters and watch transfer break. <strong>Practical</strong> implements every algorithm in Rust, from tabular Q-learning to PPO on a simulated quadruped — the same code compiles natively for training and to WASM for the in-browser demos.</p>
+                                <p class="bd-p"><strong>Toolchain.</strong> The web book itself is Next.js 15, React 19, and TypeScript, with math set in KaTeX, code highlighted at build time by Shiki, charts by Nivo, and simulations driven by a TypeScript RL engine. The taught Rust curriculum runs on <code>ndarray</code>, <code>nalgebra</code>, and <code>rand</code>; deep learning on <code>burn</code> (WGPU backend, trains natively and runs in-browser) with <code>candle</code> as a lean inference alternative; physics and robots on <code>rapier2d</code>/<code>rapier3d</code>, <code>parry</code>, <code>urdf-rs</code>, and <code>bevy</code>; visualization on <code>egui</code>, <code>plotters</code>, and <code>rerun</code> for native telemetry — all wired together by five book-owned crates: <code>rl-core</code>, <code>rl-tabular</code>, <code>rl-deep</code>, <code>rl-envs</code>, <code>rl-sim</code>, <code>rl-viz</code>.</p>
+                                <p class="bd-p"><strong>The cast.</strong> Four robots recur across the book, each anchoring its own thread. <strong>Rusty</strong>, a differential-drive mobile robot, carries the navigation line from a hello-world gridworld through lidar-based continuous navigation and multi-agent delivery (Ch. 1, 4–7, 9, 16, 19, 21). <strong>Pendle</strong>, a pendulum / cart-pole, is the classical-control-to-RL bridge (Ch. 2, 8, 10–13, 15). <strong>Reacher</strong>, a two-link planar arm, carries the manipulation thread (Ch. 3, 11, 13–17, 19–21). <strong>Ferris</strong>, a quadruped introduced in Chapter 15, anchors locomotion and sim-to-real (Ch. 15, 18–19, 22) and stars in the book's capstone.</p>
                             </section>
 
                             <section class="bd-toc" id="contents">
@@ -1454,20 +1556,37 @@
                                 </li>
                             </ol>
                         </div>
+                        <div class="bd-pt" data-reveal>
+                            <p class="bd-pt-h">APPENDICES</p>
+                            <ol>
+                                <li>
+                                    <a href="#app-a"><span>APP.A</span>Rust for Scientists<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#app-b"><span>APP.B</span>The Crate Compendium<em>→</em></a>
+                                </li>
+                                <li>
+                                    <a href="#app-c"><span>APP.C</span>Notation & Math Reference<em>→</em></a>
+                                </li>
+                            </ol>
+                        </div>
                             </section>
 
                             <!-- ── chapters — one page, anchored sections ── -->
-                            <p data-reveal style="margin-top:46px"><span class="cd-draft">DRAFT — PLACEHOLDER COPY</span></p>
                             <section class="bd-chsec" id="ch-01" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS OF SEQUENTIAL DECISION-MAKING · CH.01</p>
                                 <h2 class="bd-h2">Why Reinforcement Learning for Robotics?</h2>
                                 <p class="bd-p">The see–think–act loop; why direct programming breaks (structure, perception, manipulation, deformation); learning from demonstration vs reinforcement learning vs hybrid; a guided tour of real-world successes (drone racing, ANYmal, in-hand cube) organized by Tang's competency taxonomy and <strong>levels of real-world success (L0–L5)</strong>; the anatomy of an RL problem (agent, environment, reward, policy) informally; the book's method, cast of robots, and toolchain.</p>
+                                <p class="bd-p"><strong>The math:</strong> the agent–environment loop as a measurable dynamical system — informal first, then a formal preview.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a competency-taxonomy explorer; an L0–L5 success-level dashboard of surveyed systems; a see–think–act animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> Rust/WASM "hello robot": drive Rusty in the browser with a hand-coded controller, feel why hand-coding fails; tour of the workspace crates.</p>
                             </section>
                             <section class="bd-chsec" id="ch-02" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS OF SEQUENTIAL DECISION-MAKING · CH.02</p>
                                 <h2 class="bd-h2">The Mathematical Toolkit</h2>
                                 <p class="bd-p">Probability spaces, random variables, expectation, conditional expectation, Markov chains; vectors, matrices, eigen-structure; gradients, Jacobians, Hessians; convexity and gradient descent; ODEs and discretization (how a robot's continuous dynamics become a discrete-time decision process); stochastic approximation (Robbins–Monro) — the theorem that makes every RL algorithm tick.</p>
+                                <p class="bd-p"><strong>The math:</strong> full formal statements throughout, with contraction mappings and fixed points — the Banach theorem — proved, not asserted.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an interactive gradient-descent landscape; a Markov-chain mixing animation; a discretization-error explorer (Euler vs. RK4 on Pendle).</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>ndarray</code>/<code>nalgebra</code> crash projects; implement Robbins–Monro; simulate and plot Pendle's ODE with <code>egui_plot</code>.</p>
                             </section>
                             <section class="bd-chsec" id="ch-03" data-reveal>
@@ -1475,6 +1594,8 @@
                                 <h2 class="bd-h2">Multi-Armed Bandits: Exploration & Exploitation</h2>
                                 <p class="bd-p">The n-armed bandit as the atom of RL; action-value estimation, incremental updates, nonstationarity; ε-greedy, optimistic initialization, UCB, gradient bandits (softmax preferences — the seed of policy gradients), Thompson sampling (modernization); contextual bandits as the bridge to full RL.</p>
                                 <p class="bd-p"><strong>Reacher</strong> choosing among grasp primitives; auto-tuning a controller gain online.</p>
+                                <p class="bd-p"><strong>The math:</strong> regret and concentration inequalities (Hoeffding), with the UCB regret bound derived from scratch.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a live bandit testbed dashboard — 10-armed, distribution violins, regret curves racing per algorithm; a UCB confidence-interval animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-core</code> <code>Bandit</code> trait; all algorithms in Rust; parameter-study harness with <code>rayon</code>; WASM playground where the reader designs arm distributions.</p>
                             </section>
                             <section class="bd-chsec" id="ch-04" data-reveal>
@@ -1482,12 +1603,16 @@
                                 <h2 class="bd-h2">Markov Decision Processes: The Formalism</h2>
                                 <p class="bd-p">The MDP tuple (S, A, P, R, γ); returns, episodic vs continuing tasks; policies; state-value and action-value functions; <strong>Bellman expectation and optimality equations derived in full</strong>; existence/uniqueness via contraction; partial observability (POMDP) introduced honestly — because robots never see state — with belief states; Tang's formulation axes: action-space level (low/mid/high), observation space, sparse vs dense reward.</p>
                                 <p class="bd-p"><strong>Rusty</strong>'s warehouse world as MDP; the same world with noisy odometry as POMDP.</p>
+                                <p class="bd-p"><strong>The math:</strong> the full Bellman derivations, the γ-contraction proof, and the MDP↔POMDP relationship worked out precisely.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an interactive MDP graph editor — edit P/R and watch v_π ripple; a backup-diagram animator; a POMDP belief-cloud visualization over Rusty's map.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-core</code>: <code>Mdp</code>, <code>Env</code>, <code>Space</code> traits (the book's gym); exact v_π solving via <code>nalgebra</code> linear algebra; property tests with <code>proptest</code>.</p>
                             </section>
                             <section class="bd-chsec" id="ch-05" data-reveal>
                                 <p class="bd-pt-h">PART I — FOUNDATIONS OF SEQUENTIAL DECISION-MAKING · CH.05</p>
                                 <h2 class="bd-h2">Dynamic Programming: Planning with a Known Model</h2>
                                 <p class="bd-p">Policy evaluation (iterative), policy improvement theorem (proved), policy iteration, value iteration, asynchronous DP, generalized policy iteration (GPI) as the book's master pattern; computational reality: curse of dimensionality quantified (preview of Kober's curses).</p>
+                                <p class="bd-p"><strong>The math:</strong> the policy improvement theorem, convergence of value iteration, and a complexity analysis of both.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the book's signature widget — a live GPI dashboard: a heatmap of V, arrows of π, sweep-by-sweep animation with speed control on Rusty's warehouse; an asynchronous-sweep comparator.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-tabular</code>: policy/value iteration over <code>rl-core</code> MDPs; benchmark sweeps with <code>criterion</code>; state-space-size explosion experiment (why tabular DP dies at robot scale).</p>
                             </section>
                             <section class="bd-chsec" id="ch-06" data-reveal>
@@ -1495,6 +1620,8 @@
                                 <h2 class="bd-h2">Learning from Experience: Monte Carlo & Temporal-Difference</h2>
                                 <p class="bd-p">Learning without a model: MC prediction/control, exploring starts, ε-soft policies; importance sampling (ordinary vs weighted, derived); TD(0), the TD error δ; SARSA vs Q-learning (on- vs off-policy — the distinction that rules deep RL); expected SARSA; convergence conditions; maximization bias and Double Q-learning.</p>
                                 <p class="bd-p">Rusty learns the warehouse from rollouts alone; sensor-noise ablation.</p>
+                                <p class="bd-p"><strong>The math:</strong> first-visit MC unbiasedness, an importance-sampling variance analysis, Q-learning convergence (Watkins) stated with a proof sketch, and the Double-Q estimator worked out.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an MC-vs-TD "credit propagation" side-by-side animation; a TD-error river — δ flowing backward along a trajectory; a maximization-bias casino widget.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-tabular</code>: MC, SARSA, Q-learning, Double-Q; live-training WASM dashboard (reward curve, ε schedule, Q-heatmap updating in real time).</p>
                             </section>
                             <section class="bd-chsec" id="ch-07" data-reveal>
@@ -1502,24 +1629,32 @@
                                 <h2 class="bd-h2">Unifying Learning & Planning: n-step, Traces, Dyna & MCTS</h2>
                                 <p class="bd-p">n-step TD and the bias–variance dial; forward vs backward view; eligibility traces, TD(λ), Sarsa(λ); Dyna-Q: learning + planning from an imagined model; prioritized sweeping; when the model is wrong (Dyna-Q+); trajectory sampling; MCTS (the AlphaGo connection) as decision-time planning.</p>
                                 <p class="bd-p">Rusty replans when the warehouse layout changes overnight (model-wrong experiments).</p>
+                                <p class="bd-p"><strong>The math:</strong> the λ-return equivalence theorem — forward equals backward — and n-step error bounds.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> the λ-dial widget — drag λ∈[0,1] and watch trace decay and credit assignment morph between TD(0) and MC; a Dyna imagination visualizer (real vs. imagined transitions); an MCTS tree-growth animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-tabular</code>: Sarsa(λ), Dyna-Q(+), prioritized sweeping with a binary heap; MCTS on a maze; planning-budget vs performance study.</p>
                             </section>
                             <section class="bd-chsec" id="ch-08" data-reveal>
                                 <p class="bd-pt-h">PART II — SCALING UP: FUNCTION APPROXIMATION & DEEP RL · CH.08</p>
                                 <h2 class="bd-h2">Function Approximation & the Deadly Triad</h2>
                                 <p class="bd-p">Why robots outgrow tables (continuous state); prediction as supervised projection: the VE objective, semi-gradient TD; linear methods and their geometry (projection operator, fixed point); feature construction: polynomials, RBFs, <strong>tile coding</strong> (implemented for real), Fourier basis; neural networks as features that learn themselves; <strong>the deadly triad</strong> (function approximation + bootstrapping + off-policy) with Baird's counterexample run live; gradient-TD fixes in brief.</p>
+                                <p class="bd-p"><strong>The math:</strong> the semi-gradient derivation, the linear TD fixed-point theorem, and a full Baird divergence analysis.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a feature-space visualizer — tilings over Pendle's state space; Baird's counterexample as a live-diverging dashboard; an animated projection-geometry diagram.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-deep</code> begins: linear semi-gradient SARSA on cart-pole with tile coding (pure <code>ndarray</code>); first <code>burn</code> MLP: nonlinear value function on Pendle; side-by-side stability experiments.</p>
                             </section>
                             <section class="bd-chsec" id="ch-09" data-reveal>
                                 <p class="bd-pt-h">PART II — SCALING UP: FUNCTION APPROXIMATION & DEEP RL · CH.09</p>
                                 <h2 class="bd-h2">Deep Value-Based Methods: DQN & Descendants</h2>
                                 <p class="bd-p">From Q-table to Q-network; why naive deep Q-learning explodes; the DQN recipe (replay buffer, target network) as variance/correlation surgery; Double DQN, Dueling, Prioritized Replay, n-step returns, Rainbow synthesis; distributional RL (C51) as the modern frontier of value learning; where value-based methods sit in robotics (discrete/mid-level action spaces, e.g., grasp selection — Tang Table 5 context).</p>
+                                <p class="bd-p"><strong>The math:</strong> replay as breaking Markov correlation, a target-network fixed-point analysis, and the distributional Bellman operator.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a replay-buffer flow animation; the target-network "two clocks" widget; a C51 distribution-morphing visualization; a loss-landscape stability comparison dashboard.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-deep</code>: full DQN in <code>burn</code> (WGPU backend) on visual-gridworld Rusty; prioritized replay with a sum-tree; training telemetry streamed to an <code>egui</code> dashboard; WASM inference demo of the trained agent.</p>
                             </section>
                             <section class="bd-chsec" id="ch-10" data-reveal>
                                 <p class="bd-pt-h">PART II — SCALING UP: FUNCTION APPROXIMATION & DEEP RL · CH.10</p>
                                 <h2 class="bd-h2">Policy Gradients: REINFORCE → PPO</h2>
                                 <p class="bd-p">Why robots prefer policies over values (continuous actions, smooth updates, prior structure — Kober's argument formalized); <strong>the policy gradient theorem derived step by step</strong>; REINFORCE and its variance problem; baselines and advantage; actor–critic; GAE(λ); natural gradient and trust regions (TRPO sketch); <strong>PPO in full</strong> (clipped surrogate, implementation details that actually matter: advantage normalization, entropy bonus, minibatching, KL watchdogs) — the algorithm behind most real-world robot RL successes in Tang's survey.</p>
+                                <p class="bd-p"><strong>The math:</strong> the PG theorem derived both episodic and continuing; the variance of score-function estimators; GAE's bias–variance telescoping; a full PPO surrogate-objective analysis.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a policy-space vs. parameter-space widget — drag θ and watch π morph and J(θ) respond; live variance-of-gradient-estimate histograms (REINFORCE vs. +baseline vs. GAE); an interactive PPO clipping-function plot; a trust-region ellipse animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-deep</code>: REINFORCE → A2C → PPO in <code>burn</code>, vectorized environments via <code>rayon</code>; continuous-action Gaussian policies; Pendle swing-up solved; full training dashboard (returns, KL, clip fraction, entropy).</p>
                             </section>
                             <section class="bd-chsec" id="ch-11" data-reveal>
@@ -1527,75 +1662,115 @@
                                 <h2 class="bd-h2">Off-Policy Continuous Control: DDPG, TD3 & SAC</h2>
                                 <p class="bd-p">Sample efficiency as a robotics imperative (every real rollout wears bearings); deterministic policy gradients (DPG theorem derived); DDPG and its fragility; TD3's three fixes (clipped double-Q, delayed policy updates, target smoothing); <strong>maximum-entropy RL</strong>: soft Bellman operator, SAC derivation (temperature, reparameterization trick), automatic entropy tuning; practical comparison protocol: when PPO vs SAC in robotics.</p>
                                 <p class="bd-p"><strong>Reacher</strong> learns to reach targets — the book's first true continuous-control robot task.</p>
+                                <p class="bd-p"><strong>The math:</strong> the DPG theorem, soft policy iteration convergence, the reparameterization-gradient derivation, and an overestimation-bias analysis.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an overestimation-bias accumulation animation; an entropy-temperature dial — watch exploration breathe on Reacher; a live Q-landscape surface over the action space while training; a PPO-vs-SAC sample-efficiency race dashboard.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-deep</code>: DDPG, TD3, SAC in <code>burn</code>; <code>rl-envs</code>: Reacher (2-link arm, <code>rapier2d</code>); replay + target-network infrastructure shared with Ch 9; WASM demo: trained Reacher tracking the reader's cursor.</p>
                             </section>
                             <section class="bd-chsec" id="ch-12" data-reveal>
                                 <p class="bd-pt-h">PART II — SCALING UP: FUNCTION APPROXIMATION & DEEP RL · CH.12</p>
                                 <h2 class="bd-h2">Model-Based RL & World Models</h2>
                                 <p class="bd-p">Why models matter for robots (Kober: mental rehearsal, sample reuse; Tang: real-world learning challenge); learning dynamics: deterministic nets, Gaussian ensembles, quantifying epistemic vs aleatoric uncertainty; planning with learned models: random shooting, CEM, MPC; PETS; Dyna-style hybrids (MBPO idea); <strong>latent world models</strong> (Dreamer lineage): learn in imagination; model-bias horror stories and how ensembles tame them; connection to classical system identification.</p>
+                                <p class="bd-p"><strong>The math:</strong> a model-bias compounding bound (error growth with horizon), CEM framed as importance-sampled optimization, and the ELBO derivation for latent dynamics.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an "imagination rollout" widget — real trajectory vs. model rollouts diverging with horizon, ensemble fan visualization; an MPC receding-horizon animation on Pendle; a latent-space trajectory projector.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-deep</code>: ensemble dynamics models in <code>burn</code>; CEM-MPC controller for Pendle swing-up with learned model; imagination-vs-reality evaluation harness; uncertainty-calibration plots.</p>
                             </section>
                             <section class="bd-chsec" id="ch-13" data-reveal>
                                 <p class="bd-pt-h">PART III — THE ROBOTICS SIDE · CH.13</p>
                                 <h2 class="bd-h2">The Robot as an Environment: Kinematics, Dynamics & Control</h2>
                                 <p class="bd-p">What's inside the "env" black box when it's a robot: rigid-body kinematics (SE(2)/SE(3), forward/inverse kinematics), differential kinematics (Jacobians), Lagrangian dynamics (manipulator equation M(q)q̈ + C + g = τ derived for Reacher); underactuation; classical control as baselines RL must beat: PID, LQR (derived), gravity compensation, operational-space control; MPC preview; where learning enters: as policy, as model, as residual, as tuner; observability and state estimation (EKF sketch) — why POMDPs are the honest formalism.</p>
+                                <p class="bd-p"><strong>The math:</strong> the full FK/IK math for Reacher, the Lagrangian derivation, the LQR Riccati derivation, and its linearization validity.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an interactive FK/IK sandbox — drag Reacher's end-effector and watch joint space vs. task space; a Jacobian ellipsoid animation; an LQR-vs-PID disturbance-rejection dashboard on Pendle.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-sim</code>: <code>urdf-rs</code> + <code>k</code> for kinematic chains; Reacher and Pendle as <code>rapier2d</code> articulated bodies; PID and LQR controllers in <code>nalgebra</code>; controller benchmark suite — the baselines later chapters must beat.</p>
                             </section>
                             <section class="bd-chsec" id="ch-14" data-reveal>
                                 <p class="bd-pt-h">PART III — THE ROBOTICS SIDE · CH.14</p>
                                 <h2 class="bd-h2">The Four Curses of Robot RL</h2>
                                 <p class="bd-p">Kober's four curses, each quantified and demonstrated: <strong>dimensionality</strong> (continuous high-D state–action), <strong>real-world samples</strong> (wear, time, resets, safety), <strong>under-modeling</strong> (sim≠real), <strong>goal specification</strong> (reward design is the interface between human intent and optimization); modern additions: reward hacking galleries, safe exploration, automatic resets (Tang's real-world-learning challenge); reward-shaping theory (potential-based shaping theorem proved); curriculum design; evaluation methodology for robot RL claims (Tang's L0–L5 revisited as an evaluation rubric).</p>
+                                <p class="bd-p"><strong>The math:</strong> a sample-complexity lower-bound intuition, the potential-based shaping invariance theorem, and constrained MDPs (the CMDP formalism) for safety.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a curse-of-dimensionality exponential-wall visualizer; a reward-hacking zoo — the reader designs a reward, a trained agent exploits it; a shaping-invariance widget; a safety-constraint boundary animation.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> reward-design lab: same Reacher task, six reward functions, six trained SAC behaviors compared in a WASM gallery; CMDP Lagrangian-SAC prototype; reset-cost accounting in <code>rl-core</code> metrics.</p>
                             </section>
                             <section class="bd-chsec" id="ch-15" data-reveal>
                                 <p class="bd-pt-h">PART III — THE ROBOTICS SIDE · CH.15</p>
                                 <h2 class="bd-h2">Simulation & the Sim-to-Real Bridge</h2>
                                 <p class="bd-p">Physics engines from the inside: integrators, contact models, solver stiffness — why contact is where sim and real diverge; the sim-to-real gap taxonomy; <strong>domain randomization</strong> (dynamics + visual) and why it works (robustness as distributional coverage); system identification (fit rapier parameters to logged real data); teacher–student / privileged learning (the ANYmal recipe); massively parallel simulation (GPU farms → <code>rayon</code> farms); zero-shot vs few-shot transfer decision tree from Tang's evidence; introducing <strong>Ferris</strong> the quadruped.</p>
+                                <p class="bd-p"><strong>The math:</strong> a contact LCP formulation sketch, domain randomization framed as a minimax / distributionally-robust objective, and the asymmetric actor-critic formalism.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an integrator-stability playground — crank Δt until Pendle explodes; a contact-parameter sensitivity heatmap; a domain-randomization slider wall (mass/friction/latency distributions → a policy robustness meter); an animated teacher–student information-flow diagram.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-sim</code>: parameterized-physics <code>rapier</code> environments with randomization hooks; <code>rayon</code> vectorized rollout farm (thousands of Ferris instances); sysid: fit sim parameters to trajectory data via CMA-ES (<code>cmaes</code> crate); train randomized vs non-randomized Reacher, compare transfer to a perturbed "real" sim.</p>
                             </section>
                             <section class="bd-chsec" id="ch-16" data-reveal>
                                 <p class="bd-pt-h">PART III — THE ROBOTICS SIDE · CH.16</p>
                                 <h2 class="bd-h2">Demonstrations, Imitation & Offline RL</h2>
                                 <p class="bd-p">Where data can come from besides exploration: demonstration modes (teleoperation, kinesthetic teaching, motion capture, video); behavior cloning and the <strong>covariate-shift theorem</strong> (compounding errors, DAgger fix); inverse RL (max-margin, MaxEnt IRL derived); demo-accelerated RL (demos in replay, BC-regularized objectives); <strong>offline RL</strong>: distributional shift, pessimism, CQL and IQL derived; offline-to-online fine-tuning (the modern deployment recipe per Tang); GAIL sketch.</p>
+                                <p class="bd-p"><strong>The math:</strong> a BC error-compounding bound (T² vs. DAgger's T), the MaxEnt IRL partition-function derivation, the CQL lower-bound property, and IQL's expectile-regression math.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a covariate-shift drift animation — cloned Rusty drifting off the demonstrated lane, error cone growing; demo-mode comparison cards; a pessimism-value-landscape widget (CQL pushing down out-of-distribution actions, live surface); an offline-to-online fine-tuning timeline dashboard.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> teleoperate Reacher in the browser (mouse = demos recorded to <code>serde</code> datasets); BC and DAgger in <code>burn</code>; IQL on logged Reacher data; fine-tune with SAC and measure the offline-to-online jump.</p>
                             </section>
                             <section class="bd-chsec" id="ch-17" data-reveal>
                                 <p class="bd-pt-h">PART III — THE ROBOTICS SIDE · CH.17</p>
                                 <h2 class="bd-h2">Motor-Skill Policy Representations</h2>
                                 <p class="bd-p">Kober's insight, still true in the deep era: <em>what</em> the policy outputs matters as much as <em>how</em> it learns; action-space levels (joint torque / joint position+PD / task-space / primitives — Tang's low/mid/high taxonomy with empirical trade-offs); <strong>dynamic movement primitives</strong> (DMPs) derived in full (canonical system, forcing term, learning from a demo, goal generalization); central pattern generators (CPGs) for rhythmic locomotion; residual RL (learned Δ on a classical controller); options & skills (semi-MDP formalism) for hierarchy; <strong>the ball-in-a-cup case study recreated</strong>: Kober's 2013 pipeline (DMP + imitation init + policy search) vs a 2020s pipeline (SAC from pixels + demos), same task, compared honestly.</p>
+                                <p class="bd-p"><strong>The math:</strong> a DMP stability proof (spring–damper convergence), the semi-MDP Bellman equations, and a residual-policy stability argument.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a DMP forcing-function sculptor — draw a trajectory, watch basis functions fit it, drag the goal for live generalization; a CPG phase-oscillator network animation; an action-space level comparison dashboard (same Reacher task, three action spaces, learning curves racing); a ball-in-a-cup then-vs-now split-screen.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-core</code>: DMP module (pure <code>nalgebra</code>); CPG oscillator bank; residual-RL wrapper env; ball-in-a-cup in <code>rapier2d</code> with both pipelines; policy search on DMP weights in the spirit of Kober's pipeline (PoWER derived in the chapter; CMA-ES deployed as the practical optimizer, substitution flagged).</p>
                             </section>
                             <section class="bd-chsec" id="ch-18" data-reveal>
                                 <p class="bd-pt-h">PART IV — COMPETENCIES: RL ON REAL ROBOTS · CH.18</p>
                                 <h2 class="bd-h2">Learning Locomotion</h2>
                                 <p class="bd-p">Why locomotion became DRL's flagship (stable dynamics, simulable contact, dense rewardable gaits — Tang's analysis); the modern quadruped recipe end-to-end: observation/action design, reward anatomy (velocity tracking + effort + air-time + …), terrain curricula, teacher–student with privileged terrain info, domain randomization for zero-shot transfer (L4 systems: ANYmal, production quadrupeds); biped/humanoid differences (underactuation, falling is expensive); quadrotor agile flight (drone racing at L5); recovery behaviors; central case study: <strong>Ferris learns to walk</strong>.</p>
+                                <p class="bd-p"><strong>The math:</strong> a gait-phase formalism, reward-term algebra with dimensional analysis, and curriculum framed as distribution scheduling.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a reward-anatomy mixer — sliders for each reward term with a retrain preview of the resulting gait caricature; a gait phase-diagram animation of footfall patterns; a terrain-curriculum progression dashboard; a sim-to-real level tracker per published system.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-envs</code>: Ferris quadruped in <code>rapier3d</code> (12-DoF, PD low-level); PPO with <code>rayon</code>-parallel envs in <code>burn</code>; terrain generator with difficulty curriculum; <code>bevy</code> 3D visualization of learned gaits; WASM demo: walk trained Ferris across reader-drawn terrain.</p>
                             </section>
                             <section class="bd-chsec" id="ch-19" data-reveal>
                                 <p class="bd-pt-h">PART IV — COMPETENCIES: RL ON REAL ROBOTS · CH.19</p>
                                 <h2 class="bd-h2">Learning Navigation & Mobile Manipulation</h2>
                                 <p class="bd-p">Navigation as the perception-heavy competency: local planning vs global planning, end-to-end vs hybrid-modular (Tang's evidence that neither wins universally); point-goal, social, and off-road navigation; legged navigation (locomotion + navigation composed hierarchically); aerial navigation; <strong>mobile manipulation</strong>: whole-body control (base + arm coordination), short-horizon skills vs long-horizon tasks; skill composition, hierarchical RL, and the "what skills should a robot learn?" open question (Tang §5 long-horizon challenge); Rusty's graduation: from Ch 4 gridworld to lidar-based continuous navigation.</p>
+                                <p class="bd-p"><strong>The math:</strong> a POMDP navigation formalism (belief MDPs, recurrent policies as belief trackers), hierarchical/semi-MDP composition theory, and whole-body kinematic redundancy resolution.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> an end-to-end vs. modular pipeline switcher — same scene, toggle architecture, compare failure modes; a lidar-beam POV visualization of what the policy "sees"; a hierarchical skill-graph animation for a long-horizon fetch task; a social-navigation trajectory gallery.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-envs</code>: lidar Rusty in <code>rapier2d</code> rooms with obstacle randomization; recurrent PPO (GRU policy in <code>burn</code>); waypoint-conditioned skills + high-level skill selector (hierarchical); mobile-Reacher (Rusty base + Reacher arm) whole-body fetch task; <code>bevy</code> scene replays.</p>
                             </section>
                             <section class="bd-chsec" id="ch-20" data-reveal>
                                 <p class="bd-pt-h">PART IV — COMPETENCIES: RL ON REAL ROBOTS · CH.20</p>
                                 <h2 class="bd-h2">Learning Manipulation</h2>
                                 <p class="bd-p">Why manipulation is the hard one (contact richness, object diversity, perception coupling — Tang's maturity analysis); grasping: from analytic grasp metrics to learned grasp policies; end-to-end pick-and-place and why diversity keeps it below L3; contact-rich skills: assembly/insertion (impedance action spaces, force observations), articulated and deformable objects; <strong>in-hand manipulation</strong> (the OpenAI cube lineage: massive randomization + recurrent policies); non-prehensile manipulation (pushing, tossing); demos + offline RL as manipulation's preferred data diet (Tang Table 3/4 patterns); evaluation honesty: success-rate methodology.</p>
+                                <p class="bd-p"><strong>The math:</strong> grasp wrench space and force-closure math, impedance control framed as an action space, and the contact-mode combinatorics that explain why planning through contact explodes.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a grasp wrench-space visualizer — drag contact points on an object and watch the force-closure region form; an insertion funnel animation (impedance vs. position control under uncertainty); a randomization-breadth vs. in-hand-success dashboard; a contact-mode explosion counter.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> <code>rl-envs</code>: parallel-jaw gripper + objects in <code>rapier3d</code>; grasp-selection DQN (Ch 9 payoff) + continuous insertion with SAC + impedance action space (Ch 11/13 payoff); demo-boosted training from browser-teleop data (Ch 16 payoff); push-to-goal non-prehensile task; success-rate evaluation harness with confidence intervals.</p>
                             </section>
                             <section class="bd-chsec" id="ch-21" data-reveal>
                                 <p class="bd-pt-h">PART V — FRONTIERS & CAPSTONE · CH.21</p>
                                 <h2 class="bd-h2">Frontiers: HRI, Multi-Robot & Foundation Models</h2>
                                 <p class="bd-p">Human–robot interaction: collaborative & non-collaborative pHRI, shared autonomy, why HRI is simulation-starved (humans are the unmodelable part) and what that implies (real-world learning, offline data); multi-robot systems: Dec-POMDP formalism, CTDE, MARL instability, collision avoidance, robot soccer (L4); <strong>foundation models meet robot RL</strong>: LLM/VLM reward and goal specification, vision-language-action models, RL fine-tuning of large policies, generalist-robot debates; open-challenge synthesis merging Kober's 2013 questions with Tang's 2024 list — what got solved, what didn't, what's next; research compass for the reader.</p>
+                                <p class="bd-p"><strong>The math:</strong> the Dec-POMDP formalism and its complexity results, CTDE policy-gradient math (a MAPPO sketch), and the RLHF objective — reward model plus KL-regularized fine-tuning — derived.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a Kober-2013 vs. Tang-2024 open-problem diff dashboard (solved / partially / open); a Dec-POMDP coordination-failure animation — the lazy-agent problem; a shared-autonomy blending slider; a VLA architecture explorer.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> multi-agent gridworld with CTDE PPO in <code>burn</code> (two Rustys coordinating a delivery); shared-autonomy Reacher (blend reader teleop with trained SAC assistance, live in WASM); candle-based small-VLM reward-labeling experiment (feasibility sketch).</p>
                             </section>
                             <section class="bd-chsec" id="ch-22" data-reveal>
                                 <p class="bd-pt-h">PART V — FRONTIERS & CAPSTONE · CH.22</p>
                                 <h2 class="bd-h2">Capstone: An End-to-End Learned Robot in Rust</h2>
                                 <p class="bd-p">One project, the whole book: specify a task (Ferris patrols a cluttered course, reaches goals, recovers from pushes), formalize the MDP (observation/action/reward choices justified against Ch 14–18 evidence), build the randomized <code>rapier3d</code> environment, train teacher–student PPO with terrain + dynamics randomization, distill to a deployable policy, evaluate with the L0–L5 rubric and honest statistics, and ship: <strong>native binary + in-browser WASM demo with live telemetry dashboard</strong> — the reader walks away with a complete, reproducible robot-learning pipeline in pure Rust.</p>
+                                <p class="bd-p"><strong>The math:</strong> the full formal problem statement, assembled from every prior chapter's notation — a worked example of writing the math of a real system.</p>
+                                <p class="bd-p"><strong>Interactive:</strong> a mission-control dashboard — training curves, randomization draws, evaluation heatmaps, gait telemetry — the book's visual finale; a failure-mode gallery with post-mortems.</p>
                                 <p class="bd-p"><strong>In Rust:</strong> the <code>capstone</code> crate: config-driven experiment runner (<code>serde</code> + <code>clap</code>), <code>rayon</code> rollout farm, <code>burn</code> training, <code>rerun</code> dev telemetry, <code>bevy</code>/WASM deployment, CI-reproducible seeds — a template repository readers fork for their own robots.</p>
                             </section>
 
+                            <!-- ── appendices ── -->
+                            <section class="bd-chsec" id="app-a" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX A</p>
+                                <h2 class="bd-h2">Rust for Scientists</h2>
+                                <p class="bd-p">Ownership for people who think in math; <code>ndarray</code>/<code>nalgebra</code> idioms; error handling in experiment code; the WASM build pipeline that turns every trained policy into a page the reader can run.</p>
+                            </section>
+                            <section class="bd-chsec" id="app-b" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX B</p>
+                                <h2 class="bd-h2">The Crate Compendium</h2>
+                                <p class="bd-p">Every crate used in the book, why it was chosen, and its alternatives — <code>candle</code>/<code>tch-rs</code> against <code>burn</code>, <code>avian</code> against <code>rapier</code>, <code>egui</code> against native <code>bevy</code> UI — plus the version policy that keeps two years of chapters compiling together.</p>
+                            </section>
+                            <section class="bd-chsec" id="app-c" data-reveal>
+                                <p class="bd-pt-h">APPENDICES · APPENDIX C</p>
+                                <h2 class="bd-h2">Notation &amp; Math Reference</h2>
+                                <p class="bd-p">A unified symbol table compatible with Sutton &amp; Barto's notation, identity cheat-sheets for matrix calculus, expectations, and KL/entropy, and a theorem index back into every chapter that proves one.</p>
+                            </section>
 
                             <!-- ── prev / next ── -->
                             <nav class="bd-pager" data-reveal aria-label="More books">
