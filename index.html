@@ -1911,14 +1911,14 @@
                             <div class="disc2-inner">
                                 <p class="disc2-tag"><span class="disc2-tag-line"></span>ROBOTICS</p>
                                 <span class="disc2-num">01</span>
-                                <h3 class="disc2-h3">Machines that perceive, learn, and act.</h3>
-                                <p class="disc2-p">We build robotic systems from simulation to deployment — combining physics simulation, perception, mapping, control, and machine learning to create machines that operate in the real world.</p>
+                                <h3 class="disc2-h3">Advanced Robotics</h3>
+                                <p class="disc2-p">We build robotic systems using simulation, perception, learning, and control.</p>
                                 <ul class="disc2-list">
-                                    <li><span class="disc2-dot"></span>Simulation &amp; Digital Environments</li>
-                                    <li><span class="disc2-dot"></span>Reinforcement Learning &amp; Autonomous Systems</li>
-                                    <li><span class="disc2-dot"></span>Perception, Mapping &amp; Control</li>
+                                    <li><span class="disc2-dot"></span>Simulation</li>
+                                    <li><span class="disc2-dot"></span>Robot Learning &amp; Autonomy</li>
+                                    <li><span class="disc2-dot"></span>Perception &amp; Control</li>
                                 </ul>
-                                <a href="#showcase" class="disc2-cta">Explore robotics →</a>
+                                <a href="#showcase" class="disc2-cta">Explore Robotics →</a>
                             </div>
                         </div>
                         <!-- 02 Software Development -->
@@ -1929,14 +1929,14 @@
                             <div class="disc2-inner">
                                 <p class="disc2-tag"><span class="disc2-tag-line"></span>SOFTWARE DEVELOPMENT</p>
                                 <span class="disc2-num">02</span>
-                                <h3 class="disc2-h3">Software built around real problems.</h3>
-                                <p class="disc2-p">We design and build software that helps people and organizations solve real problems — from custom applications and enterprise systems to AI-powered products and automation.</p>
+                                <h3 class="disc2-h3">Software Development</h3>
+                                <p class="disc2-p">We build software products, AI applications, and digital systems for real-world needs.</p>
                                 <ul class="disc2-list">
-                                    <li><span class="disc2-dot"></span>Custom Software &amp; Web Applications</li>
-                                    <li><span class="disc2-dot"></span>AI Applications &amp; Automation</li>
-                                    <li><span class="disc2-dot"></span>Data, Platforms &amp; Enterprise Systems</li>
+                                    <li><span class="disc2-dot"></span>Software &amp; Web Applications</li>
+                                    <li><span class="disc2-dot"></span>AI &amp; Automation</li>
+                                    <li><span class="disc2-dot"></span>Data &amp; Platforms</li>
                                 </ul>
-                                <a href="#showcase" class="disc2-cta">Explore software →</a>
+                                <a href="#showcase" class="disc2-cta">Explore Software →</a>
                             </div>
                         </div>
                     </div>
@@ -3090,22 +3090,6 @@
                     });
                 }
 
-                // Poll iframe for progress via exposed getter (rAF-driven,
-                // avoids throttled setInterval issues in embedded iframes)
-                function pollProgress() {
-                    requestAnimationFrame(pollProgress);
-                    if (scrubbing) return;
-                    try {
-                        const fn = iframe.contentWindow?._demoProgress;
-                        if (!fn) return;
-                        const d = fn();
-                        position = d.position;
-                        if (isPaused !== d.paused) { isPaused = d.paused; updateToggle(); }
-                        updateUI(d.position, d.time);
-                    } catch (e) { /* cross-origin or not loaded yet */ }
-                }
-                pollProgress();
-
                 // Play/Pause toggle
                 toggleBtn.addEventListener("click", () => {
                     post({ type: "toggle" });
@@ -3172,6 +3156,22 @@
                     scrubbing = false;
                     bar.classList.remove("is-scrubbing");
                 });
+
+                // Poll iframe for progress via exposed getter (rAF-driven,
+                // avoids throttled setInterval issues in embedded iframes)
+                function pollProgress() {
+                    requestAnimationFrame(pollProgress);
+                    if (scrubbing) return;
+                    try {
+                        const fn = iframe.contentWindow?._demoProgress;
+                        if (!fn) return;
+                        const d = fn();
+                        position = d.position;
+                        if (isPaused !== d.paused) { isPaused = d.paused; updateToggle(); }
+                        updateUI(d.position, d.time);
+                    } catch (e) { /* cross-origin or not loaded yet */ }
+                }
+                pollProgress();
             });
         })();
 
