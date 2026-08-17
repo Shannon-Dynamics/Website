@@ -855,10 +855,15 @@
         .hero-cta { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; }
 
         /* ── hero shortcuts ── */
+        @keyframes hero-sc-in {
+            from { opacity: 0; transform: translateY(14px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
         .hero-shortcuts {
             display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px;
             margin-top: 64px; border-radius: 12px; overflow: hidden;
             background: rgba(255,255,255,.1);
+            animation: hero-sc-in .7s .55s ease both;
         }
         .hero-shortcut {
             display: flex; align-items: center; gap: 16px;
@@ -1066,34 +1071,47 @@
         .cap-anim-wave ellipse:nth-child(7) { animation-delay: .90s; }
         .cap-anim-wave ellipse:nth-child(8) { animation-delay: 1.05s; }
 
-        /* R.02 — feedback loop: signal pulse chases around a closed loop path */
-        @keyframes cap-fb-loop-dash {
-            to { stroke-dashoffset: -140; }
+        /* R.02 — feedback: sine signal + return path with traveling pulse */
+        @keyframes cap-fb-signal-dash {
+            to { stroke-dashoffset: -40; }
         }
-        @keyframes cap-fb-node-ping {
-            0%,70%,100% { r: 3px; opacity: .4; }
-            35%         { r: 5.5px; opacity: 1; }
+        @keyframes cap-fb-return-dash {
+            to { stroke-dashoffset: 40; }
         }
-        @keyframes cap-fb-arrow-pulse {
-            0%,100% { opacity: .35; transform: scale(.85); }
-            50%     { opacity: 1;   transform: scale(1.2); }
+        @keyframes cap-fb-pulse-fwd {
+            0%   { transform: translateX(-20px); opacity: 0; }
+            15%  { opacity: 1; }
+            85%  { opacity: 1; }
+            100% { transform: translateX(20px); opacity: 0; }
         }
-        .cap-anim-feedback .fb-loop {
-            stroke-dasharray: 8 6;
-            animation: cap-fb-loop-dash 2.4s linear infinite;
+        @keyframes cap-fb-pulse-ret {
+            0%   { transform: translateX(20px); opacity: 0; }
+            15%  { opacity: 1; }
+            85%  { opacity: 1; }
+            100% { transform: translateX(-20px); opacity: 0; }
+        }
+        @keyframes cap-fb-node-blink {
+            0%,60%,100% { r: 3.5px; opacity: .5; }
+            30%         { r: 5px;   opacity: 1; }
+        }
+        .cap-anim-feedback .fb-signal {
+            stroke-dasharray: 6 4;
+            animation: cap-fb-signal-dash 1.2s linear infinite;
+        }
+        .cap-anim-feedback .fb-return {
+            stroke-dasharray: 4 5;
+            animation: cap-fb-return-dash 1.6s linear infinite;
+        }
+        .cap-anim-feedback .fb-dot-fwd {
+            animation: cap-fb-pulse-fwd 2s ease-in-out infinite;
+        }
+        .cap-anim-feedback .fb-dot-ret {
+            animation: cap-fb-pulse-ret 2s ease-in-out infinite .4s;
         }
         .cap-anim-feedback .fb-node {
-            animation: cap-fb-node-ping 2.4s ease-in-out infinite;
+            animation: cap-fb-node-blink 2.4s ease-in-out infinite;
         }
-        .cap-anim-feedback .fb-node:nth-child(2) { animation-delay: .6s; }
-        .cap-anim-feedback .fb-node:nth-child(3) { animation-delay: 1.2s; }
-        .cap-anim-feedback .fb-node:nth-child(4) { animation-delay: 1.8s; }
-        .cap-anim-feedback .fb-arrow {
-            transform-origin: center center;
-            animation: cap-fb-arrow-pulse 2.4s ease-in-out infinite;
-        }
-        .cap-anim-feedback .fb-arrow:nth-child(2) { animation-delay: .6s; }
-        .cap-anim-feedback .fb-arrow:nth-child(3) { animation-delay: 1.2s; }
+        .cap-anim-feedback .fb-node-r { animation-delay: .8s; }
 
         /* R.03 — overlapping circles: big breathe + scale */
         @keyframes cap-venn-l {
@@ -1170,29 +1188,70 @@
             animation: cap-orbit-ring-breathe 4s ease-in-out infinite;
         }
 
-        /* R.06 — square + circle: big rotation + scale morph */
-        @keyframes cap-morph-sq {
-            0%,100% { transform: rotate(0deg) scale(1); }
-            25%     { transform: rotate(12deg) scale(.82); }
-            75%     { transform: rotate(-6deg) scale(1.05); }
+        /* R.06 — integrated autonomy: concentric rings with spiral-in arrow */
+        @keyframes cap-auto-outer {
+            0%,100% { transform: rotate(0deg); opacity: .5; }
+            50%     { transform: rotate(20deg); opacity: 1; }
         }
-        @keyframes cap-morph-circ {
-            0%,100% { transform: scale(1) translateX(0);   opacity: 1; }
-            35%     { transform: scale(1.18) translateX(4px); opacity: .5; }
-            70%     { transform: scale(.88) translateX(-3px); opacity: .9; }
+        @keyframes cap-auto-mid {
+            0%,100% { transform: rotate(0deg); opacity: .6; }
+            50%     { transform: rotate(-15deg); opacity: 1; }
         }
-        .cap-anim-morph .morph-sq  { transform-origin: 28px 28px; animation: cap-morph-sq 3.5s ease-in-out infinite; }
-        .cap-anim-morph .morph-cir { transform-origin: 46px 40px; animation: cap-morph-circ 3.5s ease-in-out infinite; }
+        @keyframes cap-auto-spiral-dash {
+            to { stroke-dashoffset: -60; }
+        }
+        @keyframes cap-auto-core {
+            0%,100% { r: 5px; opacity: .7; }
+            50%     { r: 7px; opacity: 1; }
+        }
+        .cap-anim-auto .auto-outer {
+            transform-origin: 36px 36px;
+            animation: cap-auto-outer 4s ease-in-out infinite;
+        }
+        .cap-anim-auto .auto-mid {
+            transform-origin: 36px 36px;
+            animation: cap-auto-mid 4s ease-in-out infinite .3s;
+        }
+        .cap-anim-auto .auto-spiral {
+            stroke-dasharray: 8 5;
+            animation: cap-auto-spiral-dash 2s linear infinite;
+        }
+        .cap-anim-auto .auto-core {
+            animation: cap-auto-core 3s ease-in-out infinite;
+        }
 
-        /* S.01 — stacked product screens: fan out and reassemble */
-        @keyframes cap-stack-back  { 0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-6px,-6px) scale(.92)} }
-        @keyframes cap-stack-mid   { 0%,100%{transform:translate(0,0) scale(1);opacity:.8}50%{transform:translate(0,2px) scale(1.02);opacity:1} }
-        @keyframes cap-stack-front { 0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(6px,6px) scale(.92)} }
-        @keyframes cap-stack-cursor { 0%,50%{opacity:.4;transform:translate(0,0)}25%{opacity:1;transform:translate(3px,2px)}75%{opacity:1;transform:translate(-2px,1px)}100%{opacity:.4;transform:translate(0,0)} }
-        .cap-anim-stack .stack-back  { animation: cap-stack-back 3s ease-in-out infinite; }
-        .cap-anim-stack .stack-mid   { animation: cap-stack-mid 3s ease-in-out infinite; }
-        .cap-anim-stack .stack-front { animation: cap-stack-front 3s ease-in-out infinite; }
-        .cap-anim-stack .stack-cursor { animation: cap-stack-cursor 3s ease-in-out infinite; }
+        /* S.01 — app window: content blocks build up inside frame */
+        @keyframes cap-app-bar-fill {
+            0%,100% { width: 36px; }
+            50%     { width: 44px; }
+        }
+        @keyframes cap-app-block1 {
+            0%   { transform: scaleX(0); opacity: 0; }
+            20%  { transform: scaleX(1); opacity: 1; }
+            80%  { transform: scaleX(1); opacity: 1; }
+            100% { transform: scaleX(0); opacity: 0; }
+        }
+        @keyframes cap-app-block2 {
+            0%,10% { transform: scaleX(0); opacity: 0; }
+            30%    { transform: scaleX(1); opacity: 1; }
+            80%    { transform: scaleX(1); opacity: 1; }
+            100%   { transform: scaleX(0); opacity: 0; }
+        }
+        @keyframes cap-app-block3 {
+            0%,20% { transform: scaleX(0); opacity: 0; }
+            40%    { transform: scaleX(1); opacity: 1; }
+            80%    { transform: scaleX(1); opacity: 1; }
+            100%   { transform: scaleX(0); opacity: 0; }
+        }
+        @keyframes cap-app-cursor {
+            0%,100% { transform: translate(0,0); opacity: .3; }
+            30%     { transform: translate(8px,4px); opacity: 1; }
+            60%     { transform: translate(14px,-2px); opacity: 1; }
+        }
+        .cap-anim-app .app-block1 { transform-origin: left center; animation: cap-app-block1 3.5s ease-in-out infinite; }
+        .cap-anim-app .app-block2 { transform-origin: left center; animation: cap-app-block2 3.5s ease-in-out infinite; }
+        .cap-anim-app .app-block3 { transform-origin: left center; animation: cap-app-block3 3.5s ease-in-out infinite; }
+        .cap-anim-app .app-cursor { animation: cap-app-cursor 3.5s ease-in-out infinite; }
 
         /* S.02 — neural network: nodes fire in sequence, links pulse */
         @keyframes cap-neural-core {
@@ -1269,35 +1328,40 @@
             animation: cap-blk-conn 3s ease-in-out infinite;
         }
 
-        /* S.05 — hub & spoke: data flows inward, hub pulses */
-        @keyframes cap-hub-core {
-            0%,100% { transform: scale(1); opacity: .8; }
-            50%     { transform: scale(1.2); opacity: 1; }
+        /* S.05 — pipeline merge: three parallel flows converge into one output */
+        @keyframes cap-pipe-flow {
+            to { stroke-dashoffset: -24; }
         }
-        @keyframes cap-hub-flow-dash {
-            to { stroke-dashoffset: -18; }
+        @keyframes cap-pipe-dot {
+            0%   { transform: translateX(-18px); opacity: 0; }
+            15%  { opacity: 1; }
+            85%  { opacity: 1; }
+            100% { transform: translateX(18px); opacity: 0; }
         }
-        @keyframes cap-hub-src-ping {
-            0%,70%,100% { r: 3px; opacity: .4; }
-            35%         { r: 5px; opacity: 1; }
+        @keyframes cap-pipe-merge-pulse {
+            0%,100% { opacity: .5; transform: scaleX(.95); }
+            50%     { opacity: 1;  transform: scaleX(1.05); }
         }
-        .cap-anim-hub .hub-core {
-            transform-origin: 36px 36px;
-            animation: cap-hub-core 3s ease-in-out infinite;
+        @keyframes cap-pipe-out-dash {
+            to { stroke-dashoffset: -16; }
         }
-        .cap-anim-hub .hub-flow {
+        .cap-anim-pipe .pipe-flow {
             stroke-dasharray: 5 4;
-            animation: cap-hub-flow-dash 1.6s linear infinite;
+            animation: cap-pipe-flow 1.4s linear infinite;
         }
-        .cap-anim-hub .hub-src {
-            animation: cap-hub-src-ping 3s ease-in-out infinite;
+        .cap-anim-pipe .pipe-dot {
+            animation: cap-pipe-dot 2.4s ease-in-out infinite;
         }
-        .cap-anim-hub .hub-src:nth-child(1) { animation-delay: 0s; }
-        .cap-anim-hub .hub-src:nth-child(2) { animation-delay: .5s; }
-        .cap-anim-hub .hub-src:nth-child(3) { animation-delay: 1s; }
-        .cap-anim-hub .hub-src:nth-child(4) { animation-delay: 1.5s; }
-        .cap-anim-hub .hub-src:nth-child(5) { animation-delay: 2s; }
-        .cap-anim-hub .hub-src:nth-child(6) { animation-delay: 2.5s; }
+        .cap-anim-pipe .pipe-dot:nth-child(2) { animation-delay: .8s; }
+        .cap-anim-pipe .pipe-dot:nth-child(3) { animation-delay: 1.6s; }
+        .cap-anim-pipe .pipe-merge {
+            transform-origin: 50px 36px;
+            animation: cap-pipe-merge-pulse 2.4s ease-in-out infinite;
+        }
+        .cap-anim-pipe .pipe-out {
+            stroke-dasharray: 4 3;
+            animation: cap-pipe-out-dash 1s linear infinite;
+        }
 
         /* S.06 — globe: meridian wobble + latitude drift + orbiting dot */
         @keyframes cap-globe-meridian {
@@ -1447,12 +1511,138 @@
         .ps-shot { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; }
         .ps-win { height: 100%; border-radius: 0; border-width: 0; }
         /* all demo panels embed the self-contained demo reel as an iframe */
-        .ps-demo-frame { display: block; width: 100%; height: 100%; border: 0; background: #0B1113; }
+        .ps-demo-frame { display: block; width: 100%; height: 100%; border: 0; background: #0B1113;
+                         position: relative; z-index: 1; }
+
+        /* ── video control bar: appears on hover over the demo shot ── */
+        .ps-controls {
+            position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 16px;
+            background: linear-gradient(transparent, rgba(11,17,19,.82) 38%, rgba(11,17,19,.92));
+            opacity: 0; transform: translateY(6px);
+            transition: opacity .35s ease, transform .35s cubic-bezier(.22,.61,.36,1);
+            pointer-events: none;
+        }
+        .ps-shot:hover .ps-controls,
+        .ps-shot:focus-within .ps-controls,
+        .ps-controls.is-scrubbing {
+            opacity: 1; transform: none; pointer-events: auto;
+        }
+        .ps-ctrl-btn {
+            display: flex; align-items: center; justify-content: center;
+            width: 30px; height: 30px; border-radius: 50%;
+            background: rgba(255,255,255,.12); border: none; cursor: pointer;
+            color: #fff; flex: none;
+            transition: background .18s, transform .12s;
+        }
+        .ps-ctrl-btn:hover { background: rgba(255,255,255,.22); }
+        .ps-ctrl-btn:active { transform: scale(.9); }
+        .ps-ctrl-btn svg { width: 14px; height: 14px; fill: currentColor; }
+        /* scrubber track */
+        .ps-scrubber {
+            flex: 1; position: relative; height: 28px;
+            display: flex; align-items: center; cursor: pointer;
+            touch-action: none;
+        }
+        .ps-scrub-track {
+            width: 100%; height: 3px; background: rgba(255,255,255,.18);
+            border-radius: 2px; position: relative; overflow: visible;
+        }
+        .ps-scrub-fill {
+            position: absolute; left: 0; top: 0; height: 100%;
+            background: #4C7EFF; border-radius: 2px;
+            width: 0; transition: width .1s linear;
+        }
+        .ps-scrub-thumb {
+            position: absolute; top: 50%; width: 12px; height: 12px;
+            border-radius: 50%; background: #fff;
+            transform: translate(-50%, -50%) scale(0);
+            box-shadow: 0 2px 6px rgba(0,0,0,.4);
+            transition: transform .2s cubic-bezier(.22,.61,.36,1);
+            pointer-events: none;
+        }
+        .ps-scrubber:hover .ps-scrub-thumb,
+        .ps-controls.is-scrubbing .ps-scrub-thumb {
+            transform: translate(-50%, -50%) scale(1);
+        }
+        /* chapter markers on the scrubber */
+        .ps-scrub-chapters {
+            position: absolute; top: -22px; left: 0; right: 0;
+            display: flex; align-items: center; gap: 0;
+            pointer-events: none; opacity: 0;
+            transition: opacity .25s ease;
+        }
+        .ps-scrubber:hover .ps-scrub-chapters,
+        .ps-controls.is-scrubbing .ps-scrub-chapters {
+            opacity: 1; pointer-events: auto;
+        }
+        .ps-chap-mark {
+            position: absolute; top: 0;
+            font-family: "JetBrains Mono", monospace; font-size: 8.5px;
+            letter-spacing: .08em; color: rgba(255,255,255,.5);
+            white-space: nowrap; cursor: pointer;
+            padding: 2px 6px; border-radius: 4px;
+            transition: color .2s, background .2s;
+            pointer-events: auto;
+        }
+        .ps-chap-mark:hover { color: #fff; background: rgba(255,255,255,.1); }
+        .ps-chap-mark.is-active { color: #4C7EFF; }
+        .ps-chap-pip {
+            position: absolute; top: 50%; width: 3px; height: 9px;
+            background: rgba(255,255,255,.3); border-radius: 1px;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+        /* time label */
+        .ps-time {
+            font-family: "JetBrains Mono", monospace; font-size: 10px;
+            color: rgba(255,255,255,.6); flex: none;
+            font-variant-numeric: tabular-nums; min-width: 72px; text-align: right;
+        }
+        /* tooltip on scrubber hover */
+        .ps-scrub-tip {
+            position: absolute; bottom: 18px;
+            background: rgba(16,24,27,.92); color: #fff;
+            font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+            padding: 3px 7px; border-radius: 5px; white-space: nowrap;
+            pointer-events: none; opacity: 0;
+            transform: translate(-50%, 4px);
+            transition: opacity .15s, transform .15s;
+        }
+        .ps-scrubber:hover .ps-scrub-tip { opacity: 1; transform: translate(-50%, 0); }
+        @media (max-width: 1023.98px) {
+            .ps-controls { opacity: 1; transform: none; pointer-events: auto; }
+            .ps-scrub-thumb { transform: translate(-50%, -50%) scale(1); }
+        }
+        @media (max-width: 560px) {
+            .ps-controls { padding: 8px 10px; gap: 6px; }
+            .ps-ctrl-btn { width: 26px; height: 26px; }
+            .ps-ctrl-btn svg { width: 12px; height: 12px; }
+            .ps-time { font-size: 9px; min-width: 60px; }
+        }
+
         /* descendant selector outranks .anno-chip's own z-index; dark chip so
            it reads on the white body corner it sits over */
         .ps-detail .ps-counter { position: absolute; top: 18px; right: 20px; z-index: 5;
                                  background: #10181b; border-color: #10181b; color: #fff; }
-        .ps-body { padding: 30px 32px; display: flex; flex-direction: column; }
+        /* ── bento grid: hero left, 2×2 caps right ── */
+        .ps-body {
+            padding: 30px 32px;
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 10px;
+            align-items: stretch;
+        }
+        /* panels without caps → hero fills the whole row */
+        .ps-body:not(:has(.ps-caps)) { grid-template-columns: 1fr; grid-template-rows: auto; }
+        .ps-hero {
+            grid-column: 1; grid-row: 1 / -1;
+            display: flex; flex-direction: column; justify-content: center;
+            background: rgba(16,24,27,.025); border-radius: 14px;
+            padding: 28px 26px;
+        }
+        .ps-body:not(:has(.ps-caps)) .ps-hero { background: none; padding: 0; }
         .ps-eyebrow {
             font-family: "JetBrains Mono", monospace; font-size: 10px;
             letter-spacing: .2em; color: #4C7EFF;
@@ -1466,29 +1656,27 @@
             align-self: flex-start; display: inline-flex; align-items: center; gap: 9px;
             padding: 11px 22px; font-size: 13px; font-weight: 500; margin-top: 20px;
         }
-        /* margin-top:auto parks the capability grid on the panel floor */
-        .ps-caps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: auto; padding-top: 26px; }
+        .ps-caps {
+            display: contents; /* caps become direct grid children of .ps-body */
+        }
         .ps-cap {
             border: 1px solid rgba(16,24,27,.10); border-radius: 11px;
-            background: rgba(255,255,255,.6); padding: 12px 14px;
+            background: rgba(255,255,255,.6); padding: 14px 16px;
+            display: flex; flex-direction: column; justify-content: center;
         }
         .ps-cap span { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .16em; color: #4C7EFF; }
         .ps-cap p { font-size: 11.5px; line-height: 1.5; color: rgba(16,24,27,.66); margin-top: 6px; }
 
-        /* the arriving panel's copy assembles top-down as the strip settles */
-        .ps-body > *:not(.ps-caps) { opacity: 0; transform: translateY(14px);
-                       transition: opacity .45s ease, transform .55s cubic-bezier(.76,0,.24,1); }
-        .ps-panel.is-on .ps-body > *:not(.ps-caps) { opacity: 1; transform: none; }
-        .ps-panel.is-on .ps-body > *:nth-child(1) { transition-delay: .16s; }
-        .ps-panel.is-on .ps-body > *:nth-child(2) { transition-delay: .22s; }
-        .ps-panel.is-on .ps-body > *:nth-child(3) { transition-delay: .28s; }
-        .ps-panel.is-on .ps-body > *:nth-child(4) { transition-delay: .34s; }
+        /* the arriving panel's copy assembles: hero fades in, then caps stagger */
+        .ps-hero { opacity: 0; transform: translateY(14px);
+                   transition: opacity .45s ease, transform .55s cubic-bezier(.76,0,.24,1); }
+        .ps-panel.is-on .ps-hero { opacity: 1; transform: none; transition-delay: .16s; }
         .ps-cap { transition: opacity .45s ease, transform .5s cubic-bezier(.76,0,.24,1), border-color .35s; }
         .ps-panel:not(.is-on) .ps-cap { opacity: 0; transform: translateY(10px); }
-        .ps-panel.is-on .ps-cap:nth-child(1) { transition-delay: .40s; }
-        .ps-panel.is-on .ps-cap:nth-child(2) { transition-delay: .46s; }
-        .ps-panel.is-on .ps-cap:nth-child(3) { transition-delay: .52s; }
-        .ps-panel.is-on .ps-cap:nth-child(4) { transition-delay: .58s; }
+        .ps-panel.is-on .ps-cap:nth-child(1) { transition-delay: .30s; }
+        .ps-panel.is-on .ps-cap:nth-child(2) { transition-delay: .36s; }
+        .ps-panel.is-on .ps-cap:nth-child(3) { transition-delay: .42s; }
+        .ps-panel.is-on .ps-cap:nth-child(4) { transition-delay: .48s; }
         /* the training curve replays each time the Sim panel slides in */
         .dot-chart path { transform: scaleY(0); transform-origin: bottom; opacity: 0;
                           transition: transform .8s cubic-bezier(.76,0,.24,1) .35s, opacity .5s ease .35s; }
@@ -1507,8 +1695,8 @@
             .ps-panel { display: none; flex-direction: column; }
             .ps-panel.is-on { display: flex; }
             .ps-shot { aspect-ratio: 16/9; height: auto; }
-            .ps-body { padding: 24px 20px; }
-            .ps-caps { grid-template-columns: 1fr; padding-top: 22px; }
+            .ps-body { padding: 24px 20px; grid-template-columns: 1fr; grid-template-rows: auto; }
+            .ps-hero { grid-column: 1; grid-row: auto; background: none; padding: 0 0 18px; }
             .ps-counter { display: none; }
         }
         @media (max-width: 560px) {
@@ -1522,7 +1710,7 @@
         }
         @media (prefers-reduced-motion: reduce) {
             .ps-card, .ps-card::before, .ps-track,
-            .ps-body > *, .ps-cap, .dot-chart path, .dot-chart polyline { transition-duration: .01ms; transition-delay: 0s; }
+            .ps-hero, .ps-cap, .dot-chart path, .dot-chart polyline { transition-duration: .01ms; transition-delay: 0s; }
             .dot-chart polyline { animation: none; }
         }
 
@@ -1679,11 +1867,11 @@
                     <!-- shortcuts — quick doors into books and repos -->
                     <div class="hero-shortcuts">
                         <a class="hero-shortcut" href="library-books.html">
-                            <span><b>Books</b><em>Long-form from Shannon Press</em></span>
+                            <span><b>Books</b><em>Long-form material covering robotics, machine learning, software, and engineering</em></span>
                             <i aria-hidden="true">↗</i>
                         </a>
                         <a class="hero-shortcut" href="library-open-source.html">
-                            <span><b>Open Source</b><em>Repositories, guides and API reference</em></span>
+                            <span><b>Open Source</b><em>Open-source projects, libraries, and technical resources from Shannon.</em></span>
                             <i aria-hidden="true">↗</i>
                         </a>
                     </div>
@@ -1712,11 +1900,11 @@
                                 <p class="disc2-tag"><span class="disc2-tag-line"></span>ROBOTICS</p>
                                 <span class="disc2-num">01</span>
                                 <h3 class="disc2-h3">Machines that perceive, learn, and act.</h3>
-                                <p class="disc2-p">We engineer intelligent robotic systems from simulation to deployment — spanning simulation, motion, perception, mapping, reinforcement learning, and autonomous behavior.</p>
+                                <p class="disc2-p">We build robotic systems from simulation to deployment — combining physics simulation, perception, mapping, control, and machine learning to create machines that operate in the real world.</p>
                                 <ul class="disc2-list">
                                     <li><span class="disc2-dot"></span>Simulation &amp; Digital Environments</li>
                                     <li><span class="disc2-dot"></span>Reinforcement Learning &amp; Autonomous Systems</li>
-                                    <li><span class="disc2-dot"></span>Robotic Perception, Mapping &amp; Control</li>
+                                    <li><span class="disc2-dot"></span>Perception, Mapping &amp; Control</li>
                                 </ul>
                                 <a href="#showcase" class="disc2-cta">Explore robotics →</a>
                             </div>
@@ -1730,11 +1918,11 @@
                                 <p class="disc2-tag"><span class="disc2-tag-line"></span>SOFTWARE DEVELOPMENT</p>
                                 <span class="disc2-num">02</span>
                                 <h3 class="disc2-h3">Software built around real problems.</h3>
-                                <p class="disc2-p">We design and develop software systems that turn complex workflows, data, and ideas into products people can actually use — from custom applications and enterprise platforms to AI-enabled products and automation.</p>
+                                <p class="disc2-p">We design and build software that helps people and organizations solve real problems — from custom applications and enterprise systems to AI-powered products and automation.</p>
                                 <ul class="disc2-list">
-                                    <li><span class="disc2-dot"></span>Custom Software &amp; Web Application Engineering</li>
-                                    <li><span class="disc2-dot"></span>AI-Powered Applications &amp; Automation</li>
-                                    <li><span class="disc2-dot"></span>Data, Platform &amp; Enterprise Systems</li>
+                                    <li><span class="disc2-dot"></span>Custom Software &amp; Web Applications</li>
+                                    <li><span class="disc2-dot"></span>AI Applications &amp; Automation</li>
+                                    <li><span class="disc2-dot"></span>Data, Platforms &amp; Enterprise Systems</li>
                                 </ul>
                                 <a href="#showcase" class="disc2-cta">Explore software →</a>
                             </div>
@@ -1804,7 +1992,7 @@
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.02</span>
-                            <svg class="cap-mark cap-anim-feedback" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><rect class="fb-loop" x="10" y="14" width="52" height="44" rx="16" fill="none"/><circle class="fb-node" cx="36" cy="14" r="3" fill="currentColor" stroke="none"/><circle class="fb-node" cx="62" cy="36" r="3" fill="currentColor" stroke="none"/><circle class="fb-node" cx="36" cy="58" r="3" fill="currentColor" stroke="none"/><circle class="fb-node" cx="10" cy="36" r="3" fill="currentColor" stroke="none"/><polygon class="fb-arrow" points="54,14 58,11 58,17" fill="currentColor" stroke="none"/><polygon class="fb-arrow" points="62,52 65,48 59,48" fill="currentColor" stroke="none"/><polygon class="fb-arrow" points="18,58 14,61 14,55" fill="currentColor" stroke="none"/></svg>
+                            <svg class="cap-mark cap-anim-feedback" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle class="fb-node" cx="8" cy="28" r="3.5" fill="currentColor" stroke="none"/><path class="fb-signal" d="M12 28 Q20 16 28 28 Q36 40 44 28 Q52 16 60 28"/><polygon points="58,25 64,28 58,31" fill="currentColor" stroke="none"/><circle class="fb-dot-fwd" cx="36" cy="28" r="2" fill="currentColor" stroke="none"/><circle class="fb-node fb-node-r" cx="64" cy="28" r="3.5" fill="currentColor" stroke="none"/><path d="M64 32 L64 44" opacity=".4"/><path d="M8 32 L8 44" opacity=".4"/><path class="fb-return" d="M60 44 L12 44"/><polygon points="14,41 8,44 14,47" fill="currentColor" stroke="none"/><circle class="fb-dot-ret" cx="36" cy="44" r="2" fill="currentColor" stroke="none"/><text x="34" y="58" fill="currentColor" stroke="none" font-size="7" font-family="JetBrains Mono,monospace" opacity=".4">Δ</text></svg>
                             <h3 class="text-[15px] font-semibold">Feedback Systems</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Closed-loop feedback architectures — state estimation, observer design, and adaptive control — that keep robots stable under uncertainty.</p>
                         </div>
@@ -1828,7 +2016,7 @@
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.06</span>
-                            <svg class="cap-mark cap-anim-morph" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><g class="morph-sq"><rect x="12" y="12" width="32" height="32" fill="url(#gm-hatch)" stroke="none"/><rect x="12" y="12" width="32" height="32"/></g><circle class="morph-cir" cx="46" cy="40" r="16"/></svg>
+                            <svg class="cap-mark cap-anim-auto" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle class="auto-outer" cx="36" cy="36" r="28" opacity=".35"/><circle class="auto-mid" cx="36" cy="36" r="19"/><circle cx="36" cy="36" r="10" fill="url(#gm-hatch)" stroke="none"/><circle cx="36" cy="36" r="10"/><circle class="auto-core" cx="36" cy="36" r="5" fill="currentColor" stroke="none"/><path class="auto-spiral" d="M64 36 A28 28 0 0 1 36 64 A19 19 0 0 1 17 36 A10 10 0 0 1 36 26"/><polygon points="36,23 39,27 33,27" fill="currentColor" stroke="none"/></svg>
                             <h3 class="text-[15px] font-semibold">Integrated Autonomy</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">End-to-end sensing-to-action loops — from perception and feedback through decision-making — engineered for real-world robot deployments.</p>
                         </div>
@@ -1839,7 +2027,7 @@
                     <div class="hair-grid">
                         <div class="hair-cell">
                             <span class="cap-num">S.01</span>
-                            <svg class="cap-mark cap-anim-stack" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><rect class="stack-back" x="4" y="6" width="38" height="28" rx="3"/><g class="stack-mid"><rect x="17" y="20" width="38" height="28" rx="3" fill="url(#gm-hatch)" stroke="none"/><rect x="17" y="20" width="38" height="28" rx="3"/></g><g class="stack-front"><rect x="30" y="34" width="38" height="28" rx="3"/><path d="M36 44 L58 44" stroke-width=".9"/><path d="M36 50 L52 50" stroke-width=".9" opacity=".5"/><circle class="stack-cursor" cx="42" cy="40" r="1.8" fill="currentColor" stroke="none"/></g></svg>
+                            <svg class="cap-mark cap-anim-app" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="8" width="60" height="56" rx="4"/><line x1="6" y1="18" x2="66" y2="18" opacity=".4"/><circle cx="14" cy="13" r="1.8" fill="currentColor" stroke="none" opacity=".4"/><circle cx="20" cy="13" r="1.8" fill="currentColor" stroke="none" opacity=".25"/><circle cx="26" cy="13" r="1.8" fill="currentColor" stroke="none" opacity=".15"/><rect class="app-block1" x="12" y="24" width="28" height="5" rx="1.5" fill="currentColor" stroke="none" opacity=".7"/><rect class="app-block2" x="12" y="34" width="48" height="5" rx="1.5" fill="url(#gm-hatch)" stroke="none"/><rect class="app-block3" x="12" y="44" width="36" height="5" rx="1.5" fill="currentColor" stroke="none" opacity=".4"/><circle class="app-cursor" cx="16" cy="55" r="2" fill="currentColor" stroke="none"/></svg>
                             <h3 class="text-[15px] font-semibold">Custom Digital Products</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">End-to-end development of digital products built around the way people and businesses actually work.</p>
                         </div>
@@ -1938,12 +2126,31 @@
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/octomap-rust-demo.html?embed=1"
                                         title="OctoMap Rust demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"The API","start":3250},{"name":"The map","start":15000},{"name":"The proof","start":31200}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">OCT.01 · OPEN SOURCE</span>
-                                <h3 class="ps-title">OctoMap Rust</h3>
-                                <p class="ps-desc">Pure-Rust port of OctoMap C++ 1.10.0 — 3D occupancy mapping with no unsafe code, no C++ toolchain, and byte-identical .bt/.ot file compatibility.</p>
-                                <a href="https://github.com/Shannon-Dynamics/octo_map_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">OCT.01 · OPEN SOURCE</span>
+                                    <h3 class="ps-title">OctoMap Rust</h3>
+                                    <p class="ps-desc">Pure-Rust port of OctoMap C++ 1.10.0 — 3D occupancy mapping with no unsafe code, no C++ toolchain, and byte-identical .bt/.ot file compatibility.</p>
+                                    <a href="https://github.com/Shannon-Dynamics/octo_map_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                </div>
                                 <div class="ps-caps">
                                     <div class="ps-cap"><span>C.01</span><p>100% safe Rust — zero unsafe blocks</p></div>
                                     <div class="ps-cap"><span>C.02</span><p>Byte-identical .bt / .ot file compatibility with C++ 1.10.0</p></div>
@@ -1958,12 +2165,31 @@
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/candi-recon-demo.html?embed=1"
                                         title="Candi Recon demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"The flight","start":3500},{"name":"The map","start":15200},{"name":"The cross-check","start":30000}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">CND.02 · OPEN SOURCE</span>
-                                <h3 class="ps-title">Candi Recon</h3>
-                                <p class="ps-desc">End-to-end Rust demo of octo_map_rust: a MuJoCo drone orbits a temple, renders depth frames, and reconstructs a 3D occupancy map — rendering, mapping, and visualisation all in Rust.</p>
-                                <a href="https://github.com/Shannon-Dynamics/scan_candi_with_octomap_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">CND.02 · OPEN SOURCE</span>
+                                    <h3 class="ps-title">Candi Recon</h3>
+                                    <p class="ps-desc">End-to-end Rust demo of octo_map_rust: a MuJoCo drone orbits a temple, renders depth frames, and reconstructs a 3D occupancy map — rendering, mapping, and visualisation all in Rust.</p>
+                                    <a href="https://github.com/Shannon-Dynamics/scan_candi_with_octomap_rust" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                </div>
                                 <div class="ps-caps">
                                     <div class="ps-cap"><span>C.01</span><p>MuJoCo physics simulation for drone flight path</p></div>
                                     <div class="ps-cap"><span>C.02</span><p>Depth-frame rendering and point-cloud extraction</p></div>
@@ -1976,34 +2202,65 @@
 
                             <article class="ps-panel" id="ps-sen" role="tabpanel">
                             <div class="ps-shot">
-                                <!-- live demo reel — see the Scout panel's comment for why this is an
-                                     iframe rather than an inlined mock. -->
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-sentinel-demo.html?embed=1"
                                         title="Shannon Sentinel product demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Triage","start":15300},{"name":"AI Governance","start":30600}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">SEN.03 · ACTIVE</span>
-                                <h3 class="ps-title">Shannon Sentinel</h3>
-                                <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">SEN.03 · ACTIVE</span>
+                                    <h3 class="ps-title">Shannon Sentinel</h3>
+                                    <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
+                                    <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                </div>
                             </div>
                         </article>
 
                             <article class="ps-panel" id="ps-sct" role="tabpanel">
                             <div class="ps-shot">
-                                <!-- live demo reel, not a static mock — the file already draws its
-                                     own browser chrome, so no .win wrapper here. ?embed=1 hides its
-                                     internal play/pause/replay bar (it autoplays and loops on its own);
-                                     drop the query param to get those controls back if this ever moves
-                                     somewhere it should be user-driven instead of ambient. -->
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-scout-demo.html?embed=1"
                                         title="Shannon Scout product demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Live interview","start":10450},{"name":"AI ranking","start":25650}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">SCT.04 · BETA</span>
-                                <h3 class="ps-title">Shannon Scout</h3>
-                                <p class="ps-desc">An AI recruiter that sits in on every interview. It transcribes and scores the conversation as it happens — in Bahasa Indonesia and English, code-switching included — then hands you a ranked shortlist with the reasoning attached.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">SCT.04 · BETA</span>
+                                    <h3 class="ps-title">Shannon Scout</h3>
+                                    <p class="ps-desc">An AI recruiter that sits in on every interview. It transcribes and scores the conversation as it happens — in Bahasa Indonesia and English, code-switching included — then hands you a ranked shortlist with the reasoning attached.</p>
+                                    <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                </div>
                                 <div class="ps-caps">
                                     <div class="ps-cap"><span>C.01</span><p>Bilingual transcription — Bahasa, English, code-switches included</p></div>
                                     <div class="ps-cap"><span>C.02</span><p>Live interview room with real-time speech and key-term detection</p></div>
@@ -2016,16 +2273,33 @@
 
                             <article class="ps-panel" id="ps-fct" role="tabpanel">
                             <div class="ps-shot">
-                                <!-- live demo reel — see the Scout panel's comment for why this is an
-                                     iframe rather than an inlined mock. -->
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-factory-demo.html?embed=1"
                                         title="Shannon Factory product demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Org chart","start":15900},{"name":"Approvals","start":24900}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
                             </div>
                             <div class="ps-body">
-                                <span class="ps-eyebrow">FCT.05 · IN BUILD</span>
-                                <h3 class="ps-title">Shannon Factory</h3>
-                                <p class="ps-desc">A company staffed by AI agents — a CEO, a PM, an engineering lead, a designer — each with a role, a budget, and a place in the org chart. When an agent asks for more than it's allowed to spend, the work stops until a human decides.</p>
-                                <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">FCT.05 · IN BUILD</span>
+                                    <h3 class="ps-title">Shannon Factory</h3>
+                                    <p class="ps-desc">A company staffed by AI agents — a CEO, a PM, an engineering lead, a designer — each with a role, a budget, and a place in the org chart. When an agent asks for more than it's allowed to spend, the work stops until a human decides.</p>
+                                    <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
+                                </div>
                                 <div class="ps-caps">
                                     <div class="ps-cap"><span>C.01</span><p>An actual org chart — agents report upward, each owns a share of the sprint</p></div>
                                     <div class="ps-cap"><span>C.02</span><p>Budget is a hard ceiling — no agent approves its own raise</p></div>
@@ -2383,7 +2657,7 @@
                             <p class="text-white/50 text-[12px] leading-relaxed mt-4 max-w-[220px]">
                                 Simulation-first engineering for robots and autonomous software.
                             </p>
-                            <a href="mailto:office@shannon.id" class="inline-block mt-4 text-[12px] text-[#8FAEFF] hover:underline hover:underline-offset-2">office@shannon.id</a>
+                            <a href="mailto:hello@shannon.id" class="inline-block mt-4 text-[12px] text-[#8FAEFF] hover:underline hover:underline-offset-2">hello@shannon.id</a>
                         </div>
 
                         <!-- col 2: company -->
@@ -2495,9 +2769,9 @@
         gsap.fromTo("#hero-copy > :first-child",
             { y: 20, opacity: 0 },
             { y: 0, opacity: 1, duration: .8, delay: .15, ease: "power2.out", clearProps: "transform,opacity" });
-        gsap.fromTo(".hero-shortcuts",
-            { y: 14, opacity: 0 },
-            { y: 0, opacity: 1, duration: .7, delay: .55, ease: "power2.out", clearProps: "transform,opacity" });
+        /* shortcuts entrance uses a CSS animation (hero-sc-in) instead of GSAP —
+           Lenis can stall the GSAP ticker on first paint, but CSS animations
+           always fire on their own clock. */
 
         /* ---------- Hero word scramble ---------- */
         (function () {
@@ -2729,6 +3003,160 @@
             show(0);
         })();
 
+        /* ---------- video controls: play/pause, replay, scrubber ----------
+           Each .ps-shot contains an iframe demo reel and a .ps-controls overlay.
+           The iframes report their progress via postMessage; controls send
+           commands back. Chapter markers on the scrubber let visitors drag to
+           a specific scene. */
+        (function () {
+            const DUR = 45000;
+            const PLAY_SVG = '<svg viewBox="0 0 24 24"><path d="M6 3l14 9-14 9z"/></svg>';
+            const PAUSE_SVG = '<svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+            const fmt = ms => Math.floor(ms / 60000) + ":" + String(Math.floor(ms / 1000) % 60).padStart(2, "0");
+
+            document.querySelectorAll(".ps-controls").forEach(bar => {
+                const shot = bar.closest(".ps-shot");
+                if (!shot) return;
+                const iframe = shot.querySelector(".ps-demo-frame");
+                if (!iframe) return;
+
+                const toggleBtn = bar.querySelector(".ps-btn-toggle");
+                const replayBtn = bar.querySelector(".ps-btn-replay");
+                const scrubber = bar.querySelector(".ps-scrubber");
+                const track = bar.querySelector(".ps-scrub-track");
+                const fill = bar.querySelector(".ps-scrub-fill");
+                const thumb = bar.querySelector(".ps-scrub-thumb");
+                const tip = bar.querySelector(".ps-scrub-tip");
+                const timeLabel = bar.querySelector(".ps-time");
+                const chapContainer = bar.querySelector(".ps-scrub-chapters");
+
+                let isPaused = false;
+                let position = 0; // 0..1
+
+                // Build chapter markers + pip marks
+                let chapters = [];
+                try { chapters = JSON.parse(bar.dataset.chapters || "[]"); } catch (e) {}
+                chapters.forEach((ch, i) => {
+                    const pct = (ch.start / DUR) * 100;
+                    // pip on the track
+                    const pip = document.createElement("div");
+                    pip.className = "ps-chap-pip";
+                    pip.style.left = pct + "%";
+                    track.appendChild(pip);
+                    // label above scrubber
+                    const mark = document.createElement("span");
+                    mark.className = "ps-chap-mark";
+                    mark.style.left = pct + "%";
+                    mark.textContent = ch.name;
+                    mark.addEventListener("click", e => {
+                        e.stopPropagation();
+                        post({ type: "seek", position: ch.start / DUR });
+                        if (isPaused) { post({ type: "play" }); isPaused = false; updateToggle(); }
+                    });
+                    chapContainer.appendChild(mark);
+                });
+
+                function post(msg) {
+                    if (iframe.contentWindow) iframe.contentWindow.postMessage(msg, "*");
+                }
+                function updateToggle() {
+                    toggleBtn.innerHTML = isPaused ? PLAY_SVG : PAUSE_SVG;
+                    toggleBtn.setAttribute("aria-label", isPaused ? "Play" : "Pause");
+                    toggleBtn.title = isPaused ? "Play" : "Pause";
+                }
+                function updateUI(pos, time) {
+                    const pct = (pos * 100) + "%";
+                    fill.style.width = pct;
+                    thumb.style.left = pct;
+                    timeLabel.textContent = fmt(time) + " / 0:45";
+                    // highlight active chapter
+                    chapters.forEach((ch, i) => {
+                        const marks = chapContainer.querySelectorAll(".ps-chap-mark");
+                        const next = chapters[i + 1];
+                        const active = time >= ch.start && (!next || time < next.start);
+                        if (marks[i]) marks[i].classList.toggle("is-active", active);
+                    });
+                }
+
+                // Listen for progress from iframe
+                window.addEventListener("message", e => {
+                    if (!e.data || e.data.type !== "progress") return;
+                    if (e.source !== iframe.contentWindow) return;
+                    position = e.data.position;
+                    isPaused = e.data.paused;
+                    updateToggle();
+                    if (!scrubbing) updateUI(position, e.data.time);
+                });
+
+                // Play/Pause toggle
+                toggleBtn.addEventListener("click", () => {
+                    post({ type: "toggle" });
+                    isPaused = !isPaused;
+                    updateToggle();
+                });
+
+                // Replay
+                replayBtn.addEventListener("click", () => {
+                    post({ type: "replay" });
+                    isPaused = false;
+                    updateToggle();
+                });
+
+                // Scrubber drag
+                let scrubbing = false;
+                function scrubPos(e) {
+                    const rect = track.getBoundingClientRect();
+                    return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                }
+                function scrubUpdate(e) {
+                    const p = scrubPos(e);
+                    const t = p * DUR;
+                    fill.style.width = (p * 100) + "%";
+                    thumb.style.left = (p * 100) + "%";
+                    tip.textContent = fmt(t);
+                    tip.style.left = (p * 100) + "%";
+                    // highlight chapter for preview
+                    chapters.forEach((ch, i) => {
+                        const marks = chapContainer.querySelectorAll(".ps-chap-mark");
+                        const next = chapters[i + 1];
+                        const active = t >= ch.start && (!next || t < next.start);
+                        if (marks[i]) marks[i].classList.toggle("is-active", active);
+                    });
+                    return p;
+                }
+
+                scrubber.addEventListener("pointerdown", e => {
+                    scrubbing = true;
+                    bar.classList.add("is-scrubbing");
+                    post({ type: "pause" });
+                    scrubUpdate(e);
+                    scrubber.setPointerCapture(e.pointerId);
+                });
+                scrubber.addEventListener("pointermove", e => {
+                    if (!scrubbing) {
+                        // show tooltip at hover position
+                        const p = scrubPos(e);
+                        tip.textContent = fmt(p * DUR);
+                        tip.style.left = (p * 100) + "%";
+                        return;
+                    }
+                    scrubUpdate(e);
+                });
+                scrubber.addEventListener("pointerup", e => {
+                    if (!scrubbing) return;
+                    const p = scrubUpdate(e);
+                    post({ type: "seek", position: p });
+                    if (!isPaused) post({ type: "play" });
+                    scrubbing = false;
+                    bar.classList.remove("is-scrubbing");
+                });
+                scrubber.addEventListener("pointercancel", () => {
+                    scrubbing = false;
+                    bar.classList.remove("is-scrubbing");
+                });
+            });
+        })();
+
         /* ---------- contact form ----------
            No backend on this page, so there is nothing to POST to yet — this
            composes a mailto: with the fields folded into the subject/body and
@@ -2779,7 +3207,7 @@
                     const subject = "Enquiry from " + form.elements.name.value.trim();
                     const body = "From: " + form.elements.name.value.trim() + " <" + form.elements.email.value.trim() + ">\n\n"
                         + form.elements.message.value.trim();
-                    const mailto = "mailto:office@shannon.id"
+                    const mailto = "mailto:hello@shannon.id"
                         + "?subject=" + encodeURIComponent(subject)
                         + "&body=" + encodeURIComponent(body);
 
