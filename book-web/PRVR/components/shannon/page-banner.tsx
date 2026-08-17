@@ -1,6 +1,7 @@
+import Link from 'next/link';
 import { Fragment, type ReactNode } from 'react';
 import { Halftone } from './halftone';
-import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY } from '@/lib/shannon';
+import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY, SHANNON_SITE } from '@/lib/shannon';
 
 export interface Crumb {
   label: string;
@@ -17,6 +18,15 @@ interface PageBannerProps {
 }
 
 /**
+ * True when href is a route inside this Next.js book app (should use <Link>).
+ * Marketing-site links built by `site()` start with SHANNON_SITE when it's a
+ * relative path — those must use a plain <a> so Next.js doesn't prepend basePath.
+ */
+const isBookRoute = (href: string) =>
+  href.startsWith('/') &&
+  !(SHANNON_SITE.startsWith('/') && (href + '/').startsWith(SHANNON_SITE + '/'));
+
+/**
  * The dark halftone plate every Shannon sub-page opens with. It carries the
  * page's <h1>, so a page using it must not declare another one.
  */
@@ -30,6 +40,8 @@ export function PageBanner({ crumb, title, sub, small = false }: PageBannerProps
             <Fragment key={`${c.label}-${i}`}>
               {c.href === undefined ? (
                 <span className="on">{c.label}</span>
+              ) : isBookRoute(c.href) ? (
+                <Link href={c.href}>{c.label}</Link>
               ) : (
                 <a href={c.href}>{c.label}</a>
               )}
