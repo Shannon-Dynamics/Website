@@ -1,0 +1,370 @@
+@import 'katex/dist/katex.min.css';
+@import './shannon.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   Design tokens — one source of truth for both themes.
+
+   TWO SYSTEMS LIVE HERE, and the split is load-bearing.
+
+   The NEUTRALS and the ACCENT are Shannon Dynamics': Inter and JetBrains Mono,
+   a white reading surface over graphite ink, hairlines at 12%, and #4C7EFF.
+   They dress the chrome, and they match the rest of the site — see
+   `shannon.css` for the shell they belong to.
+
+   The DATA COLOURS below them are not. The eight categorical slots, the
+   sequential ramp and the diverging pair are the validated reference instance
+   of the dataviz method: every slot passes, in BOTH modes, the lightness band,
+   chroma floor, adjacent-pair CVD separation (Machado 2009, severity 1.0), the
+   normal-vision floor (ΔE ≥ 15) and contrast-vs-surface checks. Dark is a
+   selected set of steps for the dark surface — not an automatic flip. Restyling
+   the chrome does not touch them, and neither should anything else.
+
+   Book-wide semantic mapping (CLAUDE.md §5 "one visual language"):
+     value       → sequential blue ramp (--seq-*)
+     policy      → directional arrows; hue = slot 1
+     reward      → diverging blue↔red with neutral gray midpoint
+     uncertainty → fan/band, series color at low alpha
+   ========================================================================= */
+
+:root {
+  color-scheme: light;
+
+  /* The families themselves come from Fontsource, imported in app/layout.tsx. */
+  --font-inter: 'Inter Variable';
+  --font-jetbrains-mono: 'JetBrains Mono Variable';
+
+  --font-sans: var(--font-inter), system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sd-font-mono: var(--font-mono);
+
+  /* Surfaces & ink — Shannon's white page and graphite ink */
+  --page-plane: #ffffff;
+  --surface-0: #f4f7f9;
+  --surface-1: #ffffff;
+  --surface-2: #ffffff;
+  --text-primary: #10181b;
+  --text-secondary: rgba(16, 24, 27, 0.68);
+  --text-muted: rgba(16, 24, 27, 0.45);
+  --gridline: #e4e9ed;
+  --baseline: #c2ccd3;
+  --border-hairline: rgba(16, 24, 27, 0.12);
+  --accent: #4c7eff;
+
+  /* Categorical slots — fixed order, assigned in sequence, never cycled */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
+  /* Sequential ramp (magnitude: value functions, visit counts, Q-heatmaps) */
+  --seq-100: #cde2fb;
+  --seq-200: #9ec5f4;
+  --seq-300: #6da7ec;
+  --seq-400: #3987e5;
+  --seq-500: #256abf;
+  --seq-600: #184f95;
+  --seq-700: #0d366b;
+
+  /* Diverging (polarity: TD error δ, advantage A, reward sign) */
+  --div-neg: #2a78d6;
+  --div-mid: #f0efec;
+  --div-pos: #e34948;
+
+  /* Status — reserved meaning, always shipped with icon + label */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* The site itself is light-only, so its dark counterpart is built from the
+     two greys the chrome already uses: graphite for the page, slate for what
+     sits raised off it. The accent lifts to the site's soft blue, which clears
+     AA on graphite where #4C7EFF does not. */
+  --page-plane: #10181b;
+  --surface-0: #151f23;
+  --surface-1: #1b2529;
+  --surface-2: #222e33;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-muted: rgba(255, 255, 255, 0.45);
+  --gridline: #26333a;
+  --baseline: #35454d;
+  --border-hairline: rgba(255, 255, 255, 0.12);
+  --accent: #8faeff;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  /* Sequential anchor flips in dark: the light end recedes toward the surface */
+  --seq-100: #0d366b;
+  --seq-200: #184f95;
+  --seq-300: #256abf;
+  --seq-400: #3987e5;
+  --seq-500: #6da7ec;
+  --seq-600: #9ec5f4;
+  --seq-700: #cde2fb;
+
+  --div-neg: #3987e5;
+  --div-mid: #383835;
+  --div-pos: #e66767;
+}
+
+/* ============================================================================
+   Base
+   ========================================================================= */
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+body {
+  background-color: var(--page-plane);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================================
+   Book prose
+   ========================================================================= */
+
+.prose-book {
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+
+.prose-book h2 {
+  scroll-margin-top: 5rem;
+  font-size: 1.6rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  margin-top: 2.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.prose-book h3 {
+  scroll-margin-top: 5rem;
+  font-size: 1.2rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin-top: 2rem;
+  margin-bottom: 0.6rem;
+}
+
+.prose-book p {
+  margin-bottom: 1.15rem;
+}
+
+.prose-book strong {
+  font-weight: 640;
+}
+
+.prose-book a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+.prose-book > ul,
+.prose-book > ol {
+  margin: 0 0 1.15rem 0;
+  padding-left: 1.35rem;
+}
+
+.prose-book > ul {
+  list-style: disc;
+}
+.prose-book > ol {
+  list-style: decimal;
+}
+
+.prose-book li {
+  margin-bottom: 0.4rem;
+  padding-left: 0.2rem;
+}
+
+.prose-book li::marker {
+  color: var(--text-muted);
+}
+
+.prose-book hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.prose-book table {
+  width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.prose-book th {
+  text-align: left;
+  font-weight: 620;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid var(--baseline);
+}
+
+.prose-book td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-hairline);
+  vertical-align: top;
+}
+
+/* Inline code (fenced blocks are styled by the CodeBlock component) */
+.prose-book :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  padding: 0.14em 0.36em;
+  border-radius: 4px;
+  background: var(--surface-0);
+  border: 1px solid var(--border-hairline);
+  white-space: nowrap;
+}
+
+/* ============================================================================
+   KaTeX — wide display math scrolls inside its own container, never the page
+   ========================================================================= */
+
+.katex-display {
+  margin: 1.5rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.4rem 0.1rem;
+}
+
+.katex {
+  font-size: 1.04em;
+}
+
+/* ============================================================================
+   Shiki (rehype-pretty-code) — one variable swaps the whole theme
+   ========================================================================= */
+
+[data-rehype-pretty-code-figure] pre {
+  overflow-x: auto;
+  padding: 1rem 0;
+  font-size: 0.845rem;
+  line-height: 1.65;
+  background: transparent !important;
+}
+
+[data-rehype-pretty-code-figure] code {
+  display: grid;
+  font-family: var(--font-mono);
+  counter-reset: line;
+  background: transparent !important;
+}
+
+[data-rehype-pretty-code-figure] code[data-line-numbers] > .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 1.6rem;
+  margin-right: 1.1rem;
+  text-align: right;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+
+[data-rehype-pretty-code-figure] .line {
+  padding: 0 1.1rem;
+  border-left: 2px solid transparent;
+}
+
+[data-rehype-pretty-code-figure] .line--highlighted {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  border-left-color: var(--accent);
+}
+
+/* Shiki dual-theme: light tokens by default, dark tokens under the dark stamp */
+:root[data-theme='dark'] [data-rehype-pretty-code-figure] span[data-line] span {
+  color: var(--shiki-dark, inherit) !important;
+}
+
+/* ============================================================================
+   Utilities
+   ========================================================================= */
+
+.hairline {
+  border: 1px solid var(--border-hairline);
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border-hairline);
+  border-radius: 12px;
+}
+
+/* Wide content (tables, diagrams) scrolls within its own container */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom scrollbars, matched to the surface */
+.thin-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--baseline);
+  border-radius: 4px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Focus ring — visible for keyboard users on every interactive control */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}

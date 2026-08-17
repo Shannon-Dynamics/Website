@@ -1,0 +1,1316 @@
+---
+title: Probabilistic Motion Models
+description: Where the motion model actually comes from — velocity and odometry kinematics made probabilistic, the banana-shaped cloud they produce, and why that banana is an ordinary Gaussian drawn in the wrong coordinates.
+chapter: 9
+part: PART III
+partTitle: Probabilistic Models
+difficulty: Intermediate
+readingTime: 55 min
+quote: In practice, the exact shape of the model often seems to be less important than the fact that some provisions for uncertain outcomes are provided in the first place.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 5
+---
+
+import { BananaMachine } from '@/components/ch/ch09/banana-machine';
+import { ArcAnatomy } from '@/components/ch/ch09/arc-anatomy';
+import { OdometryDecomposer } from '@/components/ch/ch09/odometry-decomposer';
+import { MapSqueeze } from '@/components/ch/ch09/map-squeeze';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write down p(x_t | u_t, x_{t-1}) for a differential drive, from velocity commands and from wheel odometry',
+    'Derive the exact arc update from the instantaneous centre of curvature, including its straight-line limit',
+    'Invert the motion to evaluate the closed-form density, and say what the inversion quietly throws away',
+    'Explain what each of the six α parameters does to the shape of the predicted cloud',
+    'State and use the result that the banana distribution is exactly Gaussian in exponential coordinates',
+    'Propagate a tangent-space covariance over many steps with the adjoint, and know when that first-order propagation stops being honest',
+  ]}
+  prerequisites={[
+    'SE(2), exp/log, and ⊞/⊟ (Chapter 3)',
+    "Rusty's differential drive and wheel encoders (Chapter 4)",
+    'The Bayes filter prediction step (Chapter 5)',
+    'Linearization and Jacobians (Chapter 7)',
+    'Sampling and particle sets (Chapter 8)',
+  ]}
+>
+Every filter in [Part II](/chapters/ch05-bayes-filter) consumed a motion model as a black box.
+The prediction step integrates against $p(x_t \mid u_t, x_{t-1})$; the Kalman filter needs its
+Jacobian; the particle filter needs to draw from it. Nobody said where it comes from. This chapter
+opens the box.
+
+The story has a shape, and the shape is a banana. Command Rusty to drive a gentle one-second arc,
+run that same command a thousand times, and the cloud of final poses is not a tidy ellipse. It is
+curved and lopsided, because a small rotational error early in the motion is multiplied by every
+metre of translation that follows. That curve is not a rendering artifact and it is not something
+better hardware would fix. It is what motion uncertainty on a pose manifold actually looks like.
+
+The modern punchline is that the banana is tame. Describe the same distribution in exponential
+coordinates — the twist that takes the robot from where it was to where it is — and it becomes an
+ordinary Gaussian, with a mean and a covariance and nothing curved about it. The banana was never
+the distribution's fault. It was the coordinates'.
+</Overview>
+
+## The problem: one command, a thousand outcomes
+
+Rusty is standing still. We send exactly one instruction: *drive at 1 m/s while turning at
+0.5 rad/s, for one second*. The kinematics say where that puts him, to ten decimal places.
+
+Now send the same instruction a thousand times, from the same starting pose, on the same floor.
+
+<Deferred>
+  <BananaMachine />
+</Deferred>
+
+Three things in that cloud are worth naming before we do any algebra, because each one becomes a
+piece of the mathematics below.
+
+**The cloud is bent.** Not "roughly elliptical with a bit of skew" — genuinely crescent-shaped, with
+a concave side and a convex side. The reason is mechanical: a sample that turned slightly harder
+than commanded spends the whole second driving in a slightly tighter circle, so its heading error
+and its lateral position error are the same error, seen twice. That coupling is a *product*, not a
+sum, and products bend distributions.
+
+**The ellipse is a lie, and it lies in a specific direction.** Moment-match a Gaussian to that
+cloud in $(x, y)$ and its $2\sigma$ contour bulges off the outside of the bend into a region no
+execution ever visited, while cutting the corner on the inside. An [EKF](/chapters/ch07-ekf-ukf-manifolds)
+carries exactly that ellipse. The readout under the widget is the number that proves it: the
+skewness of the cross-track residual is exactly zero for any Gaussian in $(x, y)$, and for the
+default command it settles around $-0.4$.
+
+**Each noise parameter bends it differently.** $\alpha_4$ fans the arc open. $\alpha_1$ smears the
+cloud along the arc without changing its curvature. $\alpha_6$ blurs the headings and moves no
+positions at all. Six numbers, six distinguishable effects — which is why tuning them is a skill
+and not a shrug.
+
+<KeyIdea title="What a motion model is for">
+A motion model is a generative story: *the robot intended $u_t$, the world corrupted it, and here
+is the distribution over where it ended up.* Everything in this chapter is a choice about where in
+that story to inject the noise — into the commanded velocities, into the odometry legs, or into
+the twist itself — and each choice produces a different, checkable density.
+</KeyIdea>
+
+## Building intuition
+
+### Two models, because there are two kinds of question
+
+The book uses two motion models and they are not interchangeable.
+
+The **velocity model** answers *what will happen if I do this?* Its control is the command
+$u_t = (v\ \ \omega)\T$ that was sent to the motors. It is available before the motion happens,
+which is what makes it the model that planning and control use — [Chapter 23](/chapters/ch23-mppi)
+rolls out thousands of imagined futures with it, and none of those futures have odometry.
+
+The **odometry model** answers *where did I end up?* Its control is a pair of poses read out of the
+wheel encoders, $u_t = (\bar{x}_{t-1}\ \ \bar{x}_t)$. It is only available afterwards, and it is
+strictly more accurate, because wheels measure what actually turned rather than what was asked for.
+That is why every deployed localizer — [MCL](/chapters/ch12-localization-global) included, and
+AMCL in ROS 2 to this day — runs on the odometry model.
+
+<Callout type="info">
+The bar in $\bar{x}_t$ matters. Those are poses in the robot's own internal odometry frame, which
+drifts freely with respect to the map. Only their *difference* is used. The model never assumes
+the odometry frame and the world frame agree, and if you ever find yourself comparing $\bar{x}_t$
+to $x_t$ directly, something has gone wrong.
+</Callout>
+
+### Where noise gets injected
+
+The deterministic kinematics of [Chapter 4](/chapters/ch04-rusty-and-sensors) are a function:
+command in, pose out. To make it probabilistic you have to corrupt something, and the whole
+character of the resulting distribution depends on what you corrupt.
+
+You could add noise to the output pose — $x_t = f(u_t, x_{t-1}) + \varepsilon$ — and that is what
+"additive Gaussian process noise" means in a textbook Kalman filter. It gives an ellipse. It also
+says a robot commanded to move 5 cm has the same positional uncertainty as one commanded to cross
+the room, which is plainly false.
+
+Thrun's models corrupt the *input* instead. The noise enters the controls, and then the exact
+nonlinear kinematics carry it forward. That single decision buys three things at once: the
+uncertainty scales with the size of the commanded motion, it stays inside the set of poses the
+robot can physically reach, and it bends — because the kinematics bend.
+
+## The mathematics
+
+### Probabilistic kinematics
+
+<NotationTable
+  rows={[
+    { sym: 'u_t = (v\\ \\ \\omega)^{\\mathsf{T}}', meaning: 'Velocity control: translational and rotational velocity, held constant over Δt.' },
+    { sym: '\\Delta t', meaning: 'Length of the control interval, in seconds.' },
+    { sym: '\\varepsilon_{b^2}', meaning: 'A zero-mean random variate of variance b² — normal or triangular.' },
+    { sym: '\\alpha_1 \\ldots \\alpha_6', meaning: 'Motion-noise parameters. Variance coefficients, not standard deviations.' },
+    { sym: '\\hat{v},\\ \\hat{\\omega},\\ \\hat{\\gamma}', meaning: 'The perturbed velocities actually executed, plus a final-rotation slack γ̂.' },
+    { sym: '\\delta_{rot1},\\ \\delta_{trans},\\ \\delta_{rot2}', meaning: 'The odometry decomposition: rotate, drive, rotate.' },
+    { sym: '\\bar{x}_{t-1},\\ \\bar{x}_t', meaning: "Odometry poses, in the robot's own drifting internal frame." },
+    { sym: '\\tau_t \\in \\mathfrak{se}(2)', meaning: 'The twist a command asks for: τ = (vΔt, 0, ωΔt)ᵀ.' },
+    { sym: 'R_u', meaning: 'Motion-noise covariance expressed in the tangent space. An R, not a Q (Chapter 6).' },
+    { sym: '\\xi = x_t \\boxminus x_{t-1}', meaning: 'Exponential coordinates of the executed motion: log(x⁻¹ x′).' },
+  ]}
+/>
+
+The **motion model**, also called the probabilistic kinematic model, is the conditional density
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{p(x_t \mid u_t,\, x_{t-1})}
+$$
+</LinkedMath>
+
+over poses $x_t = (x\ \ y\ \ \theta)\T \in \SEtwo$. It is the integrand of the Bayes-filter
+prediction step, and that is its entire job: given a distribution over where the robot was, produce
+one over where it is.
+
+Two assumptions are built in and neither is free. First, the control is held **constant** over the
+interval — the model knows nothing about acceleration profiles or the fact that the wheels ramp up.
+Second, consecutive motion errors are **independent** given the poses; a systematically
+miscalibrated wheel radius violates that, and the correlated error it produces is exactly the
+Markov failure [Chapter 5](/chapters/ch05-bayes-filter) warned about.
+
+### The velocity motion model
+
+Noise enters through the commanded velocities. Thrun's model perturbs both, and then adds a third
+term that will need explaining:
+
+<LinkedMath>
+$$
+\hat{v} = \htmlClass{term-prior}{v} + \htmlClass{term-prediction}{\varepsilon_{\alpha_1 v^2 + \alpha_2 \omega^2}}
+\qquad
+\hat{\omega} = \htmlClass{term-prior}{\omega} + \htmlClass{term-prediction}{\varepsilon_{\alpha_3 v^2 + \alpha_4 \omega^2}}
+\qquad
+\hat{\gamma} = \phantom{\omega +{}} \htmlClass{term-prediction}{\varepsilon_{\alpha_5 v^2 + \alpha_6 \omega^2}}
+$$
+</LinkedMath>
+
+Read the subscripts as a design statement. Every variance is a weighted sum of $v^2$ and
+$\omega^2$: **noise is proportional to motion**. A stationary robot has no motion noise at all,
+which is both physically right and numerically convenient, since it keeps a parked robot's belief
+from diffusing away overnight.
+
+The $\hat{\gamma}$ term is the one students ask about. The controls have two degrees of freedom;
+poses have three. Without a third noise source the model's support would be a two-dimensional
+surface embedded in three-dimensional pose space, and a particle filter built on it could never
+represent "I am here, but I might be facing slightly differently." $\hat{\gamma}$ is a final
+rotation applied at the end of the arc, purely to restore full rank. It is a modelling hack, it is
+honest about being one, and every implementation keeps it.
+
+Given the perturbed controls, the pose is propagated *exactly*.
+
+<Derivation title="The exact arc update, from the instantaneous centre of curvature" result="x' = x − (v/ω) sin θ + (v/ω) sin(θ+ωΔt)">
+**Step 1 — constant controls trace a circle.** With $\hat{v}$ and $\hat{\omega}$ held fixed, the
+robot's speed along its path is constant and its heading rate is constant, so the path has constant
+curvature $\hat{\omega}/\hat{v}$. That is a circular arc of radius
+
+$$
+r = \frac{\hat{v}}{\hat{\omega}}
+$$
+
+**Step 2 — locate the centre.** A rolling wheelset cannot slip sideways, so the velocity is always
+along the heading, and the centre of the circle must be perpendicular to it. Signed radius $r$ to
+the *left* of the heading puts the instantaneous centre of curvature at
+
+$$
+\text{ICC} = \Big(x - r\sin\theta,\;\; y + r\cos\theta\Big)
+$$
+
+Check the sign: for $\theta = 0$ and $\omega > 0$ the robot turns left, and the ICC sits at
+$(x,\ y + r)$, directly to its left. Good.
+
+**Step 3 — rotate the pose about the ICC.** Over $\Delta t$ the robot sweeps $\Delta\theta =
+\hat{\omega}\Delta t$ radians around that point. Rotating the position by $\Delta\theta$ about the
+ICC and adding $\Delta\theta$ to the heading gives
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{x'} = x - \frac{\hat{v}}{\hat{\omega}}\sin\theta + \frac{\hat{v}}{\hat{\omega}}\sin(\theta + \hat{\omega}\Delta t)
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{y'} = y + \frac{\hat{v}}{\hat{\omega}}\cos\theta - \frac{\hat{v}}{\hat{\omega}}\cos(\theta + \hat{\omega}\Delta t)
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\theta'} = \theta + \hat{\omega}\Delta t + \hat{\gamma}\Delta t
+$$
+</LinkedMath>
+
+**Step 4 — the straight-line limit.** As $\hat{\omega} \to 0$ the radius diverges and both position
+terms are $\infty \cdot 0$. Expand: $\sin(\theta + \hat\omega\Delta t) - \sin\theta =
+\hat\omega\Delta t\cos\theta - \tfrac{1}{2}(\hat\omega\Delta t)^2\sin\theta + O(\hat\omega^3)$, so
+
+$$
+\frac{\hat v}{\hat\omega}\big[\sin(\theta + \hat\omega\Delta t) - \sin\theta\big]
+= \hat v\Delta t\cos\theta - \tfrac{1}{2}\hat v \hat\omega \Delta t^2 \sin\theta + O(\hat\omega^2)
+\;\longrightarrow\; \hat{v}\Delta t\cos\theta
+$$
+
+and likewise $y' \to y + \hat{v}\Delta t\sin\theta$. The limit exists and is the obvious one.
+
+**Step 5 — the branch a real implementation needs.** The limit existing is not the same as the
+formula being computable. Near $\hat\omega = 0$ the code subtracts two nearly equal sines — losing
+digits to cancellation — and then multiplies the remainder by a radius of order $\hat v/\hat\omega$,
+which amplifies whatever error survived. The two error sources run in opposite directions:
+
+$$
+\underbrace{\varepsilon_{\text{mach}}\,\frac{\hat v}{\lvert\hat\omega\rvert}}_{\text{arc form}}
+\qquad\text{versus}\qquad
+\underbrace{\tfrac{1}{2}\hat v\,\lvert\hat\omega\rvert\,\Delta t^2}_{\text{straight-line form}}
+$$
+
+They cross at $\lvert\hat\omega\rvert = \sqrt{2\varepsilon_{\text{mach}}}/\Delta t \approx
+2\times 10^{-8}/\Delta t$ rad/s. The threshold this book's code uses, $10^{-6}$ rad/s, is two
+decades above that: deliberately conservative, and costing at most half a micrometre of position
+per second of driving at the switch point. Both the Rust and the TypeScript implementations branch
+there, and a unit test pins the two branches against each other across the crossover.
+$\blacksquare$
+</Derivation>
+
+Sampling is now trivial: draw three noise terms, push them through the arc. This is Thrun's
+Table 5.3. Its odometry twin, two sections down, is the single most-executed function in this book:
+every particle of every [MCL](/chapters/ch12-localization-global) run calls it once per step.
+
+<Algorithm
+  name="sample_motion_model_velocity(u_t, x_{t-1})"
+  inputs="control (v, ω), previous pose (x, y, θ)"
+  outputs="a pose x_t drawn from p(x_t | u_t, x_{t-1})"
+  complexity="O(1) — three normal draws and a handful of transcendentals"
+>
+1. $\hat{v} = v + \mathbf{sample}(\alpha_1 v^2 + \alpha_2\omega^2)$
+2. $\hat{\omega} = \omega + \mathbf{sample}(\alpha_3 v^2 + \alpha_4\omega^2)$
+3. $\hat{\gamma} = \phantom{\omega +\ } \mathbf{sample}(\alpha_5 v^2 + \alpha_6\omega^2)$
+4. $x' = x - \frac{\hat{v}}{\hat{\omega}}\sin\theta + \frac{\hat{v}}{\hat{\omega}}\sin(\theta + \hat{\omega}\Delta t)$
+5. $y' = y + \frac{\hat{v}}{\hat{\omega}}\cos\theta - \frac{\hat{v}}{\hat{\omega}}\cos(\theta + \hat{\omega}\Delta t)$
+6. $\theta' = \theta + \hat{\omega}\Delta t + \hat{\gamma}\Delta t$
+7. return $x_t = (x'\ \ y'\ \ \theta')\T$
+</Algorithm>
+
+$\mathbf{sample}(b^2)$ draws from a zero-mean distribution of **variance** $b^2$ — the argument is
+a variance, not a standard deviation, and mixing that up is the most common bug in a first
+implementation. Thrun offers two flavours: normal, and triangular (which has bounded support, so
+it can never produce an absurd outlier). He also gives a normal sampler built from twelve uniforms,
+which was a sensible trick in 1999 and is now a historical footnote: `rand_distr::Normal` uses the
+Ziggurat algorithm and is both exact and faster.
+
+### Inverting the motion
+
+A particle filter only ever samples. A histogram filter, an EKF innovation test, or any hypothesis
+scoring needs the density itself: given a *specific* $x_t$, how likely was it?
+
+The trick is that the map from noise to pose is invertible. There is exactly one circular arc that
+leaves $x_{t-1}$ tangentially and passes through the position of $x_t$; find it, read off the
+$(\hat{v}, \hat{\omega})$ it implies, and evaluate the noise densities there.
+
+<Deferred>
+  <ArcAnatomy />
+</Deferred>
+
+<Derivation title="Recovering (v̂, ω̂, γ̂) from a pose pair" result="μ = ½ · [(x−x′)cos θ + (y−y′)sin θ] / [(y−y′)cos θ − (x−x′)sin θ]">
+**Step 1 — two constraints on the centre.** The arc passes through $(x, y)$ and $(x', y')$, so its
+centre $(x^*, y^*)$ lies on the perpendicular bisector of that segment. It must also be
+perpendicular to the initial heading, so it lies on the line through $(x, y)$ with direction
+$(-\sin\theta,\ \cos\theta)$. Two lines, one intersection.
+
+**Step 2 — parameterize the bisector.** Write the centre as the midpoint plus a multiple of the
+segment's normal:
+
+$$
+(x^*,\ y^*) = \tfrac{1}{2}\big(x + x',\ \ y + y'\big) + \mu\,\big(y - y',\ \ x' - x\big)
+$$
+
+for an unknown scalar $\mu$. Any $\mu$ satisfies the bisector constraint.
+
+**Step 3 — impose perpendicularity to the heading.** Requiring
+$\big((x, y) - (x^*, y^*)\big) \cdot (\cos\theta,\ \sin\theta) = 0$ and solving for $\mu$ gives
+
+$$
+\mu = \frac{1}{2}\,\frac{(x - x')\cos\theta + (y - y')\sin\theta}{(y - y')\cos\theta - (x - x')\sin\theta}
+$$
+
+**Step 4 — read off the motion.** With the centre known, $r^* = \lVert (x,y) - (x^*,y^*)\rVert$ and
+the swept angle is the difference of two `atan2` bearings from the centre, wrapped to $(-\pi, \pi]$:
+
+$$
+\Delta\theta = \operatorname{atan2}(y' - y^*,\; x' - x^*) - \operatorname{atan2}(y - y^*,\; x - x^*)
+$$
+
+$$
+\hat{\omega} = \frac{\Delta\theta}{\Delta t}, \qquad
+\hat{v} = \frac{\Delta\theta}{\Delta t}\, r^*, \qquad
+\hat{\gamma} = \frac{\theta' - \theta}{\Delta t} - \hat{\omega}
+$$
+
+The arc matched the two positions and the *initial* heading. It said nothing about the final
+heading, so whatever mismatch remains is charged to $\hat\gamma$ — which is the reason
+$\hat\gamma$ was introduced in the first place. The wrap to $(-\pi, \pi]$ means the model assumes
+$\lvert\omega\Delta t\rvert < \pi$ over a single step; at 10 Hz that is a 31 rad/s spin, so it is a
+safe assumption and a real one.
+
+**Step 5 — the degenerate cases.** The denominator vanishes when the displacement is parallel to
+the heading: the centre is at infinity, the arc is a line, and the code takes the limit directly
+rather than dividing by $\approx 0$. When $x_t = x_{t-1}$ exactly, *every* arc works and $\mu$ is
+genuinely undefined; the model has nothing to say about a robot that did not move.
+
+**Step 6 — the debt nobody pays.** Steps 1–4 are a change of variables
+$(\hat v, \hat\omega, \hat\gamma) \mapsto x_t$, so the density over poses is the density over
+control errors *times the Jacobian determinant of the inverse map*. Table 5.1 evaluates the three
+noise densities and stops. The missing factor is a function of $x_t$, so it does not cancel into
+the normalizer $\eta$, and the closed form is therefore not exactly the density of the Table 5.3
+sampler — they differ by a few percent in total variation for realistic noise. We implement the
+table verbatim anyway, because in its actual job — a smooth, correctly-peaked scoring function for
+nearby hypotheses — the discrepancy is invisible, and because a reader checking this book against
+Thrun should find the same code. But the honest statement is that `motion_model_velocity` is a
+*scoring function*, not the normalized density of `sample_motion_model_velocity`. The on-manifold
+model at the end of this chapter has no such debt. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="motion_model_velocity(x_t, u_t, x_{t-1})"
+  inputs="hypothesised pose x_t, control (v, ω), previous pose x_{t-1}"
+  outputs="p(x_t | u_t, x_{t-1}), up to the change-of-variables factor"
+  complexity="O(1)"
+>
+1. $\mu = \frac{1}{2}\dfrac{(x - x')\cos\theta + (y - y')\sin\theta}{(y - y')\cos\theta - (x - x')\sin\theta}$
+2. $x^* = \frac{x + x'}{2} + \mu(y - y')$
+3. $y^* = \frac{y + y'}{2} + \mu(x' - x)$
+4. $r^* = \sqrt{(x - x^*)^2 + (y - y^*)^2}$
+5. $\Delta\theta = \operatorname{atan2}(y' - y^*, x' - x^*) - \operatorname{atan2}(y - y^*, x - x^*)$
+6. $\hat{v} = \frac{\Delta\theta}{\Delta t} r^*$
+7. $\hat{\omega} = \frac{\Delta\theta}{\Delta t}$
+8. $\hat{\gamma} = \frac{\theta' - \theta}{\Delta t} - \hat{\omega}$
+9. return $\mathbf{prob}(v - \hat{v},\ \alpha_1 v^2 + \alpha_2\omega^2)\cdot\mathbf{prob}(\omega - \hat{\omega},\ \alpha_3 v^2 + \alpha_4\omega^2)\cdot\mathbf{prob}(\hat{\gamma},\ \alpha_5 v^2 + \alpha_6\omega^2)$
+</Algorithm>
+
+### The odometry motion model
+
+Wheel encoders do not report velocities; they report that the robot's internal pose estimate moved
+from $\bar{x}_{t-1} = (\bar{x}\ \ \bar{y}\ \ \bar{\theta})\T$ to
+$\bar{x}_t = (\bar{x}'\ \ \bar{y}'\ \ \bar{\theta}')\T$. Any such change decomposes uniquely into
+*rotate, drive, rotate*:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\delta_{rot1}} = \operatorname{atan2}(\bar{y}' - \bar{y},\ \bar{x}' - \bar{x}) - \bar{\theta},
+\qquad
+\htmlClass{term-prediction}{\delta_{trans}} = \sqrt{(\bar{x}' - \bar{x})^2 + (\bar{y}' - \bar{y})^2},
+\qquad
+\htmlClass{term-prediction}{\delta_{rot2}} = \bar{\theta}' - \bar{\theta} - \delta_{rot1}
+$$
+</LinkedMath>
+
+Three numbers reach any pose change from any starting pose, so nothing is lost — except when
+$\delta_{trans} = 0$, where $\delta_{rot1}$ is the `atan2` of nothing and the split between the two
+rotations is arbitrary. A pure in-place spin is a very common command, so the implementation
+special-cases it and charges the whole rotation to $\delta_{rot2}$.
+
+The model's real content is what it does next: it treats the three legs as **independently** noisy.
+
+$$
+\hat{\delta}_{rot1} = \delta_{rot1} - \varepsilon_{\alpha_1\delta_{rot1}^2 + \alpha_2\delta_{trans}^2},
+\quad
+\hat{\delta}_{trans} = \delta_{trans} - \varepsilon_{\alpha_3\delta_{trans}^2 + \alpha_4(\delta_{rot1}^2 + \delta_{rot2}^2)},
+\quad
+\hat{\delta}_{rot2} = \delta_{rot2} - \varepsilon_{\alpha_1\delta_{rot2}^2 + \alpha_2\delta_{trans}^2}
+$$
+
+Note the $\alpha$ bookkeeping, which is not arbitrary. The two rotations share $(\alpha_1,
+\alpha_2)$ because they are the *same physical process* — the same wheels, the same slip. Rotation
+noise grows with translation ($\alpha_2$) because a wheel that slips while driving also mis-reports
+heading. Translation noise grows with rotation ($\alpha_4$) for the mirror-image reason. Four
+parameters, not six, because there is no rank deficiency to patch: three noisy legs already span
+three degrees of freedom, so the odometry model needs no $\hat\gamma$.
+
+This is a deliberate fiction. Real wheel slip correlates the legs — a carpet edge that steals
+distance also steals heading, at the same instant. The model says otherwise, and it works anyway,
+mostly because the fiction is *conservative*: independent noises produce a wider cloud than
+correlated ones of the same marginal size, and a filter that is slightly too uncertain survives
+where an overconfident one dies.
+
+<Deferred>
+  <OdometryDecomposer />
+</Deferred>
+
+<Algorithm
+  name="sample_motion_model_odometry(u_t, x_{t-1})"
+  inputs="odometry pair (x̄_{t-1}, x̄_t), previous pose x_{t-1}"
+  outputs="a pose x_t drawn from p(x_t | u_t, x_{t-1})"
+  complexity="O(1) — three normal draws; this is MCL's inner loop"
+>
+1. $\delta_{rot1} = \operatorname{atan2}(\bar{y}' - \bar{y},\ \bar{x}' - \bar{x}) - \bar{\theta}$
+2. $\delta_{trans} = \sqrt{(\bar{x}' - \bar{x})^2 + (\bar{y}' - \bar{y})^2}$
+3. $\delta_{rot2} = \bar{\theta}' - \bar{\theta} - \delta_{rot1}$
+4. $\hat{\delta}_{rot1} = \delta_{rot1} - \mathbf{sample}(\alpha_1\delta_{rot1}^2 + \alpha_2\delta_{trans}^2)$
+5. $\hat{\delta}_{trans} = \delta_{trans} - \mathbf{sample}(\alpha_3\delta_{trans}^2 + \alpha_4(\delta_{rot1}^2 + \delta_{rot2}^2))$
+6. $\hat{\delta}_{rot2} = \delta_{rot2} - \mathbf{sample}(\alpha_1\delta_{rot2}^2 + \alpha_2\delta_{trans}^2)$
+7. $x' = x + \hat{\delta}_{trans}\cos(\theta + \hat{\delta}_{rot1})$
+8. $y' = y + \hat{\delta}_{trans}\sin(\theta + \hat{\delta}_{rot1})$
+9. $\theta' = \theta + \hat{\delta}_{rot1} + \hat{\delta}_{rot2}$
+10. return $x_t = (x'\ \ y'\ \ \theta')\T$
+</Algorithm>
+
+The closed form, `motion_model_odometry` (Table 5.5), follows the same invert-then-evaluate pattern:
+decompose the *hypothesised* motion $x_{t-1} \to x_t$ into its own
+$(\hat\delta_{rot1}, \hat\delta_{trans}, \hat\delta_{rot2})$, and ask how likely the noise was to
+turn the measured legs into those. It carries the same unpaid Jacobian — for the odometry model the
+missing factor is exactly $1/\hat\delta_{trans}$, which is small consolation and easy to restore if
+you want the two to agree to Monte Carlo error.
+
+### Motion and maps
+
+The models so far know nothing about walls. Given enough noise, `sample_motion_model_velocity` will
+cheerfully place Rusty inside a load-bearing column. If a map $m$ is available, conditioning on it
+is a free improvement:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x_t \mid u_t, x_{t-1}, m)}
+= \eta\;\htmlClass{term-measurement}{p(x_t \mid m)}\;\htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1})}
+$$
+</LinkedMath>
+
+with $p(x_t \mid m)$ taken to be uniform over free space and zero inside obstacles. Sampling is
+rejection sampling: draw from the map-free model, keep the draw if it landed somewhere legal,
+repeat. Expected cost is $1/p_{\text{acc}}$ draws — cheap in a corridor, unbounded if the robot is
+wedged.
+
+<Algorithm
+  name="sample_motion_model_with_map(u_t, x_{t-1}, m)"
+  inputs="control, previous pose, map"
+  outputs="a pose drawn from the map-conditioned model"
+  complexity="O(1 / p_acc) expected draws — bound it, or an animation frame will hang"
+>
+1. **repeat**
+2. &nbsp;&nbsp;&nbsp;&nbsp;$x_t = \mathbf{sample\_motion\_model}(u_t, x_{t-1})$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\pi = p(x_t \mid m)$
+4. **until** $\pi > 0$
+5. return $x_t$
+</Algorithm>
+
+The approximation is hiding in line 3, and it is worth being blunt about it. $p(x_t \mid m)$ is a
+function of a *pose*. It can only ask whether the robot's final resting place is legal. It cannot
+ask whether the robot got there legally, because the path is not one of its arguments.
+
+<Deferred>
+  <MapSqueeze />
+</Deferred>
+
+Point Rusty at a wall he cannot pass and four out of five accepted samples will be on the far side
+of it. That is not an implementation bug; it is the exact content of the factorization above. The
+fix is to test the whole arc — the geodesic from $x_{t-1}$ to $x_t$ — against the map, which is
+what the ringed samples in the widget are computed with. It costs a handful of segment-intersection
+tests per sample, it is what a modern collision-aware sampler does with `parry2d`, and it is why the
+`MapConditioned` wrapper in `crates/motion/src/map_cond.rs` returns both verdicts rather than one.
+
+### The banana is a Gaussian
+
+Everything so far is 2005 material. Here is what changed.
+
+Write the noise-free arc update as a group operation instead of three trigonometric formulas. From
+[Chapter 3](/chapters/ch03-geometry-of-motion), the exponential map on $\SEtwo$ takes a twist
+$\tau = (v_x\ \ v_y\ \ \omega)\T$ to a pose. Set $\tau_t = (v\Delta t,\ 0,\ \omega\Delta t)\T$ — drive
+forward, no sideways slip, turn — and compute $\exp(\tau_t)$:
+
+$$
+\exp\big(v\Delta t,\ \ 0,\ \ \omega\Delta t\big)
+\;=\;
+\Big(\tfrac{\sin(\omega\Delta t)}{\omega\Delta t}\,v\Delta t,\ \
+\tfrac{1 - \cos(\omega\Delta t)}{\omega\Delta t}\,v\Delta t,\ \
+\omega\Delta t\Big)
+\;=\;
+\Big(\tfrac{v}{\omega}\sin(\omega\Delta t),\ \
+\tfrac{v}{\omega}\big(1 - \cos(\omega\Delta t)\big),\ \
+\omega\Delta t\Big)
+$$
+
+which is the arc update of the derivation above, written in the body frame. Not an approximation of
+it — the same three numbers. So
+
+<LinkedMath>
+$$
+\htmlClass{term-truth}{x_t = x_{t-1} \bplus \tau_t}
+$$
+</LinkedMath>
+
+is the exact noise-free kinematics, and the $\omega \to 0$ branch that cost us a page is already
+inside $\exp$'s Taylor series, where it belongs.
+
+Now put the noise back. The velocity model perturbs $v$ and $\omega$ *additively*, and $\tau_t$
+depends on them *linearly*. Therefore the sampled twist is
+
+<LinkedMath>
+$$
+\hat\tau_t = \tau_t + \mathbf{w},
+\qquad
+\mathbf{w} \sim \Normal(0,\, \htmlClass{term-prediction}{R_u}),
+\qquad
+R_u = \Delta t^2 \diag\!\big(\alpha_1 v^2 + \alpha_2\omega^2,\;\; 0,\;\; \alpha_3 v^2 + \alpha_4\omega^2\big)
+$$
+</LinkedMath>
+
+and the whole model collapses to one line:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{x_t = x_{t-1} \bplus (\tau_t + \mathbf{w})}
+$$
+</LinkedMath>
+
+<Derivation title="Why the banana is exactly Gaussian in exponential coordinates" result="ξ = x_t ⊟ x_{t-1} ~ N(τ_t, R_u), exactly, when α₅ = α₆ = 0">
+**Step 1 — anchor a chart at the start pose.** Define the coordinates
+
+$$
+\xi = x_t \bminus x_{t-1} = \log\!\big(x_{t-1}^{-1} x_t\big) \in \R^3
+$$
+
+This is a genuine chart: $\log$ is a diffeomorphism from a neighbourhood of the identity onto
+$\R^3$, and it is injective for $\lvert\theta\rvert < \pi$, which covers any single control step.
+Crucially the chart is anchored at $x_{t-1}$, which is *known* — not at the predicted mean, which
+would make it a local approximation.
+
+**Step 2 — the model is affine in these coordinates.** By the line above,
+$x_t = x_{t-1} \circ \exp(\tau_t + \mathbf{w})$, so $x_{t-1}^{-1}x_t = \exp(\tau_t + \mathbf{w})$
+and hence $\xi = \tau_t + \mathbf{w}$ identically. No linearization, no small-angle assumption.
+
+**Step 3 — conclude.** $\mathbf{w}$ is Gaussian, so $\xi \sim \Normal(\tau_t, R_u)$ **exactly**. The
+crescent in $(x, y)$ is the image of an ordinary ellipsoid under the smooth nonlinear map
+$\xi \mapsto x_{t-1}\circ\exp(\xi)$, projected onto two of three coordinates. Curvature of the
+picture, not of the distribution.
+
+**Step 4 — the caveats, stated plainly.**
+
+- $R_u$ has a zero in the middle: a differential drive cannot command lateral slip, so the noise is
+  rank 2 on a 3-dimensional group. That is the same rank deficiency $\hat\gamma$ was invented to
+  patch.
+- With $\alpha_5, \alpha_6 > 0$ the statement becomes approximate, because $\hat\gamma$ is applied
+  as a rotation *after* the arc: $x_t = x_{t-1}\circ\exp(\tau_t + \mathbf{w})\circ\exp(0,0,\hat\gamma\Delta t)$,
+  and $\exp(a)\exp(b) \neq \exp(a+b)$ on a non-commutative group. Folding
+  $\Delta t^2(\alpha_5 v^2 + \alpha_6\omega^2)$ into the $\omega\omega$ entry of $R_u$ recovers the
+  heading variance to three digits but leaks a little variance into the lateral coordinate that the
+  additive model says is exactly zero. Measured on 200 000 samples of the canonical example with
+  $\alpha_5 = \alpha_6 = 0.005$: predicted $R_u^{\,\omega\omega} = 0.03125$, measured $0.0312$; predicted
+  lateral variance $0$, measured $0.0016$.
+- Right versus left matters. We perturb in the *body* frame, $x \bplus \tau = x\circ\exp(\tau)$. The
+  left convention $\exp(\tau)\circ x$ describes noise in the world frame and gives a different (also
+  Gaussian) answer; the two are related by the adjoint. Mixing them is the most common way to get a
+  covariance rotated by $\theta$ and spend a week wondering why.
+- The odometry model does **not** have this property. Its three noises enter at three different
+  points of a rotate–drive–rotate composition, not additively in one tangent space, so its
+  exponential coordinates are only approximately Gaussian. Switch the Banana Machine to the
+  odometry model and watch the fitted contour fit slightly worse. $\blacksquare$
+</Derivation>
+
+This is the result Long, Wolfe, Mashner and Chirikjian published in 2012, and it is why
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds)'s error-state EKF and [Part V](/chapters/ch15-factor-graphs)'s
+factor graphs both keep their state on the manifold: they are working in the coordinates where the
+Gaussian assumption is true instead of merely tolerable.
+
+<Derivation title="Compounding: propagating R_u over many steps with the adjoint" result="Σ_k = A Σ_{k−1} Aᵀ + R_u,  A = Ad(exp(τ)⁻¹)">
+**Step 1 — separate mean and error.** Write each pose as its nominal value perturbed in the body
+frame: $x_k = \bar{x}_k \bplus \boldsymbol{\epsilon}_k$, with $\bar{x}_k = \bar{x}_{k-1}\circ\exp(\tau)$.
+
+**Step 2 — push the previous error through the new motion.**
+
+$$
+x_k = x_{k-1}\circ\exp(\tau + \mathbf{w}_k)
+\approx \bar{x}_{k-1}\exp(\boldsymbol{\epsilon}_{k-1})\exp(\tau)\exp(\mathbf{w}_k)
+$$
+
+Insert $\exp(\tau)\exp(-\tau)$ and use the defining property of the adjoint,
+$T\exp(\boldsymbol\epsilon)T^{-1} = \exp(\Ad_T\,\boldsymbol\epsilon)$:
+
+$$
+= \bar{x}_{k-1}\exp(\tau)\,\underbrace{\big[\exp(-\tau)\exp(\boldsymbol\epsilon_{k-1})\exp(\tau)\big]}_{\exp(\Ad_{\exp(\tau)^{-1}}\boldsymbol\epsilon_{k-1})}\exp(\mathbf{w}_k)
+$$
+
+**Step 3 — read off the recursion.** To first order the two tangent perturbations add, so
+$\boldsymbol\epsilon_k \approx A\,\boldsymbol\epsilon_{k-1} + \mathbf{w}_k$ with
+$A = \Ad_{\exp(\tau)^{-1}}$, and therefore
+
+$$
+\Sigma_k = A\,\Sigma_{k-1}A\T + R_u
+$$
+
+That is the Kalman prediction equation with the adjoint playing the role of the motion Jacobian
+$G_t$ — which is exactly what it is, for a state that lives on a group.
+
+**Step 4 — where first order stops being enough.** The approximation dropped the
+Baker–Campbell–Hausdorff commutator $\tfrac12[\boldsymbol\epsilon, \mathbf{w}]$, whose neglected
+contribution grows with the heading spread. Twenty steps of the canonical command at
+$\Delta t = 0.2$ s, with $\alpha_5 = \alpha_6 = 0.005$ so that $R_u$ has full rank — four seconds
+of driving, two radians of turn — leave the recursion under-reporting the along-track variance by
+6% and the heading variance by 0.2%, measured against 80 000 Monte Carlo rollouts. Barfoot and Furgale's fourth-order correction closes most of that gap;
+before you reach for it, check whether your $R_u$ is known to better than 6% in the first place.
+$\blacksquare$
+</Derivation>
+
+## Implementation in Rust
+
+The `motion` crate is small on purpose. It is imported unchanged by
+[Chapter 11](/chapters/ch11-localization-gaussian), [Chapter 12](/chapters/ch12-localization-global),
+[Chapter 17](/chapters/ch17-fastslam) and [Chapter 23](/chapters/ch23-mppi), so every line in it is
+load-bearing.
+
+```rust title="crates/motion/src/lib.rs"
+use nalgebra::{Matrix3, Vector3};
+use pr_core::geom::se2::SE2; // Chapter 3: exp / log / boxplus / boxminus
+use rand::Rng;
+
+/// A velocity command held constant over an interval.
+#[derive(Clone, Copy, Debug)]
+pub struct VelocityCmd {
+    pub v: f64,
+    pub omega: f64,
+    pub dt: f64,
+}
+
+/// An odometry reading, already decomposed into rotate–drive–rotate.
+#[derive(Clone, Copy, Debug)]
+pub struct OdomDelta {
+    pub rot1: f64,
+    pub trans: f64,
+    pub rot2: f64,
+}
+
+/// The six α's of the velocity model. Newtyped because the *order* is load
+/// bearing and a bare `[f64; 6]` at a call site tells the reader nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct VelocityAlphas(pub [f64; 6]);
+
+/// The four α's of the odometry model.
+#[derive(Clone, Copy, Debug)]
+pub struct OdomAlphas(pub [f64; 4]);
+
+/// Thrun's `sample(b²)` and `prob(a, b²)` take a **variance**. Making that a
+/// type stops the single most common bug in a first implementation: handing
+/// them a standard deviation, and being wrong by a square root ever after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Variance(pub f64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoiseKind {
+    /// Exact, via the Ziggurat sampler in `rand_distr`.
+    Normal,
+    /// Bounded support at ±√6·b, so no sample is ever absurd (Table 5.4).
+    Triangular,
+}
+
+/// Every motion model in this book: a density and a sampler that must agree.
+///
+/// The associated `Control` is why this is a trait and not two free functions.
+/// A velocity model consumes a command that exists *before* the motion; an
+/// odometry model consumes a measurement that exists only after it. Nothing
+/// downstream should be able to confuse them, and here nothing can.
+pub trait MotionModel {
+    type Control: Copy;
+
+    /// p(x_t | u_t, x_{t-1}) — the scoring function of Tables 5.1 / 5.5.
+    fn prob(&self, x_next: &SE2, u: &Self::Control, x: &SE2) -> f64;
+
+    /// One draw from that distribution (Tables 5.3 / 5.6).
+    fn sample<R: Rng + ?Sized>(&self, u: &Self::Control, x: &SE2, rng: &mut R) -> SE2;
+
+    /// The tangent-space covariance this model induces, where it has one.
+    /// `None` for models whose noise is not additive in se(2) — the odometry
+    /// model, for instance.
+    fn tangent_cov(&self, _u: &Self::Control) -> Option<Matrix3<f64>> {
+        None
+    }
+}
+```
+
+The velocity model is the exact arc, with the noise applied to the controls and the straight-line
+branch spelled out.
+
+```rust title="crates/motion/src/velocity.rs" {29-38,52-58}
+use crate::{MotionModel, NoiseKind, VelocityAlphas, VelocityCmd, Variance};
+use nalgebra::{Matrix3, Vector3};
+use pr_core::geom::se2::{wrap_angle, SE2};
+use rand::Rng;
+
+pub struct VelocityModel {
+    pub alphas: VelocityAlphas,
+    pub noise: NoiseKind,
+}
+
+/// Below this |ω| the arc form subtracts two near-equal sines and multiplies the
+/// remainder by a radius of order v/ω, so cancellation error is amplified by the
+/// radius. The two error curves cross near √(2ε)/Δt ≈ 2e-8 rad/s; switching two
+/// decades earlier costs under a micrometre per step and keeps the branch well
+/// clear of the crossing, where neither form is comfortable.
+const STRAIGHT: f64 = 1e-6;
+
+impl VelocityModel {
+    fn variances(&self, u: &VelocityCmd) -> [Variance; 3] {
+        let [a1, a2, a3, a4, a5, a6] = self.alphas.0;
+        let (v2, w2) = (u.v * u.v, u.omega * u.omega);
+        [
+            Variance(a1 * v2 + a2 * w2),
+            Variance(a3 * v2 + a4 * w2),
+            Variance(a5 * v2 + a6 * w2),
+        ]
+    }
+}
+
+impl MotionModel for VelocityModel {
+    type Control = VelocityCmd;
+
+    fn sample<R: Rng + ?Sized>(&self, u: &VelocityCmd, x: &SE2, rng: &mut R) -> SE2 {
+        let [sv, sw, sg] = self.variances(u);
+        let v_hat = u.v + self.noise.sample(sv, rng);
+        let w_hat = u.omega + self.noise.sample(sw, rng);
+        let g_hat = self.noise.sample(sg, rng);
+
+        let theta = x.theta();
+        let next_theta = theta + w_hat * u.dt;
+        let (dx, dy) = if w_hat.abs() < STRAIGHT {
+            (v_hat * theta.cos() * u.dt, v_hat * theta.sin() * u.dt)
+        } else {
+            let r = v_hat / w_hat;
+            (
+                -r * theta.sin() + r * next_theta.sin(),
+                r * theta.cos() - r * next_theta.cos(),
+            )
+        };
+        // γ̂ is a rotation applied *after* the arc — it moves no position.
+        SE2::new(x.x() + dx, x.y() + dy, wrap_angle(next_theta + g_hat * u.dt))
+    }
+
+    fn prob(&self, x_next: &SE2, u: &VelocityCmd, x: &SE2) -> f64 {
+        let inv = invert_arc(x, x_next, u.dt);
+        let [sv, sw, sg] = self.variances(u);
+        self.noise.prob(u.v - inv.v_hat, sv)
+            * self.noise.prob(u.omega - inv.omega_hat, sw)
+            * self.noise.prob(inv.gamma_hat, sg)
+    }
+
+    /// R_u = Δt² · diag(α₁v² + α₂ω², 0, α₃v² + α₄ω²). The zero is the point:
+    /// a differential drive has no lateral degree of freedom to be noisy in.
+    fn tangent_cov(&self, u: &VelocityCmd) -> Option<Matrix3<f64>> {
+        let [sv, sw, _] = self.variances(u);
+        let dt2 = u.dt * u.dt;
+        Some(Matrix3::from_diagonal(&Vector3::new(dt2 * sv.0, 0.0, dt2 * sw.0)))
+    }
+}
+
+pub struct ArcInversion {
+    pub v_hat: f64,
+    pub omega_hat: f64,
+    pub gamma_hat: f64,
+}
+
+/// Table 5.1, lines 1–8: find the unique arc leaving `x` tangentially that
+/// reaches `x_next`'s position, and report the controls it implies.
+fn invert_arc(x: &SE2, x_next: &SE2, dt: f64) -> ArcInversion {
+    let (c, s) = (x.theta().cos(), x.theta().sin());
+    let (dx, dy) = (x.x() - x_next.x(), x.y() - x_next.y());
+    let numer = dx * c + dy * s;
+    let denom = dy * c - dx * s;
+
+    // Displacement parallel to the heading: the centre is at infinity.
+    if denom.abs() < 1e-9 {
+        return ArcInversion {
+            v_hat: -numer / dt,
+            omega_hat: 0.0,
+            gamma_hat: wrap_angle(x_next.theta() - x.theta()) / dt,
+        };
+    }
+
+    let mu = 0.5 * numer / denom;
+    let cx = 0.5 * (x.x() + x_next.x()) + mu * dy;
+    let cy = 0.5 * (x.y() + x_next.y()) - mu * dx;
+    let r_star = (x.x() - cx).hypot(x.y() - cy);
+    let d_theta = wrap_angle(
+        (x_next.y() - cy).atan2(x_next.x() - cx) - (x.y() - cy).atan2(x.x() - cx),
+    );
+    ArcInversion {
+        v_hat: d_theta / dt * r_star,
+        omega_hat: d_theta / dt,
+        gamma_hat: wrap_angle(x_next.theta() - x.theta()) / dt - d_theta / dt,
+    }
+}
+```
+
+The odometry model is shorter, because there is no arc to integrate — only a hinge, a drive and a
+hinge. This is the function that actually runs on robots.
+
+```rust title="crates/motion/src/odometry.rs"
+use crate::{MotionModel, NoiseKind, OdomAlphas, OdomDelta, Variance};
+use pr_core::geom::se2::{wrap_angle, SE2};
+use rand::Rng;
+
+pub struct OdometryModel {
+    pub alphas: OdomAlphas,
+    pub noise: NoiseKind,
+}
+
+impl OdomDelta {
+    /// Table 5.5, lines 2–4: decompose a relative odometry reading.
+    ///
+    /// A pure in-place spin has no direction of travel, so `atan2` would return
+    /// whatever the floating-point noise in two zeros happens to encode. We give
+    /// the whole rotation to `rot2` instead — otherwise a stationary turn, which
+    /// is a very common command, produces a nonsense first hinge and a noise
+    /// variance built from it.
+    pub fn from_poses(prev: &SE2, curr: &SE2) -> Self {
+        let (dx, dy) = (curr.x() - prev.x(), curr.y() - prev.y());
+        let trans = dx.hypot(dy);
+        if trans < 1e-9 {
+            return Self { rot1: 0.0, trans: 0.0, rot2: wrap_angle(curr.theta() - prev.theta()) };
+        }
+        let rot1 = wrap_angle(dy.atan2(dx) - prev.theta());
+        Self { rot1, trans, rot2: wrap_angle(curr.theta() - prev.theta() - rot1) }
+    }
+
+    /// Apply an exact (noise-free) decomposition to a pose.
+    pub fn apply(&self, x: &SE2) -> SE2 {
+        let heading = x.theta() + self.rot1;
+        SE2::new(
+            x.x() + self.trans * heading.cos(),
+            x.y() + self.trans * heading.sin(),
+            wrap_angle(heading + self.rot2),
+        )
+    }
+}
+
+impl MotionModel for OdometryModel {
+    /// The control *is* the decomposed reading. Callers build it with
+    /// `OdomDelta::from_poses(&odom_prev, &odom_now)` — never from map-frame
+    /// poses, which is the mistake that makes a localizer fight its own drift.
+    type Control = OdomDelta;
+
+    fn sample<R: Rng + ?Sized>(&self, u: &OdomDelta, x: &SE2, rng: &mut R) -> SE2 {
+        let [a1, a2, a3, a4] = self.alphas.0;
+        let (r1sq, r2sq, tsq) = (u.rot1 * u.rot1, u.rot2 * u.rot2, u.trans * u.trans);
+
+        // Note the minus signs: Table 5.6 *subtracts* the noise. For a symmetric
+        // distribution it makes no difference in law, and keeping it makes this
+        // diffable against the book.
+        let perturbed = OdomDelta {
+            rot1: u.rot1 - self.noise.sample(Variance(a1 * r1sq + a2 * tsq), rng),
+            trans: u.trans - self.noise.sample(Variance(a3 * tsq + a4 * (r1sq + r2sq)), rng),
+            rot2: u.rot2 - self.noise.sample(Variance(a1 * r2sq + a2 * tsq), rng),
+        };
+        perturbed.apply(x)
+    }
+
+    fn prob(&self, x_next: &SE2, u: &OdomDelta, x: &SE2) -> f64 {
+        let [a1, a2, a3, a4] = self.alphas.0;
+        let hat = OdomDelta::from_poses(x, x_next);
+        let (r1sq, r2sq, tsq) = (hat.rot1 * hat.rot1, hat.rot2 * hat.rot2, hat.trans * hat.trans);
+
+        self.noise.prob(wrap_angle(u.rot1 - hat.rot1), Variance(a1 * r1sq + a2 * tsq))
+            * self.noise.prob(u.trans - hat.trans, Variance(a3 * tsq + a4 * (r1sq + r2sq)))
+            * self.noise.prob(wrap_angle(u.rot2 - hat.rot2), Variance(a1 * r2sq + a2 * tsq))
+    }
+    // No `tangent_cov`: three noises entering at three points of a composition
+    // are not one additive perturbation in se(2). Saying so with `None` is more
+    // useful than returning an approximation a caller would trust.
+}
+```
+
+The on-manifold model is the same physics, written where it is linear. Compare the length.
+
+```rust title="crates/motion/src/se2_noise.rs"
+use crate::VelocityCmd;
+use nalgebra::{Cholesky, Matrix3, Vector3};
+use pr_core::geom::se2::SE2;
+use rand::Rng;
+use rand_distr::{Distribution, StandardNormal};
+
+/// Gaussian noise in se(2), pushed onto the group by ⊞.
+///
+/// `r` is an R and not a Q: motion noise, per the book-wide convention of
+/// Chapter 6. It is expressed in the **body** frame, matching the right
+/// perturbation x ⊞ τ = x · exp(τ) used everywhere in this book.
+pub struct TangentNoiseModel {
+    pub r: Matrix3<f64>,
+    chol: Cholesky<f64, nalgebra::U3>,
+}
+
+impl TangentNoiseModel {
+    pub fn new(r: Matrix3<f64>) -> Self {
+        // A rank-2 R (no lateral slip) is legitimate, so nudge the diagonal
+        // rather than refusing to factor it.
+        let padded = r + Matrix3::identity() * 1e-12;
+        let chol = Cholesky::new(padded).expect("R must be positive semi-definite");
+        Self { r, chol }
+    }
+
+    /// τ = (vΔt, 0, ωΔt): the twist whose exponential *is* the arc update.
+    pub fn twist(u: &VelocityCmd) -> Vector3<f64> {
+        Vector3::new(u.v * u.dt, 0.0, u.omega * u.dt)
+    }
+
+    pub fn sample<R: Rng + ?Sized>(&self, u: &VelocityCmd, x: &SE2, rng: &mut R) -> SE2 {
+        let z = Vector3::new(
+            StandardNormal.sample(rng),
+            StandardNormal.sample(rng),
+            StandardNormal.sample(rng),
+        );
+        x.boxplus(Self::twist(u) + self.chol.l() * z)
+    }
+
+    /// log p(x_t | u, x_{t-1}) — a plain 3-D Gaussian in ξ = x_t ⊟ x_{t-1}.
+    ///
+    /// No arc inversion, no unpaid change of variables: because the chart is
+    /// anchored at x_{t-1} rather than at the predicted mean, ξ = τ + w holds
+    /// identically and this really is the sampler's density.
+    pub fn log_prob(&self, x_next: &SE2, u: &VelocityCmd, x: &SE2) -> f64 {
+        let d = x_next.boxminus(x) - Self::twist(u);
+        let y = self.chol.l().solve_lower_triangular(&d).expect("L is nonsingular");
+        let log_det: f64 = self.chol.l().diagonal().iter().map(|l| 2.0 * l.ln()).sum();
+        -0.5 * (y.dot(&y) + log_det + 3.0 * (2.0 * std::f64::consts::PI).ln())
+    }
+
+    /// Σ_k = A Σ_{k-1} Aᵀ + R with A = Ad(exp(τ)⁻¹): the Kalman prediction
+    /// equation, with the adjoint standing in for the motion Jacobian.
+    pub fn compound(&self, sigma: &Matrix3<f64>, tau: &Vector3<f64>) -> Matrix3<f64> {
+        let a = SE2::exp(tau).inverse().adjoint();
+        a * sigma * a.transpose() + self.r
+    }
+}
+```
+
+### A worked example you can check by hand
+
+Start at the origin, $x_0 = (0,\ 0,\ 0)\T$. Command $v = 1$ m/s, $\omega = 0.5$ rad/s, for
+$\Delta t = 1$ s, with $\alpha_1 = \alpha_2 = \alpha_3 = \alpha_4 = 0.02$ and
+$\alpha_5 = \alpha_6 = 0$.
+
+**The nominal endpoint.** The radius is $r = v/\omega = 2$ m. With $\theta = 0$ the arc update gives
+
+$$
+x' = 2\sin(0.5) = 0.958851,\qquad
+y' = 2\big(1 - \cos(0.5)\big) = 0.244835,\qquad
+\theta' = 0.5
+$$
+
+**The same number, through $\exp$.** The commanded twist is $\tau = (1,\ 0,\ 0.5)\T$. Since
+$\sin(0.5)/0.5 = 0.958851$ and $(1 - \cos 0.5)/0.5 = 0.244835$, $\exp(\tau)$ is that triple exactly.
+The arc formula and the exponential map are the same function.
+
+**The tangent-space noise.** Both velocity variances are
+$\alpha_1 v^2 + \alpha_2\omega^2 = 0.02 + 0.02(0.25) = 0.025$, so with $\Delta t = 1$,
+
+$$
+R_u = \diag(0.025,\;\; 0,\;\; 0.025), \qquad \sigma = 0.158114
+$$
+
+**The Cartesian caricature.** Linearizing the arc update in $(v, \omega)$ at the nominal command
+gives the Jacobian columns
+
+$$
+\frac{\partial(x', y', \theta')}{\partial v} = (0.958851,\; 0.244835,\; 0)\T,
+\qquad
+\frac{\partial(x', y', \theta')}{\partial \omega} = (-0.162537,\; 0.469181,\; 1)\T
+$$
+
+and hence the covariance an EKF would carry:
+
+$$
+\Sigma_{xy\theta} = 0.025\left(J_v J_v\T + J_\omega J_\omega\T\right)
+$$
+
+which has entries
+
+$$
+\Sigma_{xx} = 0.023645,\qquad \Sigma_{yy} = 0.007002,\qquad \Sigma_{\theta\theta} = 0.025000
+$$
+
+$$
+\Sigma_{xy} = 0.003963,\qquad \Sigma_{x\theta} = -0.004063,\qquad \Sigma_{y\theta} = 0.011730
+$$
+
+Note $\rho_{y\theta} = 0.011730/\sqrt{0.007002 \times 0.025} = 0.887$. Cross-track position error and
+heading error are almost the same number, which is the algebraic signature of the bend.
+
+**What 200 000 samples say.** Drawing from `sample_motion_model_velocity` with seed 7:
+
+| quantity | model | measured |
+|---|---|---|
+| $\Sigma_{xx}$ | 0.023645 (linearized) | 0.02355 |
+| $\Sigma_{yy}$ | 0.007002 (linearized) | 0.00710 |
+| $\rho_{y\theta}$ | 0.887 (linearized) | 0.878 |
+| $\E[\xi]$ | $(1,\ 0,\ 0.5)$ *(exact)* | $(1.0005,\ 0.0000,\ 0.4994)$ |
+| $\Cov[\xi]$ | $\diag(0.025,\ 0,\ 0.025)$ *(exact)* | $\diag(0.02508,\ 0.00000,\ 0.02505)$ |
+| cross-track skew | 0 for any Gaussian in $(x,y)$ | $-0.301$ |
+
+The linearized Cartesian covariance is a decent fit to the *second* moments — that is why EKFs work
+at all. The third moment is where it falls apart, and the last two rows are the chapter's whole
+claim: in exponential coordinates the model is not approximately Gaussian, it is Gaussian, and the
+measured mean and covariance are $\tau$ and $R_u$ to Monte Carlo error.
+
+```rust title="crates/motion/tests/worked_example.rs"
+use approx::assert_relative_eq;
+use motion::{MotionModel, NoiseKind, VelocityAlphas, VelocityCmd, VelocityModel};
+use nalgebra::Vector3;
+use pr_core::geom::se2::SE2;
+use rand::{rngs::SmallRng, SeedableRng};
+
+const U: VelocityCmd = VelocityCmd { v: 1.0, omega: 0.5, dt: 1.0 };
+const ALPHAS: VelocityAlphas = VelocityAlphas([0.02, 0.02, 0.02, 0.02, 0.0, 0.0]);
+
+#[test]
+fn arc_update_is_the_exponential_map() {
+    let model = VelocityModel { alphas: VelocityAlphas([0.0; 6]), noise: NoiseKind::Normal };
+    let mut rng = SmallRng::seed_from_u64(0); // noiseless: the draws are unused
+    let by_arc = model.sample(&U, &SE2::identity(), &mut rng);
+    let by_exp = SE2::exp(&Vector3::new(U.v * U.dt, 0.0, U.omega * U.dt));
+
+    assert_relative_eq!(by_arc.x(), 0.958851_077_208, epsilon = 1e-11);
+    assert_relative_eq!(by_arc.y(), 0.244834_876_219, epsilon = 1e-11);
+    assert_relative_eq!(by_arc.theta(), 0.5, epsilon = 1e-12);
+    assert_relative_eq!(by_arc.x(), by_exp.x(), epsilon = 1e-12);
+    assert_relative_eq!(by_arc.y(), by_exp.y(), epsilon = 1e-12);
+}
+
+/// The chapter's headline claim, as an assertion: the sample cloud's
+/// exponential coordinates have mean τ and covariance R_u.
+#[test]
+fn the_banana_is_gaussian_in_exponential_coordinates() {
+    let model = VelocityModel { alphas: ALPHAS, noise: NoiseKind::Normal };
+    let x0 = SE2::identity();
+    let mut rng = SmallRng::seed_from_u64(7);
+
+    let xis: Vec<Vector3<f64>> = (0..200_000)
+        .map(|_| model.sample(&U, &x0, &mut rng).boxminus(&x0))
+        .collect();
+
+    let n = xis.len() as f64;
+    let mean = xis.iter().sum::<Vector3<f64>>() / n;
+    let cov = xis
+        .iter()
+        .map(|xi| (xi - mean) * (xi - mean).transpose())
+        .sum::<nalgebra::Matrix3<f64>>()
+        / (n - 1.0);
+
+    let r_u = model.tangent_cov(&U).unwrap();
+    assert_relative_eq!(mean, Vector3::new(1.0, 0.0, 0.5), epsilon = 3e-3);
+    assert_relative_eq!(cov[(0, 0)], r_u[(0, 0)], max_relative = 0.02);
+    assert_relative_eq!(cov[(2, 2)], r_u[(2, 2)], max_relative = 0.02);
+    assert!(cov[(1, 1)] < 1e-12, "a differential drive has no lateral noise");
+}
+
+/// And the counterpart: in (x, y) the same cloud is visibly non-Gaussian.
+#[test]
+fn the_same_cloud_is_skewed_in_cartesian_coordinates() {
+    let model = VelocityModel { alphas: ALPHAS, noise: NoiseKind::Normal };
+    let mut rng = SmallRng::seed_from_u64(7);
+    let poses: Vec<SE2> = (0..200_000)
+        .map(|_| model.sample(&U, &SE2::identity(), &mut rng))
+        .collect();
+
+    // Skewness of the residual perpendicular to the mean heading: identically
+    // zero for any Gaussian, and decidedly not zero here.
+    let skew = cross_track_skew(&poses);
+    assert!(skew < -0.25, "expected a pronounced left-bending banana, got {skew}");
+}
+
+/// Third standardized moment of the residual perpendicular to the mean heading.
+fn cross_track_skew(poses: &[SE2]) -> f64 {
+    let n = poses.len() as f64;
+    let (mx, my) = poses.iter().fold((0.0, 0.0), |(a, b), p| (a + p.x() / n, b + p.y() / n));
+    // Circular mean of the headings — never average θ arithmetically.
+    let (sc, ss) = poses
+        .iter()
+        .fold((0.0, 0.0), |(c, s), p| (c + p.theta().cos(), s + p.theta().sin()));
+    let (c, s) = {
+        let h = ss.atan2(sc);
+        (h.cos(), h.sin())
+    };
+
+    let d: Vec<f64> = poses.iter().map(|p| -(p.x() - mx) * s + (p.y() - my) * c).collect();
+    let m2 = d.iter().map(|x| x * x).sum::<f64>() / n;
+    let m3 = d.iter().map(|x| x * x * x).sum::<f64>() / n;
+    m3 / m2.powf(1.5)
+}
+```
+
+<Callout type="info">
+The widgets in this chapter run the same algorithms: `lib/models/motion.ts` is a line-for-line port
+of `crates/motion`, and `lib/models/motion-se2.ts` of `se2_noise.rs`. The cross-track skew printed
+under the Banana Machine is the statistic in the last row of that table, computed live — set the
+sliders to the canonical α's above and it settles at about $-0.30$, while the tile beside it shows
+what a Gaussian *fitted in exponential coordinates* predicts for the same statistic.
+</Callout>
+
+## Putting it together
+
+### Which model, and when
+
+Use the velocity model when the motion has not happened yet: planning, control, MPPI rollouts,
+anything that asks *what if*. Use the odometry model when it has: localization, SLAM, anything that
+asks *where am I*. Nav2's AMCL exposes exactly the odometry model's four $\alpha$'s under the names
+`alpha1`–`alpha4`, and tuning them remains, in 2026, one of the two or three things that decide
+whether a robot localizes reliably in a warehouse.
+
+Use the on-manifold form when the uncertainty is large enough that the shape matters — long
+open-loop stretches, loop closures with a lot of accumulated drift, any covariance you intend to
+hand to [a factor graph](/chapters/ch15-factor-graphs) as an information matrix. It costs nothing
+extra: $R_u$ is built from the same $\alpha$'s.
+
+### Tuning the α's without lying to yourself
+
+The honest procedure is boring and it works. Drive a known trajectory with ground truth — a motion
+capture rig, a total station, or a scan-matched reference from
+[Chapter 16](/chapters/ch16-scan-matching). Compute $\xi_k = x_k \bminus x_{k-1}$ for each interval
+and the twist $\tau_k$ each command asked for. Regress the empirical variance of $\xi_k - \tau_k$
+against $v^2$ and $\omega^2$; the regression coefficients *are* the $\alpha$'s, times $\Delta t^2$.
+
+Then inflate them. Every deployed system runs with $\alpha$'s larger than the fit, and the epigraph
+to this chapter says why: the exact shape of the noise matters far less than having enough of it to
+absorb the model errors nobody wrote down. An overly wide motion model costs particles and
+convergence speed. An overly narrow one costs the robot.
+
+The failure signature is worth memorizing. Too small, and the filter is overconfident: the particle
+cloud collapses, the true pose walks out of it, and no measurement can pull it back because there
+are no particles there to reweight. Too large, and the filter is lazy: the cloud never tightens,
+every measurement is inside the gate, and the robot's estimate is technically correct and
+practically useless. [Chapter 12](/chapters/ch12-localization-global) turns this into a diagnostic
+you can run online.
+
+### What the next chapter needs
+
+The motion model is half the generative story. It says where the robot might be. It says nothing
+about what the robot would *see* from there, and without that, the prediction step spreads the
+belief forever and the filter never recovers information.
+[Chapter 10](/chapters/ch10-sensor-models) supplies the other half — $p(z_t \mid x_t)$ — and with
+both in hand, every algorithm in Parts IV and V becomes an engineering exercise.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The straight-line branch, and where to put it">
+    Derive the $\hat\omega \to 0$ limit of the exact arc update by Taylor-expanding
+    $\sin(\theta + \hat\omega\Delta t)$ and $\cos(\theta + \hat\omega\Delta t)$ to second order, and
+    show that the closed-form density remains well defined there. Then do the numerics: for
+    $\hat v = 1$ m/s and $\Delta t = 0.1$ s, find the value of $\lvert\hat\omega\rvert$ below which
+    the *straight-line* formula is more accurate than the arc formula in IEEE double precision, and
+    check it against the estimate in Step 5 of that derivation. Then answer the engineering
+    question: given that the book's code switches two decades earlier than the crossover, what does
+    that cost, and what does it buy?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Why bananas bend">
+    For a nominally straight command ($\omega = 0$, $v > 0$), show from the arc update that the
+    along-track position variance grows like $\Delta t^2$ in the translational noise, while the
+    cross-track variance grows like $\Delta t^4$ in the rotational noise. Conclude that there is a
+    duration beyond which heading noise dominates position noise no matter how good the wheel
+    encoders are, and compute it in terms of $\alpha_1$ and $\alpha_3$.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="The unpaid Jacobian">
+    Step 6 of the inversion derivation claims that `motion_model_velocity` is missing the Jacobian
+    determinant of the change of variables $(\hat v, \hat\omega, \hat\gamma) \mapsto x_t$. Compute
+    that determinant for the arc update. Show that for the odometry model the analogous factor is
+    exactly $1/\hat\delta_{trans}$. Then explain why leaving it out is harmless for particle
+    weighting but *not* harmless if you use the density as a factor in a
+    [graph optimization](/chapters/ch15-factor-graphs).
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check: what each α does">
+    In the Banana Machine, select the **Straight** preset and switch on **Isolate**, so every α
+    except the selected one is zero. Before touching anything else: sketch the cloud you expect
+    with only $\alpha_4$ non-zero, and then the cloud you expect with only $\alpha_6$. Now check.
+    Explain each in one sentence, and say which of the two an EKF's ellipse represents faithfully.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the pose the model cannot see through">
+    In Map Squeeze, start from the **Facing a doorway** preset with conditioning on, and find
+    settings of the noise and ω that push the accepted-through-a-wall figure above 40%. Which of the
+    two controls moves it further, and why does *curvature* in particular manufacture these samples?
+    Then propose two fixes — testing the geodesic against the map, and shrinking $\Delta t$ so the
+    model is called more often — estimate the cost of each per sample, and say which you would
+    deploy on a robot running 2000 particles at 20 Hz.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Swap in the triangular sampler">
+    Implement `sample_triangular_distribution(b²)` as the scaled sum of two independent uniforms,
+    verify that its variance really is $b^2$, and swap it into `VelocityModel` behind the
+    `NoiseKind` enum. Re-run the worked-example test. Which assertions still pass, and which need a
+    different tolerance? Where does the triangular banana visibly differ from the normal one, and
+    why is bounded support sometimes worth the loss of exactness?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Compounding, and the point where first order fails">
+    Implement `TangentNoiseModel::compound` and propagate $\Sigma$ over a 20-step trajectory of the
+    canonical command at $\Delta t = 0.2$ s. Compare against 50 000 Monte Carlo rollouts by
+    computing the sample covariance of $x_k \bminus \bar{x}_k$ at each step. Plot the ratio of
+    predicted to measured variance per component, and find the step at which the along-track
+    component crosses 5% error. Then re-run with the heading noise doubled: does the crossing move
+    earlier in proportion to the heading spread, or faster?
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 5 is the source of both models and of algorithm Tables 5.1–5.7, which this chapter restates and implements verbatim. The α-parameter bookkeeping and the map-conditioned model are taken from it unchanged."
+  />
+  <Reference
+    authors="Long, A. W., Wolfe, K. C., Mashner, M. J., and Chirikjian, G. S."
+    year={2012}
+    title="The Banana Distribution is Gaussian: A Localization Study with Exponential Coordinates"
+    venue="Proceedings of Robotics: Science and Systems VIII"
+    doi="10.15607/RSS.2012.VIII.034"
+    note="The paper this chapter's last section is built on. It shows the banana is Gaussian in exponential coordinates and derives closed-form propagation and fusion for a differential drive on arcs of constant curvature."
+  />
+  <Reference
+    authors="Barfoot, T. D. and Furgale, P. T."
+    year={2014}
+    title="Associating Uncertainty With Three-Dimensional Poses for Use in Estimation Problems"
+    venue="IEEE Transactions on Robotics 30(3), 679–693"
+    doi="10.1109/TRO.2014.2298059"
+    note="Where the adjoint compounding recursion comes from, together with the fourth-order correction that closes the 6% gap measured in this chapter's compounding derivation."
+  />
+  <Reference
+    authors="Solà, J., Deray, J., and Atchuthan, D."
+    year={2021}
+    title="A micro Lie theory for state estimation in robotics"
+    venue="arXiv:1812.01537 (v9)"
+    url="https://arxiv.org/abs/1812.01537"
+    note="The reference for the ⊞/⊟ conventions, the adjoint, and the left-versus-right perturbation distinction that Step 4 of the banana derivation warns about."
+  />
+  <Reference
+    authors="Mangelson, J. G., Ghaffari, M., Vasudevan, R., and Eustice, R. M."
+    year={2020}
+    title="Characterizing the Uncertainty of Jointly Distributed Poses in the Lie Algebra"
+    venue="IEEE Transactions on Robotics 36(5), 1371–1388"
+    doi="10.1109/TRO.2020.2994457"
+    note="Extends Lie-algebra uncertainty to poses that are correlated rather than independent — the case that actually arises once a pose graph has been optimized, and the reason Chapter 15 cannot simply reuse this chapter's per-step R_u."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the desks of ROS maintainers: A survey of modern & capable mobile robotics algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="Evidence that this chapter is current practice and not history: Nav2's AMCL still runs sample_motion_model_odometry, and its alpha1–alpha4 are the α's derived here."
+  />
+  <Reference
+    authors="Okawara, T., Koide, K., Oishi, S., Yokozuka, M., Banno, A., Uno, K., and Yoshida, K."
+    year={2025}
+    title="Tightly-coupled LiDAR-IMU-wheel odometry with an online neural kinematic model learning via factor graph optimization"
+    venue="Robotics and Autonomous Systems 187, 104929"
+    doi="10.1016/j.robot.2025.104929"
+    note="The modern alternative to hand-tuned α's: learn the kinematic model online inside the estimator. Worth reading as the answer to 'why not just fit the motion model from data?', and as a preview of Chapter 25."
+  />
+  <Reference
+    authors="Park, C. and Moon, J."
+    year={2026}
+    title="Dynamic Noise Adaptation in the Motion Model of Monte Carlo Localization for Consistent Localization"
+    venue="Sensors 26(5), 1415"
+    doi="10.3390/s26051415"
+    note="A recent take on the tuning problem from the last section: scale the motion-noise parameters online rather than fixing them, so the filter widens before it diverges instead of after."
+  />
+</References>

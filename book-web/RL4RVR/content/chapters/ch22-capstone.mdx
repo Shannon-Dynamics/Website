@@ -1,0 +1,361 @@
+---
+title: 'Capstone: An End-to-End Learned Robot in Rust'
+chapter: 22
+quote:
+  text: By analyzing a simple problem in some detail we demonstrate how reinforcement learning approaches may be profitably applied, and we note throughout open questions and the tremendous potential for future research.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On the discipline of a worked case study
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="One project, using the whole book. Ferris must patrol a cluttered course, reach a sequence of waypoints, and recover from being pushed. We specify the task, formalize the MDP with every choice justified against evidence from Parts III and IV, build the randomized simulation, train teacher–student PPO, evaluate against the L0–L5 rubric with statistics that survive scrutiny, and ship both a native binary and a browser demo. The deliverable is not a trained policy — it is a reproducible pipeline you can fork for your own robot."
+  outcomes={[
+    'Write a complete formal problem statement for a real robot task, with every design choice justified',
+    'Build a config-driven experiment runner whose results reproduce exactly from a seed',
+    'Assemble the teacher–student pipeline end to end and know what each stage contributes',
+    'Evaluate a policy against the L0–L5 rubric with confidence intervals that reflect the sample size',
+    'Diagnose failures from telemetry rather than from guesswork',
+    'State honestly what level this work reaches and what each further level would require',
+  ]}
+  foundation="The assembled POMDP: a 48-dimensional observation with units, the full reward table, the randomization ranges, and the evaluation protocol."
+  conceptual="Mission control — training curves, randomization draws, evaluation heatmaps and a failure-mode gallery with post-mortems."
+  practical="The capstone crate: serde/clap config, rayon rollout farm, burn training, rerun telemetry, and a WASM deployment."
+/>
+
+## 22.1 The specification, written before any code
+
+Kober's survey closes with a case study, and the discipline it models is worth copying: **write the specification before touching the implementation.** Most robot-learning projects fail at this step rather than at training.
+
+**Task.** Ferris patrols a course of randomly-generated rough terrain with scattered obstacles, visiting a sequence of waypoints in order. He must recover from external pushes and from stumbles, and complete the circuit within a time budget.
+
+**Success criteria**, stated so a disinterested party could check them:
+
+- Visits all four waypoints in order, within 3 minutes.
+- Survives at least three lateral pushes of 150 N applied for 0.2 s at random times.
+- No base-ground contact (a "fall") at any point.
+- Mean cost of transport below 1.2.
+
+**Explicit non-goals.** Not: manipulation of any kind, navigation of unmapped buildings, operation among people, or terrain types outside the generated distribution. Stating these matters — an unbounded task specification is how projects acquire scope that no evaluation can cover.
+
+## 22.2 The formal problem
+
+Now the MDP, with each choice traceable to a chapter.
+
+**Observation** (48 dimensions; what the deployed student sees):
+
+| Component | Dim | Units | Justification |
+|---|---|---|---|
+| Base angular velocity | 3 | rad/s | IMU; directly measured (Ch 18) |
+| Projected gravity | 3 | – | Yaw-invariant orientation (Ch 18) |
+| Waypoint vector (body frame) | 3 | m | The task; body frame for translation invariance |
+| Joint positions | 12 | rad | Encoders |
+| Joint velocities | 12 | rad/s | Differentiated encoders |
+| Previous action | 12 | rad | Enables smooth output (Ch 18) |
+| Gait phase | 2 | – | $(\sin\phi,\cos\phi)$ clock (Ch 17) |
+| Time remaining | 1 | – | Normalized; makes the finite horizon Markov (Ch 4) |
+
+**Privileged observation** (teacher only, +31 dimensions): terrain heights on a 4×4 grid under the body, true friction, per-foot contact states, applied external force, and true base linear velocity. Discarded after distillation (Ch 15).
+
+**Action.** Twelve joint position targets at 50 Hz, tracked by a 1 kHz PD loop with $K_p = 40$, $K_d = 1$. Mid-level, per Chapter 17 and universal practice in Chapter 18.
+
+<Callout variant="note" title="Why 'time remaining' is in the observation">
+A finite-horizon task is not Markov in the state alone: the optimal action near the deadline differs from the optimal action at the start, and a policy that cannot see the clock must average over both.
+
+Including normalized time remaining restores the Markov property. It is a small detail that produces a visible behaviour change — the policy learns to hurry — and it is the kind of thing that is obvious in Chapter 4's formalism and easy to forget in code.
+</Callout>
+
+**Reward.** The Chapter 18 locomotion terms, plus task terms:
+
+| Term | Formula | Units | Weight |
+|---|---|---|---|
+| Waypoint progress | $\Delta \text{dist}$ to next waypoint | m | +2.0 |
+| Waypoint reached | indicator | – | +50.0 |
+| Velocity tracking | $\exp(-\|v_{xy}-v^*\|^2/0.25)$ | – | +1.0 |
+| Orientation | $\|g_{\text{proj},xy}\|^2$ | – | −5.0 |
+| Effort | $\|\tau\|^2$ | N²m² | −2×10⁻⁴ |
+| Foot air time | $\sum_f (t_{\text{air}} - 0.5)$ | s | +1.0 |
+| Foot slip | $\sum_f \|v_f\|^2\mathbb{1}[\text{contact}]$ | m²/s² | −0.1 |
+| Action rate | $\|a_t - a_{t-1}\|^2$ | rad² | −0.01 |
+| Fall | indicator | – | −100.0 (terminates) |
+
+Waypoint progress is **potential-based** — $\gamma\Phi(s') - \Phi(s)$ with $\Phi = -\text{dist}$ — so by Chapter 14's Theorem 14.1 it accelerates learning without changing the optimal policy. The waypoint bonus is the actual objective.
+
+**Randomization** (Ch 15): link masses ±20%, friction 0.4–1.2, motor $K_p$ ±30%, latency 0–30 ms, IMU noise, terrain roughness scheduled by curriculum, and random pushes of 50–200 N.
+
+## 22.3 The pipeline
+
+Five stages, each an earlier chapter cashed in.
+
+1. **Environment** — Ferris in `rapier3d`, procedural terrain, 4096 parallel instances via `rayon` (Ch 13, 15).
+2. **Teacher** — PPO with privileged observations, terrain curriculum with per-environment promotion (Ch 10, 18).
+3. **Student** — GRU policy over a 15-step observation history, trained by DAgger-style distillation on its own state distribution (Ch 15, 16, 19).
+4. **Evaluation** — held-out terrain seeds, the push protocol, L0–L5 rubric with Wilson intervals (Ch 14, 20).
+5. **Deployment** — native binary plus a WASM build with live telemetry.
+
+<RustSnippet title="capstone/src/main.rs" caption="The config-driven runner. Every number that affects the result lives in one TOML file that is hashed into the results — which is what makes 'reproducible' a checkable claim rather than an aspiration.">
+
+```rust
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+
+#[derive(Parser)]
+#[command(name = "ferris-capstone")]
+struct Cli {
+    /// Path to the experiment config. Everything reproducible lives here.
+    #[arg(short, long, default_value = "configs/patrol.toml")]
+    config: String,
+
+    #[arg(short, long)]
+    stage: Stage,
+
+    /// Overrides the config seed; recorded in the results either way.
+    #[arg(long)]
+    seed: Option<u64>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Stage { Teacher, Student, Evaluate, Export }
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ExperimentConfig {
+    seed: u64,
+    env: EnvConfig,
+    randomization: RandomizationRanges,
+    curriculum: CurriculumConfig,
+    reward: Vec<RewardTermConfig>,   // weights live in config, never in code
+    ppo: PpoConfig,
+    distillation: DistillConfig,
+    evaluation: EvalConfig,
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let raw = std::fs::read_to_string(&cli.config)?;
+    let mut cfg: ExperimentConfig = toml::from_str(&raw)?;
+    if let Some(s) = cli.seed { cfg.seed = s; }
+
+    // Hash the exact config into every artifact, so a result can always be
+    // traced back to the settings that produced it.
+    let config_hash = blake3::hash(raw.as_bytes()).to_hex().to_string();
+    tracing::info!(seed = cfg.seed, config = %config_hash, "starting");
+
+    match cli.stage {
+        Stage::Teacher => {
+            let mut envs = FerrisVecEnv::new(&cfg.env, &cfg.randomization, cfg.seed)?;
+            let mut teacher = PrivilegedPolicy::new(&cfg.ppo);
+            let mut curriculum = TerrainCurriculum::new(&cfg.curriculum);
+            train_ppo(&mut teacher, &mut envs, &mut curriculum, &cfg, &config_hash)?;
+        }
+        Stage::Student => {
+            let teacher = PrivilegedPolicy::load("artifacts/teacher.mpk")?;
+            let mut student = RecurrentPolicy::new(&cfg.distillation);
+            // DAgger, not behaviour cloning: roll out the STUDENT, label with
+            // the teacher. Chapter 16 explains why this distinction decides it.
+            distill_on_policy(&teacher, &mut student, &cfg, &config_hash)?;
+        }
+        Stage::Evaluate => {
+            let student = RecurrentPolicy::load("artifacts/student.mpk")?;
+            let report = evaluate(&student, &cfg.evaluation, cfg.seed)?;
+            report.print_with_wilson_intervals();
+            report.write_json("artifacts/evaluation.json")?;
+        }
+        Stage::Export => export_wasm("artifacts/student.mpk", "dist/")?,
+    }
+    Ok(())
+}
+```
+
+</RustSnippet>
+
+## 22.4 Evaluation, and an honest verdict
+
+Chapter 14 set the standard; here it is applied to our own work.
+
+<MissionControl />
+
+**Protocol.** 200 episodes on terrain seeds disjoint from training, with the push protocol applied. Five independently trained policies (five training seeds), reported separately rather than pooled.
+
+**Results, as they would be reported:**
+
+| Metric | Value | 95% interval |
+|---|---|---|
+| Circuit completion | 176 / 200 | 88.0% [82.7%, 91.9%] |
+| No-fall rate | 189 / 200 | 94.5% [90.4%, 96.9%] |
+| Push recovery (3+ pushes survived) | 171 / 200 | 85.5% [79.9%, 89.8%] |
+| Mean cost of transport | 0.94 | ±0.11 across seeds |
+| Median completion time | 108 s | budget 180 s |
+
+The intervals are Wilson score intervals, appropriate near the boundary where the normal approximation misleads. Across the five training seeds, completion ranged from 81% to 91% — a spread worth reporting, because a paper claiming 91% from one seed would be reporting the best of five.
+
+<Callout variant="warning" title="This work is L0, and saying so is the point">
+Chapter 1's rubric is unambiguous: **Level 0 — validated only in simulation environments.** No physical robot ran this policy. Claiming otherwise would be exactly the overstatement Chapter 14 warned about, and the rubric exists to make such claims checkable.
+
+What each further level would require:
+
+**L1** (limited lab) — a physical quadruped, flat ground, controlled lighting, a person ready to catch it. Mostly hardware access and a safety procedure.
+
+**L2** (diverse lab) — multiple terrain types and surfaces indoors, tens of hours of operation. This is where the randomization ranges get validated, and where the first genuinely surprising failures appear.
+
+**L3** (confined real-world) — a defined outdoor site, weather within a stated range, unsupervised operation. Requires thermal management, battery behaviour under load, and sensor degradation — none of which is in our simulator.
+
+**L4** (diverse real-world) — arbitrary terrain, unconstrained conditions. This is where the published quadruped results sit, and the gap from L2 to L4 has historically taken teams years.
+
+Being explicit about this is not modesty. It is the difference between a result someone can build on and a claim someone must first debunk.
+</Callout>
+
+## 22.5 Failure modes, with post-mortems
+
+The failures are more instructive than the successes, and each traces to a specific decision.
+
+**Stuck at a gap (11 of 24 failures).** Ferris approaches a gap wider than his stride and oscillates at the edge. *Diagnosis:* the terrain curriculum generated gaps up to 40 cm, but the waypoint-progress reward rewards approaching the goal, so the policy is pulled toward an edge it cannot cross. *Fix:* either a lateral-detour skill (Ch 19's hierarchy) or a curriculum that pairs each gap with a traversable bypass so the policy learns detouring is acceptable.
+
+**Push recovery failure on low friction (7 of 24).** Pushes at $\mu = 0.4$ cause a slide into a fall. *Diagnosis:* the randomization range covers $\mu \in [0.4, 1.2]$, but pushes were sampled uniformly over time rather than conditioned on friction, so the low-friction-plus-push corner is rare in training. *Fix:* stratify the randomization so hard combinations are sampled deliberately.
+
+**Timeout on rough terrain (4 of 24).** Completes the circuit but past the budget. *Diagnosis:* the velocity-tracking weight is too low relative to the effort penalty on rough ground, so the policy trades speed for economy. *Fix:* condition the commanded velocity on remaining time, or reweight — a Chapter 18 reward-mixer decision.
+
+**Distillation gap (2 of 24).** The student fails where the teacher succeeds. *Diagnosis:* the 15-step history is insufficient to infer terrain that the teacher observed directly. *Fix:* a longer history, or an explicit terrain-estimation auxiliary loss.
+
+<Callout variant="insight" title="Every fix is a chapter">
+Notice that none of these diagnoses is "the algorithm underperformed", and none of the fixes is "tune the learning rate". Each is a design decision from Parts III and IV: curriculum coverage, randomization stratification, reward weighting, observation history length.
+
+That is the practical thesis of this book. Once the algorithm works — and PPO works — the remaining engineering is problem formulation, and the four curses are where it lives.
+</Callout>
+
+## 22.6 What you have
+
+The repository is a template. Fork it, replace the URDF and the reward terms, and the pipeline carries over: config-driven experiments with hashed provenance, a parallel rollout farm, teacher–student training, evaluation with intervals, and a browser demo for showing people what you built.
+
+**Where to go next**, in rough order of value: put it on hardware, because every assumption in §22.2 is a hypothesis until a physical robot tests it. Add a manipulator and confront Chapter 20's difficulties. Replace the hand-specified waypoint sequence with learned skills and take on Chapter 19's open question. Or take the pipeline to a task where simulation does not work, and find out what Chapter 16's methods can do.
+
+## 22.7 A closing note
+
+Twenty-two chapters ago, Rusty drove into a concave trap and stayed there, running a controller that was correct in the sense that mattered to its author and useless in the sense that mattered to the robot.
+
+The distance from there to here is not a collection of algorithms. It is a way of thinking: state the problem formally, know which assumptions your robot violates, choose the representation before the optimizer, measure against a classical baseline, and report what you actually established rather than what you hoped.
+
+The four curses are still there. They will be there for your project too. Knowing their names, and which technique manages each, is what this book was for.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Justify every observation',
+    difficulty: 2,
+    body: 'For each of the eight observation components in §22.2, state what fails if it is removed. Then propose one addition and argue whether it earns its dimensions.',
+  },
+  {
+    layer: 'F',
+    title: 'Check the shaping',
+    difficulty: 2,
+    body: 'Verify that the waypoint-progress term is potential-based and therefore policy-invariant. Then show that adding a raw −distance term instead would change the optimal policy, and describe the behaviour it would produce.',
+  },
+  {
+    layer: 'F',
+    title: 'Horizon and discount',
+    difficulty: 2,
+    body: 'The budget is 180 s at 50 Hz — 9000 steps. Choose γ so the effective horizon covers a waypoint leg but not the whole circuit, and justify the choice against the failure modes in §22.5.',
+  },
+  {
+    layer: 'F',
+    title: 'Read the intervals',
+    difficulty: 2,
+    body: 'Compute the Wilson interval for 176/200 and confirm the reported figure. Then determine how many episodes would be needed to establish completion above 85% with 95% confidence.',
+  },
+  {
+    layer: 'C',
+    title: 'Diagnose from telemetry',
+    difficulty: 2,
+    body: 'From the mission-control dashboard, identify which reward term is being sacrificed during the timeout failures. Then predict the weight change that would fix it, and what it would cost elsewhere.',
+  },
+  {
+    layer: 'C',
+    title: 'Grade another system',
+    difficulty: 2,
+    body: 'Take a recent robot-RL paper and grade it on the L0–L5 rubric using only its reported experiments. Then compare with the level the abstract implies.',
+  },
+  {
+    layer: 'P',
+    title: 'Reproduce and perturb',
+    difficulty: 3,
+    body: 'Run the capstone from the pinned config and confirm the results reproduce. Then change one reward weight by 20%, rerun, and report what changed. Small perturbations should produce visible behaviour changes — that sensitivity is the finding.',
+  },
+  {
+    layer: 'P',
+    title: 'Fix a failure mode',
+    difficulty: 3,
+    body: 'Pick one failure from §22.5 and implement its proposed fix. Re-evaluate with the full protocol and report whether the fix helped, hurt elsewhere, or did neither — all three are legitimate results, and the third is the most common.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§7 the ball-in-a-cup case study — the model for this chapter’s discipline of specifying before implementing.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.4 the L0–L5 rubric applied to our own work in §22.4, and §5 on principled system design.',
+  },
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'The formalism underlying §22.2, from the MDP definition through policy gradients.',
+  },
+  {
+    key: 'rudin2022',
+    authors: 'Rudin, N., Hoeller, D., Reist, P. & Hutter, M.',
+    year: 2022,
+    title: 'Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning',
+    venue: 'CoRL 2021',
+    note: 'The parallel-training regime and curriculum structure this capstone follows.',
+  },
+  {
+    key: 'lee2020',
+    authors: 'Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2020,
+    title: 'Learning quadrupedal locomotion over challenging terrain',
+    venue: 'Science Robotics 5(47)',
+    note: 'The teacher–student pipeline of §22.3, and the L4 result our L0 work would need years to approach.',
+  },
+  {
+    key: 'wilson1927',
+    authors: 'Wilson, E. B.',
+    year: 1927,
+    title: 'Probable Inference, the Law of Succession, and Statistical Inference',
+    venue: 'Journal of the American Statistical Association 22(158)',
+    note: 'The score interval used throughout §22.4.',
+  },
+  {
+    key: 'agarwal2021',
+    authors: 'Agarwal, R., Schwarzer, M., Castro, P. S., Courville, A. & Bellemare, M. G.',
+    year: 2021,
+    title: 'Deep Reinforcement Learning at the Edge of the Statistical Precipice',
+    venue: 'NeurIPS 34',
+    note: 'Why per-seed reporting matters, as practised in §22.4.',
+  },
+  {
+    key: 'henderson2018',
+    authors: 'Henderson, P., Islam, R., Bachman, P., Pineau, J., Precup, D. & Meger, D.',
+    year: 2018,
+    title: 'Deep Reinforcement Learning that Matters',
+    venue: 'AAAI 2018',
+    note: 'The reproducibility problems this chapter’s config-hashing and seed reporting are designed to avoid.',
+  },
+]} />

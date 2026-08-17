@@ -1,0 +1,1161 @@
+---
+title: "Localization II: Global Localization"
+description: Grid localization and Monte Carlo localization solve the problem a Gaussian cannot even state — and Augmented MCL solves the one MCL cannot recover from.
+chapter: 12
+part: PART IV
+partTitle: Localization
+difficulty: Intermediate
+readingTime: 55 min
+quote: The kidnapped robot problem is more difficult than the global localization problem, in that the robot might believe it knows where it is while it does not.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 7
+---
+
+import { MclTheater } from '@/components/ch/ch12/mcl-theater';
+import { GridVsCloud } from '@/components/ch/ch12/grid-vs-cloud';
+import { RecoveryWard } from '@/components/ch/ch12/recovery-ward';
+import { CrowdMode } from '@/components/ch/ch12/crowd-mode';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State the three localization problems — tracking, global, kidnapped — and say which representations can express each one',
+    'Derive MCL as the particle filter with the motion model as proposal, and see exactly which factor the importance weight collapses to',
+    'Explain why no resampling scheme can recover from kidnapping, and why injection is therefore not a hack but the only repair',
+    'Derive the w_fast / w_slow divergence detector and predict its behaviour on a kidnap and on a single glitched reading',
+    'Cost a pose grid honestly — cells, bytes, and beam evaluations — and choose between grids and particles on the numbers',
+    'Filter measurements caused by people without filtering away the surprise that tells a lost robot it is lost',
+  ]}
+  prerequisites={[
+    'The particle filter, low-variance resampling and effective sample size (Chapter 8)',
+    'sample_motion_model_odometry and the α₁…α₄ noise parameters (Chapter 9)',
+    'The beam model and the likelihood field (Chapter 10)',
+    'EKF localization and why a Gaussian belief is a commitment (Chapter 11)',
+  ]}
+>
+[Chapter 11](/chapters/ch11-localization-gaussian) ended with a confession. An extended Kalman
+filter tracks a pose beautifully as long as you tell it where to start, and it has no way whatsoever
+to say *"I am in one of these four rooms."* A Gaussian has one mean. Ambiguity is not representable,
+so the moment the world is ambiguous the filter must lie.
+
+This chapter is the payoff for the whole first half of the book. The Bayes filter of
+[Chapter 5](/chapters/ch05-bayes-filter), the nonparametric representations of
+[Chapter 8](/chapters/ch08-nonparametric-filters), the motion samplers of
+[Chapter 9](/chapters/ch09-motion-models) and the sensor likelihoods of
+[Chapter 10](/chapters/ch10-sensor-models) assemble — with almost no new mathematics — into the two
+algorithms that actually solve global localization: **grid localization** and **Monte Carlo
+localization**. MCL in particular is three lines of glue. Everything difficult about it happens
+*after* the weights are computed, which is where the rest of the chapter lives: recovery from
+failure, proposals that are not the motion model, and a world that contains people.
+</Overview>
+
+## Waking up somewhere
+
+Thrun, Burgard and Fox split localization into three problems, in increasing order of difficulty,
+and the split is worth memorizing because it decides which representation you are allowed to use.
+
+<NotationTable
+  rows={[
+    { sym: '\\text{position tracking}', meaning: 'The initial pose is known and the error stays local. A unimodal belief is enough — this is Chapter 11.' },
+    { sym: '\\text{global localization}', meaning: 'The initial pose is unknown. The robot knows that it does not know. No bounded-error assumption is available.' },
+    { sym: '\\text{kidnapped robot}', meaning: 'The robot is teleported during operation. Strictly harder, because now it believes it knows where it is while it does not.' },
+  ]}
+/>
+
+The kidnapped-robot problem sounds like a party trick, and the book is explicit that it is not:
+almost no localization system can be guaranteed never to fail, so the ability to *recover* is what
+separates a demo from something you can leave running in a building. Kidnapping is simply the
+cleanest way to measure that ability.
+
+Here is all three at once. Rusty wakes up with no idea where it is, in the Apartment from
+[Chapter 4](/chapters/ch04-rusty-and-sensors).
+
+<Deferred>
+  <MclTheater />
+</Deferred>
+
+Watch one full cycle before reading on. Three things are happening, and each is a section of this
+chapter.
+
+**The belief is a bag of poses, and it starts as fog.** Eight thousand particles or two hundred,
+the object on screen is a sampled representation of $\bel(x_t)$ over the whole free space. Nothing
+about it is Gaussian, nothing about it is unimodal, and no covariance ellipse could be drawn around
+it without lying.
+
+**Ambiguity survives about as long as the evidence is ambiguous — and not one step longer.** Press
+*Twin rooms*: rooms A and C of the Apartment are exact mirror images about $x = 6$ and near-exact
+translates of one another (their doorways differ by 10 cm), and the widget seeds exactly mirrored
+pairs of particles so the initial belief is genuinely symmetric. Two clusters then coexist for a
+dozen steps before one wins. Pull the tempering slider back to $\kappa = 1$ and repeat: the same
+evidence now decides in about three steps. How long a filter is *entitled* to stay ambiguous is a
+property of the map; how long it actually does is a property of your sensor sharpness and your $M$.
+
+**Recovery is not automatic.** Press *Kidnap* with plain MCL selected and wait as long as you like.
+The filter almost never comes back — measured at the end of this chapter, once in twelve seeded
+attempts. Switch to Augmented MCL, kidnap again, and watch blue particles rain
+into the free space for a few steps until the cloud finds the robot. That difference is one extra
+statistic and four extra lines of code, and it is the difference between a localizer and a
+liability.
+
+<KeyIdea title="The one sentence version">
+Global localization needs a belief that can be multi-modal; MCL gets one for free by representing
+$\bel(x_t)$ with samples, and pays for it with a failure mode — sampled beliefs cannot represent
+what they have no particles for, so a lost filter must be given new hypotheses from outside the
+recursion.
+</KeyIdea>
+
+## The mathematics
+
+### Notation this chapter adds
+
+<NotationTable
+  rows={[
+    { sym: '\\{\\mathbf{x}_k\\},\\ \\{p_{k,t}\\}', meaning: 'Pose-space grid cells and their probabilities. A cell is a box in (x, y, θ), not in (x, y).' },
+    { sym: '\\mathcal{X}_t = \\{x_t^{[i]}, w_t^{[i]}\\}_{i=1}^{M}', meaning: 'The weighted particle set — Chapter 8’s object, now over SE(2).' },
+    { sym: 'w_{avg}', meaning: 'Mean unnormalized importance weight at time t; the empirical estimate of the evidence p(z_t | z_{1:t−1}, u_{1:t}, m).' },
+    { sym: 'w_{fast},\\ w_{slow}', meaning: 'Exponentially smoothed w_avg at two timescales, with gains α_fast ≫ α_slow.' },
+    { sym: '\\phi', meaning: 'Mixing rate: the fraction of particles proposed from the measurement rather than the motion model.' },
+    { sym: '\\chi_{rej}', meaning: 'Rejection threshold on p(short | z_t^k), the posterior probability that a beam was caused by an unmodelled object.' },
+    { sym: '\\kappa', meaning: 'Tempering exponent: the likelihood is used as p(z | x)^{1/κ}. κ > 1 softens an overconfident sensor model.' },
+  ]}
+/>
+
+### Grid localization: brute force, and why it still works
+
+The most direct way to represent "anywhere" is to chop the pose space into cells and keep a number
+for each one. That is the discrete Bayes filter of [Chapter 8](/chapters/ch08-nonparametric-filters),
+applied to $\SEtwo$ instead of a corridor, and it is Thrun's **Table 8.1**:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar p_{k,t}}
+= \sum_j \htmlClass{term-prediction}{p(\mathbf{x}_k \mid u_t, \mathbf{x}_j)}\;
+         \htmlClass{term-prior}{p_{j,t-1}}
+\qquad\qquad
+\htmlClass{term-posterior}{p_{k,t}}
+= \eta\; \htmlClass{term-measurement}{p(z_t \mid \mathbf{x}_k, m)}\;
+  \htmlClass{term-prediction}{\bar p_{k,t}}
+$$
+</LinkedMath>
+
+Both models are evaluated at the cell's centre of mass, $\mathrm{mean}(\mathbf{x}_k)$. The typical
+metric resolution in the literature is 15 cm in $x$ and $y$ and 5° in $\theta$, and it is worth
+doing that arithmetic once, because it explains the entire rest of this chapter.
+
+<Callout type="info">
+The Apartment is 12 m × 9 m. At 15 cm that is $80 \times 60 = 4{,}800$ planar cells; at 5° the
+heading axis adds 72 bins, so the grid holds $\mathbf{345{,}600}$ pose cells — 1.4 MB at `f32`.
+A 5 000-particle MCL belief is $5{,}000 \times 32$ bytes = **156 kB**, about nine times smaller.
+The gap in *time* is worse: correcting the grid with an 8-beam subsampled scan costs 2.8 million
+likelihood evaluations, against 40 000 for MCL. Same recursion. Seventy times the bill.
+</Callout>
+
+Written literally, line 3 is worse still: it is a sum over all cells *for* all cells, which at
+345 600 cells is $1.2 \times 10^{11}$ kernel evaluations per step. Nobody implements it that way.
+The motion kernel has effectively compact support, so you scatter each cell's mass into the
+neighbourhood of its predicted pose and skip cells whose probability is negligible — Thrun's
+*selective updating*, which he notes can save "many orders of magnitude". That is exactly what
+`lib/localize/grid-localization.ts` does, and what the Rust `GridLocalizer::predict` below does.
+
+<Algorithm
+  name="Grid_localization({p_{k,t-1}}, u_t, z_t, m)"
+  inputs="the previous cell probabilities, the control, the measurement, the map"
+  outputs="{p_{k,t}}"
+  complexity="O(|G| · g_u) predict with a bounded kernel of support g_u; O(|G| · K) correct for K beams — Table 8.1"
+>
+1. for all $k$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\bar p_{k,t} = \sum_i p_{i,t-1}\; \texttt{motion\_model}(\mathrm{mean}(\mathbf{x}_k),\, u_t,\, \mathrm{mean}(\mathbf{x}_i))$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$p_{k,t} = \eta\; \texttt{measurement\_model}(z_t,\, \mathrm{mean}(\mathbf{x}_k),\, m)\; \bar p_{k,t}$
+4. endfor
+5. return $\{p_{k,t}\}$
+</Algorithm>
+
+#### The coarsening correction
+
+There is a trap in "evaluate the model at the cell centre", and it bites in both directions.
+
+On the sensor side, a laser's likelihood varies enormously across a 40 cm cell: the centre of the
+cell containing the true pose may be 20 cm off, and with $\sigma_{hit} = 18$ cm that costs the true
+cell a factor of $e^{-0.6} \approx 0.55$ per beam — compounded over twenty beams, the correct cell is
+crushed. On the motion side the failure is funnier: with 40 cm cells and 10 cm of motion per update,
+predicting from centre to centre never leaves the cell, so the belief simply refuses to move while
+the robot drives away.
+
+<Derivation title="Why coarse cells need inflated noise, and by how much" result="σ_eff² = σ² + (d/2)²">
+**Step 1 — what the exact update wants.** The probability of a cell is an integral, not a point
+evaluation:
+
+$$
+p_{k,t} \;=\; \eta \int_{\mathbf{x}_k} p(z_t \mid x, m)\, \bar p(x)\, dx
+$$
+
+Table 8.1 approximates this with $|\mathbf{x}_k| \cdot p(z_t \mid \mathrm{mean}(\mathbf{x}_k), m)$,
+i.e. one sample of the integrand at the centre.
+
+**Step 2 — the approximation is a convolution in disguise.** Assume $\bar p$ is roughly flat inside
+the cell (true when cells are small relative to the belief). Then the integral is the measurement
+model *averaged* over the cell, which is exactly the model convolved with the cell's own indicator
+function, evaluated at the centre:
+
+$$
+\frac{1}{|\mathbf{x}_k|}\int_{\mathbf{x}_k} p(z \mid x, m)\, dx
+\;=\; \big(p(z \mid \cdot, m) * U_{\mathbf{x}_k}\big)\big(\mathrm{mean}(\mathbf{x}_k)\big)
+$$
+
+**Step 3 — convolving a Gaussian with a box.** The uniform density on a cell of diameter $d$ has
+variance $d^2/12$ per axis; a box is not a Gaussian, but matching second moments is the standard
+cheap approximation, and it gives
+
+$$
+\sigma_{\text{eff}}^2 \;=\; \sigma^2 + \tfrac{d^2}{12}
+\qquad\text{(box-matched)},\qquad
+\sigma_{\text{eff}}^2 \;=\; \sigma^2 + \Big(\tfrac{d}{2}\Big)^2
+\qquad\text{(the conservative form we use)}
+$$
+
+Thrun's phrasing — "the variance of a range finder model's main Gaussian cone may be enlarged by
+half the diameter of the grid cell" — is the second one. Both have the property that actually
+matters: the correction vanishes as $d \to 0$, so a fine grid pays nothing for it.
+
+**What it costs.** The book is blunt about the price: the smoothed model "reduces the information
+intake, thereby reducing the localization accuracy". You are trading the *right* answer for a
+*stable* one. That trade is visible in the widget below as the floor under the coarse grid's error.
+$\blacksquare$
+</Derivation>
+
+<Deferred>
+  <GridVsCloud />
+</Deferred>
+
+The measured numbers in that widget are worth staring at, because they are the whole argument for
+particles. Running the same logged route in this browser, the grid's steady-state error is set by
+its cell size rather than by its sensor — about 0.8 m with 0.8 m cells, about 0.16 m with 0.3 m
+cells, roughly half a cell once the cells are small enough to resolve the corridor — while its cost
+per update rises from roughly 3 ms at 1 440 cells to roughly 7 ms at 28 800 cells, paid identically
+whether the robot is completely lost or perfectly tracked. MCL's error is not quantized at all, and
+its cost is whatever you chose $M$ to be.
+
+Exhaustive search over a pose grid has not disappeared from robotics: matching a scan against a
+map at successively finer resolutions is still a standard way to *bootstrap* a global pose, and
+[Chapter 16](/chapters/ch16-scan-matching) builds one. What has disappeared is the fine metric pose
+grid as a *running belief*, updated every tick whether or not anything is uncertain — and the
+arithmetic above is why.
+
+### Monte Carlo localization is the particle filter, instantiated
+
+Here is the entire algorithm, and it should feel anticlimactic.
+
+<Algorithm
+  name="MCL(X_{t-1}, u_t, z_t, m)"
+  inputs="the previous particle set, the control, the measurement, the map"
+  outputs="X_t"
+  complexity="O(M · K) for M particles and K beams — Table 8.2"
+>
+1. $\bar{\mathcal{X}}_t = \mathcal{X}_t = \emptyset$
+2. for $i = 1$ to $M$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$x_t^{[i]} = \texttt{sample\_motion\_model}(u_t,\, x_{t-1}^{[i]})$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$w_t^{[i]} = \texttt{measurement\_model}(z_t,\, x_t^{[i]},\, m)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;$\bar{\mathcal{X}}_t = \bar{\mathcal{X}}_t + \langle x_t^{[i]},\, w_t^{[i]} \rangle$
+6. endfor
+7. for $i = 1$ to $M$ do
+8. &nbsp;&nbsp;&nbsp;&nbsp;draw $j$ with probability $\propto w_t^{[j]}$
+9. &nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{X}_t = \mathcal{X}_t + x_t^{[j]}$
+10. endfor
+11. return $\mathcal{X}_t$
+</Algorithm>
+
+Line 3 is [Chapter 9](/chapters/ch09-motion-models)'s `sample_motion_model_odometry`. Line 4 is
+[Chapter 10](/chapters/ch10-sensor-models)'s beam model or likelihood field. Lines 7–10 are
+[Chapter 8](/chapters/ch08-nonparametric-filters)'s low-variance sampler. There is no line that is
+new. MCL is the particle filter with two arguments filled in — which is why global localization,
+the thing an EKF cannot even express, arrives essentially for free.
+
+The one step that deserves care is why the weight is *just* the likelihood.
+
+<Derivation title="MCL from importance sampling: why w = p(z | x, m)" result="w_t^{[i]} ∝ p(z_t | x_t^{[i]}, m)">
+Importance sampling says: to approximate a target $f$ using samples from a proposal $g$, weight each
+sample by $f(x)/g(x)$. Everything below is bookkeeping about which is which.
+
+**Step 1 — the proposal.** Line 3 draws $x_t^{[i]} \sim p(x_t \mid u_t, x_{t-1}^{[i]})$ from a
+particle $x_{t-1}^{[i]}$ that is already distributed as $\bel(x_{t-1})$. The marginal distribution of
+the result is therefore
+
+<LinkedMath>
+$$
+g(x_t) \;=\; \int \htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1})}\,
+                  \htmlClass{term-prior}{\bel(x_{t-1})}\, dx_{t-1}
+\;=\; \htmlClass{term-prediction}{\belbar(x_t)}
+$$
+</LinkedMath>
+
+which is precisely line 2 of the Bayes filter. The prediction step *is* the proposal.
+
+**Step 2 — the target.** We want the posterior, which is line 3 of the Bayes filter:
+
+<LinkedMath>
+$$
+f(x_t) \;=\; \htmlClass{term-posterior}{\bel(x_t)}
+\;=\; \eta\, \htmlClass{term-measurement}{p(z_t \mid x_t, m)}\, \htmlClass{term-prediction}{\belbar(x_t)}
+$$
+</LinkedMath>
+
+**Step 3 — divide.** The predicted belief appears in both, and cancels:
+
+<LinkedMath>
+$$
+w_t^{[i]} \;=\; \frac{f(x_t^{[i]})}{g(x_t^{[i]})}
+\;=\; \frac{\eta\, p(z_t \mid x_t^{[i]}, m)\, \belbar(x_t^{[i]})}{\belbar(x_t^{[i]})}
+\;=\; \eta\, \htmlClass{term-measurement}{p(z_t \mid x_t^{[i]}, m)}
+$$
+</LinkedMath>
+
+The normalizer $\eta$ is common to all particles and dies in the normalization, so the weight is the
+raw measurement likelihood. This single cancellation is the reason line 4 is one function call.
+
+**Step 4 — resampling.** Drawing $M$ times with probability proportional to $w$ converts the weighted
+sample set into an unweighted one distributed as $\bel(x_t)$, so the next iteration's Step 1
+assumption holds again and the induction closes. As $M \to \infty$ the approximation is exact.
+
+**The condition that will break.** Importance sampling requires $g > 0$ wherever $f > 0$: the
+proposal must be able to *reach* every state the posterior likes. Two failures follow immediately,
+and they are the next two sections. If the sensor is very sharp, $f$ is concentrated where $g$ has
+almost no samples — a *good* sensor starves the filter. If the robot is teleported, $g$ has no mass
+at the true pose at all, and no weighting can create some.
+$\blacksquare$
+</Derivation>
+
+#### The too-good-sensor failure, and the cheap fix
+
+Thrun states the pathology in its most provocative form: if you acquired a *perfect* sensor that
+always reported the true pose without noise, MCL would fail. The posterior would be a delta
+function, no particle drawn from the motion model would land on it, and every weight would be zero.
+"Under certain circumstances, a less accurate sensor would be preferable to a more accurate sensor
+when using MCL."
+
+The cheap fix is to lie about the sensor in a controlled way — inflate its noise, or equivalently
+raise the likelihood to a power:
+
+<LinkedMath>
+$$
+\tilde p(z_t \mid x_t, m) \;=\; \htmlClass{term-measurement}{p(z_t \mid x_t, m)^{1/\kappa}},
+\qquad \kappa \ge 1
+$$
+</LinkedMath>
+
+This is the **tempering** slider in the Theater, and $\kappa$ is doing something specific: it is not
+modelling the sensor, it is modelling *the particle filter's own approximation error*. Turn $\kappa$
+up with a small $M$ and watch the effective sample size stop collapsing. Turn it up too far and the
+filter stops learning from the scan at all. [Chapter 10](/chapters/ch10-sensor-models) derives the
+same knob from the other direction, as the cure for beams that are not independent.
+
+The principled fix is to change the proposal, which we come back to after recovery.
+
+### Why plain MCL cannot recover from kidnapping
+
+<Derivation title="Resampling cannot manufacture hypotheses" result="P(recovery from reweighting alone) ≈ 0">
+**Step 1 — after convergence, the support is tiny.** A converged MCL cloud occupies a region roughly
+the size of the posterior's standard deviation: for the Theater's likelihood field, a few
+centimetres. Call the set of poses with at least one particle $S_t$. Every operation the filter
+performs maps $S_t$ into a neighbourhood of itself: resampling *selects* from $S_t$, and the motion
+model *diffuses* it by the per-step noise, which is centimetres.
+
+**Step 2 — kidnapping moves the truth outside $S_t$.** After a teleport of $6$ m, the true pose is
+far outside $S_t$. Every particle now has a likelihood that is small, but *equally* small — the
+weights carry no information about which direction to move, because none of the particles is
+anywhere near right. Worse, normalization erases the absolute scale, so from the *normalized*
+weights the filter cannot even tell that anything went wrong — which is exactly why the next section
+reaches for the unnormalized average instead.
+
+**Step 3 — diffusion is hopeless.** For a particle to reach the true pose by motion noise alone it
+must random-walk 6 m with per-step steps of order $\sigma \approx 5$ cm. A *single* step of that
+size has probability $\propto \exp(-\tfrac{1}{2}(6/0.05)^2) = e^{-7200}$, and the diffusive route
+needs $(6/0.05)^2 \approx 14{,}400$ steps of unopposed random walk — during which resampling, which
+kills any particle that fails to explain the scan, would have eliminated every wanderer many times
+over. Resampling actively works *against* recovery: it is a contraction on the support.
+
+**Conclusion.** Recovery cannot come from reweighting or resampling. It must come from *injecting*
+poses drawn from something other than the previous belief. Everything that follows is about
+deciding when to inject and where from. $\blacksquare$
+
+**The related failure worth knowing.** The same argument in miniature explains premature
+convergence. With $M$ particles split between two indistinguishable modes, the mode counts perform a
+random walk with absorbing barriers under resampling, and the expected time to absorption grows only
+like $M$ — so a small filter *will* eventually commit to one room on no evidence at all. In the
+twin-rooms scenario the effect is far more violent than that argument suggests, because a sharp
+likelihood does not wait for the random walk: the mode that happens to contain a slightly
+better-placed particle takes almost the entire weight on the *first* update. Tempering (raising
+$\kappa$) is the direct antidote, and the Theater lets you watch the ambiguity's lifetime stretch as
+you turn it up.
+</Derivation>
+
+### Augmented MCL: a filter that notices its own surprise
+
+The detector needs a statistic that says "things are going worse than usual" without a
+map-specific threshold. Thrun's answer uses a quantity the filter already computes and normally
+throws away: the mean unnormalized weight,
+
+<LinkedMath>
+$$
+w_{avg} \;=\; \frac{1}{M}\sum_{i=1}^{M} \htmlClass{term-measurement}{w_t^{[i]}}
+\;\approx\; p(z_t \mid z_{1:t-1}, u_{1:t}, m)
+$$
+</LinkedMath>
+
+which is the Monte Carlo estimate of the **evidence** — the same $\eta^{-1}$ that
+[Chapter 5](/chapters/ch05-bayes-filter) flagged as a diagnostic and
+[Chapter 11](/chapters/ch11-localization-gaussian) used for outlier rejection. Smooth it at two
+rates and compare:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{w_{fast}} \leftarrow w_{fast} + \alpha_{fast}\,(w_{avg} - w_{fast}),
+\qquad
+\htmlClass{term-prior}{w_{slow}} \leftarrow w_{slow} + \alpha_{slow}\,(w_{avg} - w_{slow}),
+\qquad 0 \le \alpha_{slow} \ll \alpha_{fast}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+p_{\text{inject}} \;=\; \max\left\{0,\; 1 - \frac{\htmlClass{term-measurement}{w_{fast}}}{\htmlClass{term-prior}{w_{slow}}}\right\}
+$$
+</LinkedMath>
+
+<Derivation title="Why a ratio of two timescales is a calibration-free divergence test" result="p_inject = max(0, 1 − w_fast/w_slow)">
+**Step 1 — what $w_{avg}$ measures.** It is the average probability the current belief assigned to
+the reading that actually arrived. A well-localized filter in a static world produces a steady
+stream of similar values; the absolute level depends on the map, the beam count and the sensor
+model, and is meaningless on its own.
+
+**Step 2 — absolute levels are useless, ratios are not.** Multiply the likelihood by any constant
+$c$ (change the beam count, change $\sigma_{hit}$, change map units) and both averages scale by $c$,
+so $w_{fast}/w_{slow}$ is unchanged. The statistic is *self-calibrating*: this is why the same
+$\alpha$'s work in a corridor and a warehouse, and why no per-map threshold appears anywhere.
+
+**Step 3 — two timescales turn "abruptly" into a number.** $w_{slow}$ is the filter's memory of how
+well it usually does; $w_{fast}$ is how it is doing now. A kidnap drops $w_{avg}$ in one step, so
+$w_{fast}$ follows immediately while $w_{slow}$ barely moves, and the ratio dives. A single noisy
+reading also drops $w_{avg}$ — but for one step only, after which $w_{fast}$ climbs back, and the
+integrated injection is small. Sensitivity is set by the *separation* of the gains, which is why the
+algorithm requires $\alpha_{slow} \ll \alpha_{fast}$ and why setting them equal gives a detector that
+is identically blind ($w_{fast} \equiv w_{slow} \Rightarrow p_{\text{inject}} \equiv 0$).
+
+**Step 4 — the injection is self-extinguishing.** Suppose the likelihood level drops permanently by
+a factor $(1-\delta)$ at $t=0$. Then
+
+$$
+w_{fast}(n) = 1 - \delta\big(1 - (1-\alpha_{fast})^n\big), \qquad
+w_{slow}(n) = 1 - \delta\big(1 - (1-\alpha_{slow})^n\big)
+$$
+
+so $p_{\text{inject}}(n) = \delta\left[(1-\alpha_{slow})^n - (1-\alpha_{fast})^n\right] / w_{slow}(n)$,
+which rises to a peak and then decays to **zero** as both averages converge on the new level. The
+detector fires on *change*, not on *level* — exactly the right semantics, and the reason it needs no
+off switch. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="Augmented_MCL(X_{t-1}, u_t, z_t, m)"
+  inputs="the previous particle set, control, measurement, map; static w_slow, w_fast"
+  outputs="X_t"
+  complexity="O(M · K) plus O(M) bookkeeping — Table 8.3"
+>
+1. static $w_{slow},\, w_{fast}$
+2. $\bar{\mathcal{X}}_t = \mathcal{X}_t = \emptyset$
+3. for $i = 1$ to $M$ do
+4. &nbsp;&nbsp;&nbsp;&nbsp;$x_t^{[i]} = \texttt{sample\_motion\_model}(u_t,\, x_{t-1}^{[i]})$
+5. &nbsp;&nbsp;&nbsp;&nbsp;$w_t^{[i]} = \texttt{measurement\_model}(z_t,\, x_t^{[i]},\, m)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\bar{\mathcal{X}}_t = \bar{\mathcal{X}}_t + \langle x_t^{[i]},\, w_t^{[i]} \rangle$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$w_{avg} = w_{avg} + \frac{1}{M} w_t^{[i]}$
+8. endfor
+9. $w_{slow} = w_{slow} + \alpha_{slow}\,(w_{avg} - w_{slow})$
+10. $w_{fast} = w_{fast} + \alpha_{fast}\,(w_{avg} - w_{fast})$
+11. for $i = 1$ to $M$ do
+12. &nbsp;&nbsp;&nbsp;&nbsp;with probability $\max\{0,\, 1 - w_{fast}/w_{slow}\}$ do
+13. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;add a random pose to $\mathcal{X}_t$
+14. &nbsp;&nbsp;&nbsp;&nbsp;else
+15. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;draw $j$ with probability $\propto w_t^{[j]}$ and add $x_t^{[j]}$ to $\mathcal{X}_t$
+16. &nbsp;&nbsp;&nbsp;&nbsp;endwith
+17. endfor
+18. return $\mathcal{X}_t$
+</Algorithm>
+
+<Deferred>
+  <RecoveryWard />
+</Deferred>
+
+Two engineering notes that the pseudocode hides and every implementation hits.
+
+**$w_{avg}$ must be computed from *unnormalized* weights.** Normalized weights always average to
+$1/M$, so a filter that normalizes before smoothing has built a detector that can never fire. In our
+TypeScript port `ParticleFilter.correct` normalizes, so the widgets recompute the raw mean
+explicitly; the Rust below keeps the raw sum from the weighting loop.
+
+**The raw product is unusable as a level.** The likelihood of a scan is a product over beams, so a
+200-beam sweep with per-beam likelihoods of order $10^{-2}$ produces $10^{-400}$ — not a double at
+all — and even at 20 beams the magnitude swings over dozens of orders of magnitude as you change the
+beam count, the map or $\sigma_{hit}$. The *ratio* survives all of that; the level does not.
+Both implementations use the per-beam geometric mean $\exp(\log q / K)$, a monotone rescaling that
+puts $w_{avg}$ on a per-beam scale of order $0.1$–$1$ and makes the two gains portable across maps
+and beam counts. Production AMCL reaches the same place by another route: its likelihood-field score
+is a *sum* of per-beam terms rather than a product.
+
+#### A worked example you can check by hand
+
+Take $\alpha_{fast} = 0.5$, $\alpha_{slow} = 0.05$, and a filter that has been tracking happily long
+enough that $w_{fast} = w_{slow} = 1.0$. At $t = 1$ the robot is kidnapped and the average likelihood
+collapses to $w_{avg} = 0.2$, where it stays.
+
+The first step is two lines of arithmetic:
+
+$$
+w_{fast} = 1 + 0.5\,(0.2 - 1) = 0.6,
+\qquad
+w_{slow} = 1 + 0.05\,(0.2 - 1) = 0.96,
+\qquad
+p_{\text{inject}} = 1 - \tfrac{0.6}{0.96} = 0.375
+$$
+
+Continue, and put the single-glitch case — $w_{avg} = 0.2$ for one step only, then back to $1.0$ —
+in the next columns:
+
+| $t$ | $w_{fast}$ | $w_{slow}$ | $p_{\text{inject}}$ | injected at $M = 1000$ | glitch: $p_{\text{inject}}$ |
+|---|---|---|---|---|---|
+| 1 | 0.6 | 0.96 | 0.3750 | 375 | 0.3750 |
+| 2 | 0.4 | 0.922 | 0.5662 | 566 | 0.1684 |
+| 3 | 0.3 | 0.8859 | 0.6614 | 661 | 0.0663 |
+| 4 | 0.25 | 0.85161 | 0.7064 | 706 | 0.0163 |
+| 5 | 0.225 | 0.81903 | 0.7253 | 725 | 0.0000 |
+
+Read the two right-hand columns against each other, because that comparison is the entire design.
+A genuine kidnap has the filter replacing two thirds of its particles per step and still climbing;
+a single bad reading costs a total of $0.63\,M$ particles spread over four steps and then stops by
+itself, with no threshold, no timer and no state machine. The difference between "the world changed"
+and "a beam bounced off a chrome table leg" falls out of two exponential filters with different
+gains.
+
+### Mixture proposals: when the sensor should propose
+
+Recovery by *uniform* injection is blunt. Most injected particles land somewhere the current scan
+flatly rules out and die at the next weighting, so you pay $M \cdot p_{\text{inject}}$ likelihood
+evaluations to keep a handful. The principled alternative is to let a fraction $\phi$ of the
+particles be proposed by the measurement itself and reverse the roles in the importance ratio:
+
+<LinkedMath>
+$$
+x_t^{[i]} \sim \eta\, \htmlClass{term-measurement}{p(z_t \mid x_t, m)},
+\qquad
+w_t^{[i]} = \int \htmlClass{term-prediction}{p(x_t^{[i]} \mid u_t, x_{t-1})}\,
+                 \htmlClass{term-prior}{\bel(x_{t-1})}\, dx_{t-1}
+$$
+</LinkedMath>
+
+<Derivation title="Mixture-MCL weights: swap the roles, swap the weight" result="w ∝ bel-bar(x), the motion side">
+**Step 1 — the identity is symmetric.** Importance sampling only requires weight =
+target/proposal. With proposal $g(x) = \eta\, p(z_t \mid x, m)$ and the same target
+$f(x) = \eta'\, p(z_t \mid x, m)\, \belbar(x)$, the likelihood cancels instead of the prediction:
+
+$$
+w \;=\; \frac{f}{g} \;\propto\; \belbar(x) \;=\; \int p(x \mid u_t, x_{t-1})\,\bel(x_{t-1})\,dx_{t-1}
+$$
+
+So a measurement-proposed particle is weighted by *how plausible the motion history makes it*, which
+is the mirror image of ordinary MCL.
+
+**Step 2 — both halves are hard, honestly.** Sampling from $p(z \mid x, m)$ means inverting the
+sensor: easy for landmarks (Chapter 10's `sample_pose` inverts a range-bearing reading in closed
+form), and genuinely hard for a laser scan — "imagine sampling from the space of all poses that fit
+a given laser range scan". Evaluating the weight needs $\belbar$ as a *density*, but we only have
+samples of it, so it must be estimated — typically by convolving the previous particle set with a
+narrow Gaussian kernel and evaluating that, at $O(M \log M)$ with a k-d tree.
+
+**Step 3 — mix, do not replace.** Proposing everything from the measurement throws away the motion
+history entirely. Thrun's recipe is a mixture: draw a fraction $\phi$ (5% is a typical value) from
+the measurement stream and $1-\phi$ from the ordinary one. The result "yields superior results, but
+it can be challenging to implement", and it is a *sound* solution to kidnapping rather than a
+heuristic one, because it constantly seeds particles wherever the current scan says the robot could
+be, independent of history. $\blacksquare$
+</Derivation>
+
+The practical descendant of this idea is what every deployed system does: when the sensor *can* be
+inverted, inject from the measurement instead of from the uniform. Scan-matching a global map to get
+candidate poses, or a learned place-recognition front end, is mixture-MCL's proposal step wearing
+2026 clothes — [Chapter 16](/chapters/ch16-scan-matching) builds the scan matcher, and
+[Chapter 25](/chapters/ch25-learning) builds the learned version.
+
+### The world moves: localization among people
+
+Every model so far assumed a static world. Real buildings contain people, and a person standing
+between the laser and a wall produces a reading the map cannot explain. Nothing in MCL treats this
+as anything other than evidence that the robot is somewhere else, and with twenty beams the effect
+compounds fast.
+
+The four-way beam mixture of [Chapter 10](/chapters/ch10-sensor-models) already *has* a component
+for this — $z_{short}$, the exponential ramp in front of the expected range — but having a component
+that explains people is not the same as being immune to them: the mixture still assigns the reading
+to the pose that best explains a corridor full of unexpected walls. So we compute, per beam, the
+posterior probability that the reading was caused by an unmodelled object, and drop the beams where
+it is large:
+
+<LinkedMath>
+$$
+p(\bar c_t^k = \text{short} \mid z_t^k, z_{1:t-1}, u_{1:t}, m)
+\;\approx\;
+\frac{\sum_i \htmlClass{term-measurement}{z_{short}\, p_{short}(z_t^k \mid x_t^{[i]}, m)}}
+     {\sum_i \htmlClass{term-measurement}{p(z_t^k \mid x_t^{[i]}, m)}}
+\;>\; \chi_{rej}
+\;\Rightarrow\; \text{reject}
+$$
+</LinkedMath>
+
+The sum runs over particles because the integral over $\bel(x_t)$ has no closed form; Thrun's
+$\bar{\mathcal{X}}_t$ is a *representative* sample, and forty-eight poses estimate a ratio of two
+sums perfectly well.
+
+<Algorithm
+  name="test_range_measurement(z_t^k, X̄_t, m)"
+  inputs="one beam, a representative sample of the predicted belief, the map"
+  outputs="accept or reject"
+  complexity="O(|X̄|) ray casts per beam — Table 8.4"
+>
+1. $p = q = 0$
+2. for $i = 1$ to $|\bar{\mathcal{X}}_t|$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$p = p + z_{short} \cdot p_{short}(z_t^k \mid x_t^{[i]}, m)$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$q = q + z_{hit} p_{hit} + z_{short} p_{short} + z_{max} p_{max} + z_{rand} p_{rand}$
+5. endfor
+6. if $p / q > \chi_{rej}$ then return **reject** else return **accept**
+</Algorithm>
+
+<Callout type="warn">
+**An honest note about Table 8.4.** The printed pseudocode accumulates $p$ as the *hit* mass and
+then returns `accept` when $p/q \le \chi$ — which rejects precisely the beams the map explains
+best, the opposite of the surrounding text ("the measurement is then rejected if its probability of
+being caused by an unexpected obstacle exceeds a user-selected threshold $\chi$") and of the
+figures. We implement the prose, as written above, and say so rather than quietly picking one.
+</Callout>
+
+The asymmetry is the design, not an accident. A surprisingly **short** reading has $p_{short}$ mass
+and can be rejected; a surprisingly **long** one has none, so it always survives. That matters
+enormously: long readings are how a delocalized filter discovers that it is lost, and a symmetric
+outlier rejector would throw away exactly the evidence that drives recovery. People-filtering and
+kidnap-recovery are designed to coexist.
+
+<Deferred>
+  <CrowdMode />
+</Deferred>
+
+## Implementation in Rust
+
+Three types, all of them implementing [Chapter 11](/chapters/ch11-localization-gaussian)'s
+`Localizer` trait, so the benchmark harness and the widget's algorithm switch can iterate over them.
+
+```rust title="crates/localize/src/mcl/mod.rs"
+use nalgebra::Matrix3;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+
+use motion::{OdomDelta, OdometryModel};     // Ch. 9
+use particles::{low_variance_resample, ParticleSet};  // Ch. 8
+use pr_core::geom::SE2;                     // Ch. 3
+use sensor::SensorModel;                    // Ch. 10
+use sim::{Scan, World};                     // Ch. 4
+
+/// Monte Carlo localization — Thrun et al., **Table 8.2**.
+///
+/// Generic over the sensor model because that is the only genuine choice here:
+/// swapping `BeamModel` for `LikelihoodField` changes the cost per particle by
+/// an order of magnitude and nothing else in this file.
+pub struct Mcl<S: SensorModel> {
+    pub particles: ParticleSet<SE2>,
+    pub motion: OdometryModel,
+    pub sensor: S,
+    /// Seeded, never `thread_rng`: a replayable run is what makes the widget's
+    /// scrubber and the benchmark table possible at all.
+    pub rng: SmallRng,
+}
+
+impl<S: SensorModel> Mcl<S> {
+    /// Global localization: x₀^[i] ~ Uniform(free(m)).
+    pub fn global_init(
+        map: &World,
+        m: usize,
+        motion: OdometryModel,
+        sensor: S,
+        seed: u64,
+    ) -> Self {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let particles = ParticleSet::from_fn(m, |_| map.sample_free_pose(&mut rng, 0.2));
+        Self { particles, motion, sensor, rng }
+    }
+
+    /// Lines 3–6: propagate every particle and weight it. Returns `w_avg`, the
+    /// mean **unnormalized** weight — the empirical evidence
+    /// p(z_t | z_{1:t−1}, u_{1:t}, m), which `AugmentedMcl` needs and which
+    /// normalizing would destroy.
+    ///
+    /// Split out from `step` so the augmented variant can insert its own
+    /// resampling rule without duplicating a line of this.
+    pub fn propagate_and_weight(&mut self, u: &OdomDelta, z: &Scan, map: &World) -> f64 {
+        // Destructure to split the borrow: the sampler needs `&mut rng` while we
+        // are iterating the particle states mutably, and `self.motion.sample(…,
+        // &mut self.rng)` inside `self.particles.iter_mut()` does not compile.
+        let Self { particles, motion, sensor, rng } = self;
+
+        let n_beams = z.used_beams();
+        let mut w_avg = 0.0;
+        for (x, w) in particles.iter_mut() {
+            *x = motion.sample(u, x, rng);
+            // Log space, always: a product over 60 beams leaves f64 behind.
+            let log_q = sensor.log_likelihood(z, x, map);
+            // Per-beam geometric mean keeps w_avg O(0.1..1) regardless of the
+            // beam count, so α_fast/α_slow are portable across maps.
+            *w = (log_q / n_beams as f64).exp();
+            w_avg += *w;
+        }
+        w_avg / particles.len() as f64
+    }
+
+    /// The full Table 8.2 recursion.
+    pub fn step(&mut self, u: &OdomDelta, z: &Scan, map: &World) -> f64 {
+        let w_avg = self.propagate_and_weight(u, z, map);
+        // Lines 7–10 — Chapter 8's comb, not M independent draws.
+        low_variance_resample(&mut self.particles, &mut self.rng);
+        w_avg
+    }
+
+    /// The pose to publish, and the mass behind it.
+    ///
+    /// Deliberately *not* the mean of the whole set: the mean of a bimodal
+    /// belief sits in the wall between two rooms, a pose the filter assigns
+    /// essentially zero probability. Returning the cluster mass alongside lets
+    /// the caller say "62% of my belief is here" instead of pretending.
+    pub fn estimate(&self) -> (SE2, Matrix3<f64>, f64) {
+        self.particles.dominant_cluster(0.7)
+    }
+}
+```
+
+The augmented variant wraps it. Note that `Injector` is an enum rather than a bool: uniform
+injection is the textbook default, and measurement-driven injection is what production systems
+actually do — the difference is median recovery time, and it is measurable.
+
+```rust title="crates/localize/src/mcl/augmented.rs" {34-50}
+use rand::Rng as _;
+
+use super::Mcl;
+
+/// Where a recovery particle comes from.
+pub enum Injector {
+    /// Uniform over free space — Table 8.3 as written.
+    UniformFree,
+    /// Draw from the measurement model (Ch. 10 `sample_pose`, or the likelihood
+    /// field's normalized field). Strictly better when the sensor is invertible:
+    /// injected particles land somewhere the current scan actually allows.
+    FromSensor,
+}
+
+/// Augmented MCL — Thrun et al., **Table 8.3**.
+pub struct AugmentedMcl<S: SensorModel> {
+    pub mcl: Mcl<S>,
+    pub w_fast: f64,
+    pub w_slow: f64,
+    /// Decades apart, per the algorithm's requirement 0 ≤ α_slow ≪ α_fast.
+    pub a_fast: f64,
+    pub a_slow: f64,
+    pub injector: Injector,
+    seeded: bool,
+}
+
+impl<S: SensorModel> AugmentedMcl<S> {
+    /// Table 8.3. Returns how many particles were injected this step — the
+    /// number the Theater draws as blue rain.
+    pub fn step(&mut self, u: &OdomDelta, z: &Scan, map: &World) -> usize {
+        // Lines 3–8: identical to MCL, which is why it is a call and not a copy.
+        let w_avg = self.mcl.propagate_and_weight(u, z, map);
+
+        // Seed both averages on the first call. Starting from zero would report
+        // p_inject = 0 on step one and a spurious spike on step two — an
+        // artefact of initialization, not a property of the data.
+        if !self.seeded {
+            self.w_fast = w_avg;
+            self.w_slow = w_avg;
+            self.seeded = true;
+        } else {
+            self.w_fast += self.a_fast * (w_avg - self.w_fast);
+            self.w_slow += self.a_slow * (w_avg - self.w_slow);
+        }
+
+        let p_inject = if self.w_slow > 0.0 {
+            (1.0 - self.w_fast / self.w_slow).max(0.0)
+        } else {
+            0.0
+        };
+
+        let m = self.mcl.particles.len();
+        let injected = (0..m).filter(|_| self.mcl.rng.random::<f64>() < p_inject).count();
+
+        // Table 8.3 draws each survivor independently; we hand the survivors to
+        // the low-variance comb in one batch. Same target distribution, lower
+        // variance, and it is what every deployed implementation does.
+        let mut next = low_variance_resample_n(&self.mcl.particles, m - injected, &mut self.mcl.rng);
+        next.extend((0..injected).map(|_| match self.injector {
+            Injector::UniformFree => map.sample_free_pose(&mut self.mcl.rng, 0.2),
+            Injector::FromSensor => self.mcl.sensor.sample_pose(z, map, &mut self.mcl.rng),
+        }));
+        self.mcl.particles.replace(next);
+        injected
+    }
+}
+```
+
+And the dynamic-environment filter, which runs *before* the weighting step:
+
+```rust title="crates/localize/src/mcl/dynamic.rs"
+/// `test_range_measurement` — Thrun et al., **Table 8.4**, in the direction the
+/// surrounding text specifies: reject when the reading is probably a person.
+///
+/// `sample` is a representative subset of the predicted particles, not the whole
+/// set: this costs one ray cast per pose per beam, and 48 poses estimate a ratio
+/// of two sums as well as 5 000 do.
+pub fn test_range_measurement(
+    z_k: f64,
+    bearing: f64,
+    sample: &[SE2],
+    map: &World,
+    params: &BeamParams,
+    chi_rej: f64,
+) -> Verdict {
+    let (mut short_mass, mut total) = (0.0, 0.0);
+
+    for x in sample {
+        let z_star = map.raycast(x, bearing, params.max_range);
+        // The mixture is linear in its weights, so each component is just the
+        // full model with the other three weights zeroed. No second copy of
+        // Table 6.1 exists in this crate.
+        short_mass += params.with_only_short().likelihood(z_k, z_star);
+        total += params.likelihood(z_k, z_star);
+    }
+
+    if total <= 0.0 {
+        return Verdict::Accept;
+    }
+    let p_short = short_mass / total;
+    // Asymmetric on purpose: a surprisingly *long* reading has no p_short mass,
+    // so it is never rejected — and long readings are exactly how a lost filter
+    // finds out that it is lost.
+    if p_short > chi_rej { Verdict::Reject { p_short } } else { Verdict::Accept }
+}
+```
+
+The grid localizer's predict step is where the coarsening correction lives. It is short, and the
+two `sqrt`s are the entire content of the derivation above:
+
+```rust title="crates/localize/src/grid/mod.rs" {12-18}
+impl GridLocalizer {
+    /// Line 3 of Table 8.1, as a scatter with a bounded kernel.
+    ///
+    /// The literal double loop is O(|G|²) — 1.2 × 10¹¹ kernel evaluations for a
+    /// 15 cm × 5° grid of this apartment, per step. Scattering each occupied
+    /// cell into the 3×3×3 neighbourhood of its predicted pose is O(|G| · 27).
+    pub fn predict(&mut self, u: &OdomDelta, noise: GridMotionNoise) {
+        let mut next = vec![0.0_f32; self.bel.len()];
+        let half = self.res.xy / 2.0;
+
+        // Coarsening correction: the cell's own extent, in quadrature. Without
+        // it, a 40 cm grid with 10 cm steps never changes cell and the belief
+        // freezes in place while the robot drives away.
+        let sigma_xy = (noise.trans * noise.trans + half * half).sqrt();
+        let sigma_th = (noise.rot * noise.rot
+            + (self.res.theta / 2.0) * (self.res.theta / 2.0))
+            .sqrt();
+
+        for (k, &mass) in self.bel.iter().enumerate() {
+            if mass < 1e-12 {
+                continue; // selective updating: skip cells with nothing in them
+            }
+            let predicted = self.cell_center(k).apply_odom(u);
+            self.splat(&mut next, predicted, mass, sigma_xy, sigma_th);
+        }
+
+        self.bel = next;
+        self.normalize();
+    }
+}
+```
+
+### The test that pins the worked example
+
+```rust title="crates/localize/src/mcl/augmented.rs (tests)"
+/// The chapter's hand-checked kidnap schedule. Both this test and the
+/// TypeScript port's `SurpriseDetector` must reproduce these numbers, because
+/// the prose quotes them.
+#[test]
+fn kidnap_injection_schedule() {
+    let mut d = SurpriseDetector::new(0.5, 0.05); // α_fast, α_slow
+    d.seed(1.0);                                   // long-run steady state
+
+    let p1 = d.update(0.2);
+    assert_relative_eq!(d.w_fast, 0.60, epsilon = 1e-12);
+    assert_relative_eq!(d.w_slow, 0.96, epsilon = 1e-12);
+    assert_relative_eq!(p1, 0.375, epsilon = 1e-12);
+
+    let p2 = d.update(0.2);
+    assert_relative_eq!(d.w_fast, 0.40, epsilon = 1e-12);
+    assert_relative_eq!(d.w_slow, 0.922, epsilon = 1e-12);
+    assert_relative_eq!(p2, 0.566_161, epsilon = 1e-6);
+
+    let p3 = d.update(0.2);
+    assert_relative_eq!(p3, 0.661_361, epsilon = 1e-6);
+}
+
+/// A single bad reading must *not* trigger sustained injection: that is the
+/// whole reason there are two timescales.
+#[test]
+fn one_glitch_extinguishes() {
+    let mut d = SurpriseDetector::new(0.5, 0.05);
+    d.seed(1.0);
+
+    let spike = d.update(0.2);
+    assert!(spike > 0.37 && spike < 0.38);
+
+    let tail: Vec<f64> = (0..4).map(|_| d.update(1.0)).collect();
+    assert_relative_eq!(tail[0], 0.168_399, epsilon = 1e-6);
+    assert!(tail[3] == 0.0, "injection must switch itself off");
+    // Total particles wasted on a glitch, as a fraction of M:
+    assert!(spike + tail.iter().sum::<f64>() < 0.63);
+}
+```
+
+## Putting it together: choosing a localizer
+
+Thrun's Table 8.5 compares the localizers along the axes that matter in a deployment. Reproduced
+below, with our own measurements filled in where this chapter's port can actually measure something
+— the analytic columns are arithmetic you can redo, and the timing columns are what the widgets on
+this page report in your browser, not numbers from a paper.
+
+| | EKF ([Ch. 11](/chapters/ch11-localization-gaussian)) | MHT | Grid, coarse | Grid, fine | MCL | Augmented MCL |
+|---|---|---|---|---|---|---|
+| Measurements | landmarks | landmarks | raw scans | raw scans | raw scans | raw scans |
+| Posterior | one Gaussian | mixture of Gaussians | histogram over poses | histogram over poses | particles | particles |
+| Memory (this apartment) | ~100 B | ~1 kB | 11 kB @ 0.8 m/45°, f64 | 225 kB @ 0.3 m/15°, f64; **1.4 MB** @ 0.15 m/5°, f32 | 156 kB @ M = 5 000 | same, plus two floats |
+| Update cost | fastest | fast | 3 ms measured | 7 ms measured | ~2 ms @ M = 2 048 measured | + O(M) |
+| Resolution / accuracy | exact within its mode | exact within modes | half a cell (~0.8 m) | half a cell (~0.16 m) | tunable with M | tunable with M |
+| Global localization | **no** | yes | yes | yes | yes | yes |
+| Kidnap recovery | no | yes | yes, if cells are reactivated | yes | **no** | **yes** |
+| Dynamic environments | via outlier gating | via hypotheses | via beam rejection | via beam rejection | via beam rejection | via beam rejection |
+| Implementation effort | moderate | high | low | low, tuning high | **low** | low |
+
+The two bold cells are the whole story of Part IV. An EKF cannot do global localization at any
+price, and plain MCL cannot recover at any price; Augmented MCL fixes the second for the cost of two
+floating-point numbers and a coin flip.
+
+How much does that buy? Running this chapter's port on twelve seeded kidnaps with $M = 2{,}048$ and
+uniform injection, plain MCL re-localized once in twelve; Augmented MCL nine times, with a median of
+about five filter steps between the teleport and a converged, correct estimate. The three failures
+are worth taking seriously rather than tuning away. Uniform injection is a lottery: an injected
+particle has to land within a few tens of centimetres and a few degrees of the truth to out-weigh
+the survivors and seed a cluster, and if the robot's route after the kidnap happens to be
+uninformative the lottery can run for a long time. That is exactly the problem the mixture proposal
+above was invented to solve, and why `Injector::FromSensor` is an exercise rather than a footnote.
+
+### Where this algorithm actually lives in 2026
+
+This is not a historical chapter. AMCL — the algorithm on this page, with KLD-adaptive sample sizes
+from [Chapter 8](/chapters/ch08-nonparametric-filters) bolted on — ships as the `nav2_amcl` package
+of Nav2, the ROS 2 navigation stack, and remains the most widely used map-based localizer in that
+ecosystem. The ROS maintainers' own 2023 survey describes it as a fully parameterized grid particle
+filter reaching "localization accuracies of 5 cm or better in many practical environments", and
+then quietly uses its output as *ground truth* when benchmarking other estimators — which tells you
+how much a decades-old algorithm is still trusted. `beluga_amcl`, a ground-up C++17 rewrite
+presented in 2024, exists precisely because so much depends on this algorithm that people wanted
+better-engineered software running the same mathematics, not different mathematics.
+
+Three things have changed since the textbook, and all three are additive:
+
+- **The proposal.** Mixture-MCL's measurement proposal, impractical for laser scans in 2001, is now
+  routine: scan-match against the map ([Chapter 16](/chapters/ch16-scan-matching)) or query a learned
+  place-recognition front end, and inject from *that*. Recovery time drops accordingly.
+- **The observation model.** IR-MCL (2023) replaces the likelihood field with a neural occupancy
+  field and renders synthetic scans at arbitrary poses to score particles. The filter is unchanged —
+  it is still Table 8.2 — and only line 4 was replaced. That is the modularity this chapter's
+  `SensorModel` trait bound is claiming.
+- **The alternative.** Pose-graph localization (SLAM Toolbox's localization mode) tracks the robot by
+  matching scans into a stored graph instead of maintaining a sampled belief. It is more accurate
+  when it works and has no story for global ambiguity as clean as a particle cloud, which is why
+  production stacks still ship AMCL alongside it.
+
+The capstone in [Chapter 26](/chapters/ch26-capstone) uses `AugmentedMcl` unchanged, and
+[Chapter 17](/chapters/ch17-fastslam) turns it into a SLAM system by the simple expedient of giving
+every particle its own map.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The detector under a permanent change">
+    A room is remodelled, so the average measurement likelihood drops permanently by a factor
+    $(1-\delta)$ from an old steady state of $1$. Using
+    $w_{fast}(n) = 1 - \delta(1 - (1-\alpha_{fast})^n)$ and the same expression with
+    $\alpha_{slow}$, derive $p_{\text{inject}}(n)$ in closed form. Show that
+    $p_{\text{inject}} \to 0$ as $n \to \infty$, find the step at which it peaks for
+    $\delta = 0.8$, $\alpha_{fast} = 0.5$, $\alpha_{slow} = 0.05$, and say in one sentence what a
+    *persistently* nonzero injection rate would tell you about your map.
+
+    <details>
+      <summary>Check your peak</summary>
+      The maximum is at $n = 6$ with $p_{\text{inject}} \approx 0.73$; by $n = 100$ it is under 3%.
+      A persistent nonzero rate cannot come from a step change — it means the likelihood is still
+      *falling*, i.e. the map is drifting out of date, which is a maintenance alarm rather than a
+      localization one.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="When is a symmetry actually a symmetry?">
+    Let $\sigma$ be a rigid transform with $\sigma(m) = m$. Show that if
+    (i) $\bel(x_0)$ is invariant under $\sigma$, (ii) $p(z \mid x, m) = p(z \mid \sigma(x), m)$ for
+    every $z$, and (iii) $p(x' \mid u, x) = p(\sigma(x') \mid u, \sigma(x))$, then $\bel(x_t)$ is
+    invariant under $\sigma$ for all $t$ — the ambiguity is permanent and no amount of driving
+    resolves it.
+
+    Now check the conditions for the Apartment's mirror symmetry $\sigma(x,y,\theta) = (12-x,\,y,\,\pi-\theta)$
+    and a 360° LiDAR. One of (ii) and (iii) fails. Which, and why? Use your answer to explain the
+    behaviour you actually observe in <a href="#w12.1">the Theater</a>, and say what kind of
+    symmetry *would* produce a permanently bimodal posterior for this robot.
+
+    <details>
+      <summary>The shape of the answer</summary>
+      Reflection is orientation-reversing. Reflecting the scene reverses the *order* of the beams,
+      so the scan a mirrored robot receives is $z$ read backwards, and (ii) holds only for scans
+      that happen to be left–right symmetric. (iii) fails too: the mirror image of a left turn is a
+      right turn, so a ghost hypothesis fed the robot's own odometry stops being the mirror image
+      the moment the robot rotates. A pure *translation* symmetry — two identical rooms side by
+      side, no reflection — satisfies both, which is why real buildings full of identical offices
+      are so much harder than a symmetric floorplan.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Premature convergence has a timescale">
+    Model the symmetric case as follows: $M$ particles split between two modes with equal weights,
+    and each resampling step draws $M$ particles multinomially from the current split. Show that the
+    number in mode A is a martingale, and that the expected time until one mode is extinguished
+    grows like $O(M)$. What does that imply for the practice of "just use more particles" — does it
+    fix the problem, or only postpone it?
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check: how small can M be?">
+    In the <a href="#w12.1">MCL Theater</a>, with the likelihood field and $\kappa = 1$, predict
+    whether $M = 256$ will converge before Rusty reaches the corridor junction. Then find the
+    smallest power of two that converges reliably across five re-rolls of the seed. Now set
+    $\kappa = 3$ and repeat. Which direction did the answer move, and why — explain it using the
+    proposal/target argument from the MCL derivation rather than "the sensor got worse".
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Blind the detector on purpose">
+    In the <a href="#w12.3">Recovery Ward</a>, set $\alpha_{fast} = \alpha_{slow}$. Predict, before
+    pressing anything, what the two lines and the injection probability will do on (a) a kidnap and
+    (b) a single glitched reading. Verify. Then state in one sentence why *two* timescales, rather
+    than one timescale and a threshold, is the mechanism — and what a per-map threshold would have
+    to be re-tuned against.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="The cost of rejecting the unexpected">
+    In <a href="#w12.5">Crowd Mode</a>, record the RMSE with the novelty test off, then at
+    $\chi_{rej} = 0.6$, then at $\chi_{rej} = 0.1$. Now tick *close room B's door* and watch what the
+    rejected-beam stubs do. Explain why the same mechanism that removes people also removes a real
+    change to the map, and propose one signal — available to the filter, not to you — that could
+    tell the two apart.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Injector::FromSensor">
+    Implement measurement-driven injection for the likelihood field: sample a scan endpoint, sample
+    a free cell near it with probability proportional to the field value, and complete the pose with
+    a heading drawn to align the scan. Measure median kidnap-recovery time against uniform injection
+    over 50 seeded kidnaps, and report the distribution rather than the mean — recovery times are
+    heavy-tailed and the mean will lie to you.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Make the grid competitive">
+    Take the `GridLocalizer` to 15 cm × 5° and make one update run in under 10 ms. You will need
+    three things from §8.2.3: pre-cached per-cell likelihoods so correction is a lookup, selective
+    updating so untouched cells cost nothing, and delayed motion updates so the convolution runs
+    once per 20 cm rather than once per tick. Then answer the question the chapter dodged: with all
+    three optimizations, is the fine grid ever the right choice over MCL — and for which robot?
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 8 is this chapter's spine: Tables 8.1–8.4 are reproduced here as Grid_localization, MCL, Augmented_MCL and test_range_measurement, and the comparison table is Table 8.5 with our own measurements added."
+  />
+  <Reference
+    authors="Burgard, W., Fox, D., Hennig, D., and Schmidt, T."
+    year={1996}
+    title="Estimating the Absolute Position of a Mobile Robot Using Position Probability Grids"
+    venue="Proc. AAAI-96, pp. 896–901"
+    url="https://cdn.aaai.org/AAAI/1996/AAAI96-133.pdf"
+    note="Grid localization as originally proposed. Reading it next to the cost arithmetic in this chapter shows exactly which engineering compromises the metric-grid era was built on."
+  />
+  <Reference
+    authors="Dellaert, F., Fox, D., Burgard, W., and Thrun, S."
+    year={1999}
+    title="Monte Carlo Localization for Mobile Robots"
+    venue="Proc. IEEE ICRA 1999, pp. 1322–1328"
+    doi="10.1109/ROBOT.1999.772544"
+    note="The paper that replaced grids with samples, and the source of the claim this chapter measures: faster, more accurate, and far smaller than a grid at the same accuracy."
+  />
+  <Reference
+    authors="Thrun, S., Fox, D., Burgard, W., and Dellaert, F."
+    year={2001}
+    title="Robust Monte Carlo Localization for Mobile Robots"
+    venue="Artificial Intelligence 128(1–2), 99–141"
+    doi="10.1016/S0004-3702(01)00069-8"
+    note="Where Mixture-MCL and the recovery machinery are developed properly, including the perfect-sensor failure and the k-d-tree density estimate the mixture weights need."
+  />
+  <Reference
+    authors="Fox, D."
+    year={2003}
+    title="Adapting the Sample Size in Particle Filters Through KLD-Sampling"
+    venue="International Journal of Robotics Research 22(12), 985–1003"
+    doi="10.1177/0278364903022012001"
+    note="The adaptive-M bound built in Chapter 8 and switched on inside AMCL: thousands of particles while lost, dozens once converged, with a stated KL guarantee."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the Desks of ROS Maintainers: A Survey of Modern & Capable Mobile Robotics Algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="The maintainers' own account of what actually ships in Nav2, and the citation behind this chapter's claim that AMCL is still the default localizer."
+  />
+  <Reference
+    authors="Puga, G., Espinosa, N., Hidalgo, M., García, O., and Paunovic, I."
+    year={2024}
+    title="Beluga: A Modern Monte Carlo Localization Package for ROS and ROS 2"
+    venue="European Robotics Forum 2024, Springer Proceedings in Advanced Robotics 32, 126–130"
+    doi="10.1007/978-3-031-76424-0_23"
+    note="A ground-up reimplementation of AMCL as a generic C++17 particle-filter library. Evidence that the interesting work on this algorithm is now software architecture, not new mathematics."
+  />
+  <Reference
+    authors="Kuang, H., Chen, X., Guadagnino, T., Zimmerman, N., Behley, J., and Stachniss, C."
+    year={2023}
+    title="IR-MCL: Implicit Representation-Based Online Global Localization"
+    venue="IEEE Robotics and Automation Letters 8(3), 1627–1634"
+    doi="10.1109/LRA.2023.3239318"
+    note="MCL with a neural occupancy field as the observation model: line 4 of Table 8.2 replaced, everything else untouched. The cleanest demonstration that the filter and the sensor model are genuinely separable."
+  />
+  <Reference
+    authors="Macenski, S. and Jambrecic, I."
+    year={2021}
+    title="SLAM Toolbox: SLAM for the Dynamic World"
+    venue="Journal of Open Source Software 6(61), 2783"
+    doi="10.21105/joss.02783"
+    note="The pose-graph alternative to a sampled belief, including its localization-only mode. Chapter 16 builds the scan matcher it runs on."
+  />
+</References>

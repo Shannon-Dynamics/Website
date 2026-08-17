@@ -1,0 +1,1057 @@
+---
+title: Rusty, Sensors, and the Simulator
+description: Building the laboratory the rest of this book lives in — differential-drive kinematics, wheel odometry from encoder ticks, ray-cast LiDAR, and a seeded simulator whose every run is reproducible to the last bit.
+chapter: 4
+part: PART I
+partTitle: Foundations
+difficulty: Intermediate
+readingTime: 55 min
+quote: Since wheel-rotation sensing is available on all mobile robots, odometry is cheap and convenient. Estimation errors tend to accumulate over time, though, due to unexpected slipping and skidding of the wheels and to numerical integration error.
+quoteAuthor: Kevin M. Lynch and Frank C. Park
+quoteSource: Modern Robotics, §13.4 (2017)
+---
+
+import { RustysDashboard } from '@/components/ch/ch04/rustys-dashboard';
+import { LidarAnatomy } from '@/components/ch/ch04/lidar-anatomy';
+import { SeedLab } from '@/components/ch/ch04/seed-lab';
+import { WidgetAnatomy } from '@/components/ch/ch04/widget-anatomy';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Derive the differential-drive kinematics that turn two wheel speeds into a body twist',
+    'Show that exact arc integration is the SE(2) exponential map, and measure what approximating it costs',
+    'Turn encoder ticks into a pose increment, and separate systematic error from stochastic slip',
+    'State the simulator LiDAR forward model, and say honestly where it differs from the inference model of Chapter 10',
+    'Build a seeded, deterministic lab whose runs replay bit-for-bit — and know why that matters',
+  ]}
+  prerequisites={[
+    'SE(2), exp/log, and the ⊞ / ⊟ operators (Chapter 3)',
+    'Gaussians and seeded sampling discipline (Chapter 2)',
+    'Basic Rust: structs, traits, and the borrow checker in anger',
+  ]}
+>
+Every chapter after this one measures an algorithm. This chapter builds the instrument.
+
+Rusty is a differential-drive rover with two driven wheels, two quadrature encoders, and a planar
+LiDAR. It lives in two worlds: the **Hallway**, a corridor with three identical doors, and the
+**Apartment**, a twelve-by-nine-metre floorplan with five rooms off a corridor. By
+[Chapter 26](/chapters/ch26-capstone) Rusty will explore and map an apartment it has never seen.
+Today it can barely drive down a hallway without losing track of itself, and watching it fail is
+the point.
+
+Two ideas carry the chapter. The first is pedagogical: **the simulator is the world; models are
+beliefs about the world.** What we write here is *generative* physics — what actually happens.
+[Chapter 9](/chapters/ch09-motion-models) and [Chapter 10](/chapters/ch10-sensor-models) will fit
+*inference* models to it, and the two are deliberately not the same equations. Model mismatch is
+real from day one because we built it in on purpose. The second is engineering: **determinism is a
+feature.** A seed and a control script determine a trajectory exactly, in the browser and on your
+laptop, which is what makes every figure in this book reproducible and every benchmark honest.
+</Overview>
+
+## The problem with knowing how far you have gone
+
+Rusty's wheels are its only sense of motion. Each encoder counts the fraction of a revolution its
+wheel has turned; multiply by the wheel radius and you get how far that wheel *rolled*. Integrate
+both, and you have a pose. This is **dead reckoning**, and it is the oldest navigation algorithm
+there is.
+
+It also has a defect that no amount of engineering removes. An encoder measures the *wheel*. It
+does not measure the *floor*. Every time a wheel slips a millimetre, skids on a threshold, or
+turns out to be 0.3 mm larger than the CAD model says, the number the encoder reports and the
+distance the robot travelled part company — and because dead reckoning integrates, that
+disagreement is never corrected, only accumulated.
+
+<Deferred>
+  <RustysDashboard />
+</Deferred>
+
+Watch it for thirty seconds before reading on. Three things are worth noticing.
+
+**The error grows and never shrinks.** There is no mechanism in dead reckoning that could shrink
+it. A measurement of the outside world can pull an estimate back toward the truth; a measurement of
+your own wheels cannot, because it carries no information about where you started.
+
+**Turns are more expensive than straights.** A heading error is nearly free while you stand still
+and catastrophic once you drive under it: three degrees of heading error becomes half a metre of
+position error after ten metres of driving. This is why the "drift / distance" readout jumps at
+each end of the corridor.
+
+**With slip set to zero, the two traces coincide exactly.** That is worth sitting with. It means
+the drift you just watched is not a property of dead reckoning as an *idea* — the arithmetic is
+exact — but of the physics the arithmetic is being fed. Which raises the obvious question: why can
+no real robot set that slider to zero? Two reasons, and they behave completely differently. Drag
+the second slider and watch what a one-percent error in one wheel radius does.
+
+<KeyIdea title="The one sentence version">
+Odometry is not a position sensor. It is a velocity sensor that has been integrated hopefully, and
+the hope compounds.
+</KeyIdea>
+
+## What Rusty is made of
+
+Before the mathematics, the hardware — because every noise model in this book is a claim about a
+physical device, and it helps to know which one.
+
+Sensors split along two axes that matter more than any device catalog. A **proprioceptive** sensor
+measures the robot's own internal state; an **exteroceptive** one measures the world outside it. An
+**active** sensor emits energy and listens for it; a **passive** one only receives.
+
+<NotationTable
+  rows={[
+    { sym: '\\text{encoders}', meaning: 'Proprioceptive, passive. Optical quadrature counters on each wheel shaft. Return integer counts, from which we infer wheel angle. Cheap, high rate, and blind to the floor.', note: 'Rusty has these' },
+    { sym: '\\text{IMU}', meaning: 'Proprioceptive, passive. Angular rate and specific force. Excellent over milliseconds, hopeless over minutes: its bias is itself a random walk.', note: 'Named here, modelled in Ch. 18' },
+    { sym: '\\text{sonar}', meaning: 'Exteroceptive, active. Emits an ultrasonic pulse, times the echo. Returns one range for a whole 15–30° cone, so a wall corner smears into an arc.', note: 'Exercise 5' },
+    { sym: '\\text{LiDAR}', meaning: 'Exteroceptive, active. Time-of-flight along a narrow beam, swept through a plane. Returns a vector of ranges, one per beam bearing.', note: 'Rusty has this' },
+    { sym: '\\text{camera}', meaning: 'Exteroceptive, passive. Returns brightness, not geometry; range must be inferred from motion, stereo, or priors.', note: 'Ch. 18' },
+  ]}
+/>
+
+The taxonomy earns its keep immediately. Proprioceptive sensors give you *increments* whose errors
+accumulate; exteroceptive sensors give you *absolute* constraints whose errors do not. That single
+distinction is why the Bayes filter of [Chapter 5](/chapters/ch05-bayes-filter) has exactly two
+steps, and why one of them makes the belief worse.
+
+### Notation for this chapter
+
+<NotationTable
+  rows={[
+    { sym: 'r,\\ \\ell', meaning: 'Wheel radius and track width (the distance between the two wheel contact points).', note: 'Rusty: 0.033 m, 0.16 m' },
+    { sym: '\\omega_L,\\ \\omega_R', meaning: 'Left and right wheel angular velocities, rad/s.' },
+    { sym: 'u_t = (v,\\ \\omega)\\T', meaning: 'Commanded body twist: forward speed and yaw rate.' },
+    { sym: '\\Delta s_L,\\ \\Delta s_R', meaning: 'Arc length each wheel rolled over one tick interval, metres.' },
+    { sym: 'N', meaning: 'Encoder resolution, counts per wheel revolution.', note: 'Rusty: 4096' },
+    { sym: '\\lambda = 2\\pi r / N', meaning: 'Metres of wheel travel per encoder count.', note: '50.6 µm' },
+    { sym: '\\sigma_{\\mathrm{slip}},\\ \\delta', meaning: 'Stochastic per-wheel slip std-dev; systematic wheel-radius error.' },
+    { sym: 'z_t^k,\\ \\varphi_k', meaning: 'Range of LiDAR beam k and its bearing in the body frame.' },
+    { sym: 'z^{k*}', meaning: 'The true first-hit distance along beam k. The simulator knows it; the robot never does.' },
+    { sym: 'z_{\\max},\\ \\sigma_r', meaning: 'Maximum range and range-noise std-dev.', note: '8 m, 0.02 m' },
+    { sym: 'm', meaning: 'The map — here, the ground-truth set of wall segments.' },
+  ]}
+/>
+
+## The mathematics
+
+### From two wheels to one twist
+
+Rusty is a rigid body in the plane, so its velocity is fully described by a body twist
+$u = (v, \omega)\T$: forward speed and yaw rate. It has two actuators. Two numbers in, two numbers
+out, and the map between them is linear.
+
+<Derivation title="Wheels to twist, and back" result="v = \tfrac{r}{2}(\omega_R + \omega_L),\quad \omega = \tfrac{r}{\ell}(\omega_R - \omega_L)">
+**Step 1 — each wheel's contact point speed.** A wheel of radius $r$ turning at $\omega_i$ with no
+slip lays down ground at $s_i = r\,\omega_i$ metres per second, directed along the robot's
+forward axis.
+
+**Step 2 — the rigid-body constraint along the axle.** The two contact points sit on the same rigid
+chassis, at $\pm\ell/2$ from the centre along the body $y$-axis. For a planar rigid body rotating
+at $\omega$ about its centre, a point offset by $d$ along $y$ moves forward at $v - \omega d$.
+Hence
+
+$$
+s_L = v - \omega\tfrac{\ell}{2},
+\qquad
+s_R = v + \omega\tfrac{\ell}{2}.
+$$
+
+**Step 3 — solve the two linear equations.** Adding gives $s_L + s_R = 2v$; subtracting gives
+$s_R - s_L = \omega \ell$. Substituting $s_i = r\omega_i$:
+
+$$
+v = \frac{r}{2}\left(\omega_R + \omega_L\right),
+\qquad
+\omega = \frac{r}{\ell}\left(\omega_R - \omega_L\right).
+$$
+
+**Step 4 — sanity limits.** Equal wheel speeds give $\omega = 0$: a straight line. Opposite and
+equal give $v = 0$: a spin in place, radius zero. One wheel locked gives a turn about that wheel,
+radius $\ell/2$. All three match what you would expect from a shopping trolley.
+
+**The inverse**, which is what the arrow keys in the widget above actually go through:
+
+$$
+\omega_L = \frac{v - \omega\ell/2}{r},
+\qquad
+\omega_R = \frac{v + \omega\ell/2}{r},
+$$
+
+and the **instantaneous centre of rotation** sits on the wheel axle at signed distance
+$R = v/\omega$ from the robot centre. As $\omega \to 0$, $R \to \infty$ and the arc straightens.
+
+Notice what is *missing*: there is no third equation, because there is no third actuator. The
+lateral body velocity is structurally zero. Written as a constraint on the world-frame velocity,
+
+$$
+\dot{x}\sin\theta - \dot{y}\cos\theta = 0,
+$$
+
+which is a **Pfaffian constraint**: linear in the velocities, and not integrable to a constraint on
+position. Rusty can reach any pose in the plane; it simply cannot move sideways to get there. That
+is the entire reason parallel parking is a *planning* problem, taken up in
+[Chapter 20](/chapters/ch20-motion-planning).
+</Derivation>
+
+### Integration: the exact arc is the exponential map
+
+Hold $(v, \omega)$ constant for $\Delta t$. What is the new pose?
+
+The textbook answer is to integrate $\dot{x} = v\cos\theta$, $\dot{y} = v\sin\theta$,
+$\dot\theta = \omega$ numerically — Euler, or Runge–Kutta if you are feeling careful. This is a
+mistake, and an instructive one: the problem has a closed-form solution that is *shorter* than the
+approximation, and [Chapter 3](/chapters/ch03-geometry-of-motion) already handed it to us.
+
+<LinkedMath>
+$$
+\htmlClass{term-truth}{x_{t+1}} \;=\; \htmlClass{term-truth}{x_t} \bplus
+\bigl(v\,\Delta t,\; 0,\; \omega\,\Delta t\bigr)\T
+\;=\; x_t \circ \exp\Bigl[\bigl(v\,\Delta t,\; 0,\; \omega\,\Delta t\bigr)\T\Bigr]
+$$
+</LinkedMath>
+
+No small-angle approximation, no integration error, no step-size parameter. The middle zero is the
+nonholonomic constraint, expressed in the Lie algebra $\mathfrak{se}(2)$.
+
+<Derivation title="Constant twist integrates to exp, and what the chord looks like" result="\Delta p = \Delta s\,\operatorname{sinc}(\Delta\theta/2)\ \text{at bearing}\ \Delta\theta/2">
+**Step 1 — constant twist means a screw ODE.** The body-frame velocity is the constant tangent
+vector $\tau = (v, 0, \omega)\T$. In matrix form the kinematics are $\dot{T} = T\,\hat\tau$ with
+$T \in \SEtwo$ and $\hat\tau$ the corresponding element of $\mathfrak{se}(2)$. This is a linear ODE
+with constant coefficients, and its solution is the matrix exponential:
+
+$$
+T(\Delta t) = T(0)\,\exp(\hat\tau\,\Delta t).
+$$
+
+That is the whole derivation. Everything below is unpacking what $\exp$ evaluates to.
+
+**Step 2 — evaluate the exponential.** From Chapter 3, $\exp(\rho, \omega\Delta t)$ has rotation
+part $\mathrm{Rot}(\omega\Delta t)$ and translation part $\mat{V}(\omega\Delta t)\,\rho$, where
+$\mat{V}$ is the $2\times 2$ block acting on $\rho = (\rho_1, \rho_2)\T$ as
+
+$$
+\mat{V}(\vartheta)\,\rho \;=\; \frac{1}{\vartheta}\Bigl(
+\rho_1\sin\vartheta - \rho_2(1 - \cos\vartheta),\;\;
+\rho_1(1 - \cos\vartheta) + \rho_2\sin\vartheta \Bigr)\T .
+$$
+
+Geometrically $\mat{V}$ converts "how far I drove along the arc" into "where I ended up". With
+$\rho = (v\Delta t, 0)\T$ and writing $\Delta s = v\Delta t$, $\Delta\theta = \omega\Delta t$, the
+second component of $\rho$ vanishes and we are left with:
+
+$$
+\Delta x = \Delta s\,\frac{\sin\Delta\theta}{\Delta\theta},
+\qquad
+\Delta y = \Delta s\,\frac{1 - \cos\Delta\theta}{\Delta\theta}.
+$$
+
+**Step 3 — recognize the arc, in polar form.** Use $\sin\vartheta = 2\sin\frac{\vartheta}{2}\cos\frac{\vartheta}{2}$
+and $1 - \cos\vartheta = 2\sin^2\frac{\vartheta}{2}$. Both components acquire the common factor
+$2\sin(\Delta\theta/2)/\Delta\theta$, leaving $(\cos\frac{\Delta\theta}{2}, \sin\frac{\Delta\theta}{2})$:
+
+$$
+\Delta p \;=\; \underbrace{\Delta s\;\frac{\sin(\Delta\theta/2)}{\Delta\theta/2}}_{\text{chord length}}
+\;\cdot\;
+\underbrace{\bigl(\cos\tfrac{\Delta\theta}{2},\;\sin\tfrac{\Delta\theta}{2}\bigr)\T}_{\text{unit vector at half the turn}}
+$$
+
+This is worth reading twice. The displacement points along **exactly half** the heading change, and
+its length is the arc length times $\operatorname{sinc}(\Delta\theta/2)$, writing
+$\operatorname{sinc}(x) = \sin x / x$ — the ratio of a chord to its arc. Equivalently, the motion is
+an arc of radius $R = \Delta s/\Delta\theta = v/\omega$, which
+is the ICR radius from the previous derivation. The Lie group did not invent new geometry; it
+handed us the geometry with the trigonometry already done.
+
+**Step 4 — what the approximations cost.** Two heuristics are common in robotics code:
+
+- *Naive Euler* — move $\Delta s$ along the **starting** heading. Wrong direction by
+  $\Delta\theta/2$, and wrong length by the chord factor.
+- *Midpoint Euler* — move $\Delta s$ along the **average** heading, $\theta + \Delta\theta/2$. By
+  Step 3 the direction is now exactly right; the only error is that it travels the arc length
+  instead of the chord, overshooting by the factor
+
+$$
+\frac{1}{\operatorname{sinc}(\Delta\theta/2)} \;=\; 1 + \frac{\Delta\theta^2}{24} + O(\Delta\theta^4).
+$$
+
+So the midpoint rule is not an approximation of the direction at all — it is exactly right there —
+and its distance error is purely radial, of size $\Delta s\,\Delta\theta^2/24$. This is why it works
+so well at 100 Hz and so badly on a log resampled to 2 Hz.
+</Derivation>
+
+### Odometry: from integer counts to a pose increment
+
+Now the sensing side. An encoder does not report an angle; it reports an integer. Over one interval
+each wheel accumulates $\Delta\text{ticks}_i$ counts, and each count corresponds to
+$\lambda = 2\pi r/N$ metres of wheel travel.
+
+<LinkedMath>
+$$
+\Delta s_i = \lambda\,\Delta\text{ticks}_i,
+\qquad
+\htmlClass{term-prediction}{\Delta s} = \tfrac{1}{2}(\Delta s_L + \Delta s_R),
+\qquad
+\htmlClass{term-prediction}{\Delta\theta} = \frac{\Delta s_R - \Delta s_L}{\ell},
+$$
+</LinkedMath>
+
+and the dead-reckoned pose advances by
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\hat{x}_{t+1}} = \htmlClass{term-prediction}{\hat{x}_t} \bplus
+\bigl(\Delta s,\; 0,\; \Delta\theta\bigr)\T .
+$$
+</LinkedMath>
+
+That is the same $\bplus$, with the same $\exp$, as the ground-truth integrator. **This is the key
+structural fact of the chapter:** dead reckoning and the simulator's physics run *identical
+arithmetic*. If the encoders saw exactly what the floor did, the orange trace would sit on the gray
+one forever. Everything you watched drift apart in the widget above came from the gap between the
+wheel and the floor — never from the mathematics.
+
+<Derivation title="The odometry error budget: three sources, three behaviours" result="quantization ~ 25 µm · slip ~ random walk · radius error ~ linear in distance">
+Three things separate $\hat{x}_t$ from $x_t$, and confusing them is the most common practical
+mistake in wheeled-robot state estimation.
+
+**1. Quantization.** Rounding a wheel angle to the nearest count loses at most half a count, so the
+per-wheel distance error is bounded by
+
+$$
+\left|\varepsilon_{\text{quant}}\right| \le \frac{\lambda}{2} = \frac{\pi r}{N}
+= \frac{\pi (0.033)}{4096} = 2.53 \times 10^{-5}\ \text{m}.
+$$
+
+Bounded, zero-mean, and essentially white, so it accumulates as a random walk with a step of at
+most 25 µm. Driving 42.6 m — nearly six lengths of the Apartment corridor — the simulator measures
+a total drift of $2.9\times 10^{-4}$ m from quantization alone. It is real, it is measurable, and
+it is not your problem.
+
+**2. Stochastic slip.** Model the ground travel of wheel $i$ as its rotation times $(1 + \epsilon_i)$
+with $\epsilon_i \sim \Normal(0, \sigma_{\mathrm{slip}}^2)$, drawn afresh each tick. This is
+zero-mean, so the *position* error is a random walk — but not a simple one. A slip difference
+between the wheels perturbs the **heading**, and heading error is integrated a second time by
+subsequent forward motion. The result: heading spread grows like $\sqrt{t}$, and position spread
+like $t^{3/2}$. The Seed Lab below measures the exponent, and it comes out at 1.4–1.5.
+
+**3. Systematic error.** Suppose the right wheel's true effective radius is $r(1+\delta)$ while the
+odometry code keeps dividing by the nominal $r$. Then *every* tick contributes a heading error of
+the same sign,
+
+$$
+\Delta\theta_{\text{err}} \approx \frac{\delta\,\Delta s_R}{\ell},
+$$
+
+so heading error grows **linearly** in distance travelled and position error faster still. This is
+Borenstein and Feng's "unequal wheel diameters", the dominant term in practice, and the reason
+their UMBmark calibration procedure exists.
+
+The magnitudes are not close. Over one 30-second corridor patrol (14.3 m driven), the simulator
+reports:
+
+| source | mean drift | 95th pct | mean heading error | varies with seed? |
+|---|---|---|---|---|
+| quantization only ($N = 4096$) | 0.00011 m | — | 0.009° | no |
+| slip, $\sigma_{\mathrm{slip}} = 0.02$ | 0.455 m | 1.183 m | 6.9° | yes |
+| radius error, $\delta = 1\%$ | 2.678 m | 2.678 m | 49.3° | **no** |
+
+Five hundred seeds per row, at the simulator's 10 Hz tick rate. The slip row is the only one with
+any spread to report — which is itself the point.
+
+One caveat, and it matters if you port these numbers: $\sigma_{\mathrm{slip}}$ is a *per-tick*
+parameter, so the drift it produces depends on the tick rate. A model meant to be rate-invariant
+would scale $\sigma$ with $\sqrt{\Delta t}$, and Chapter 9's $\alpha$-parametrization is written
+that way. This simulator is not, deliberately: it is one more place where the generative model and
+the inference model refuse to agree, and noticing the disagreement is part of the training.
+
+Read the last column. A one-percent error in one wheel radius produces six times the drift of quite
+aggressive slip — and produces *exactly* the same number on every seed, because it is not noise. No
+filter removes it, no amount of averaging cancels it, and running your benchmark over a thousand
+seeds will not reveal it. You calibrate it, or you estimate it as part of the state
+([Chapter 14](/chapters/ch14-ekf-slam) does exactly this for the map; the same trick works for
+wheel radii).
+</Derivation>
+
+### A worked example you can check by hand
+
+Rusty's track is $\ell = 0.16$ m. Over one interval the left wheel rolls $\Delta s_L = 0.72$ m and
+the right wheel rolls $\Delta s_R = 0.88$ m. Then
+
+$$
+\Delta s = \tfrac{1}{2}(0.72 + 0.88) = 0.80\ \text{m},
+\qquad
+\Delta\theta = \frac{0.88 - 0.72}{0.16} = 1.00\ \text{rad},
+$$
+
+an arc of radius $R = \Delta s/\Delta\theta = 0.80$ m through 57.3°. Apply the closed form from
+Derivation 2:
+
+$$
+\Delta x = 0.8\,\frac{\sin 1}{1} = 0.673177\ \text{m},
+\qquad
+\Delta y = 0.8\,\frac{1 - \cos 1}{1} = 0.367758\ \text{m}.
+$$
+
+In polar form the chord is $0.8 \times \operatorname{sinc}(0.5) = 0.767081$ m at a bearing of
+exactly $0.5$ rad. Now price the two shortcuts:
+
+- **Midpoint Euler** puts you 0.8 m out at 0.5 rad — right bearing, 0.032919 m too far. The
+  predicted overshoot $\Delta s\,\Delta\theta^2/24 = 0.8/24 = 0.0333$ m matches to three digits.
+- **Naive Euler** puts you 0.8 m out at 0 rad, which is **0.389012 m** wrong — half the step
+  length.
+
+One interval. If your control loop resamples odometry at 2 Hz while turning at 1 rad/s, that is the
+error you are silently adding to every increment.
+
+To make the encoder round trip concrete: $\lambda = 2\pi(0.033)/4096 = 5.0621\times10^{-5}$ m, so
+$\Delta s_L = 0.72$ m is 14223.24 counts, reported as 14223. Feeding the rounded counts back
+through `odometry_delta` gives $\Delta s = 0.79999476$ m and $\Delta\theta = 1.00008836$ rad — off
+by 5 µm and 88 µrad, which is the quantization bound doing exactly what the budget above says it
+should.
+
+### The LiDAR forward model
+
+Rusty's LiDAR is a spinning planar time-of-flight sensor: $n$ beams over a $2\pi$ field of view,
+$z_{\max} = 8$ m. For beam $k$ at body-frame bearing $\varphi_k$, the simulator computes the true
+first-hit distance by ray casting against the map,
+
+<LinkedMath>
+$$
+\htmlClass{term-truth}{z^{k*}} = \operatorname{raycast}\!\left(m,\ x_t \circ T_{\text{lidar}},\ \varphi_k\right),
+$$
+</LinkedMath>
+
+and then corrupts it in one of exactly two ways. With probability $p_{\mathrm{drop}}$ the beam
+returns nothing at all and the sensor reports its ceiling,
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{z_t^k} = z_{\max},
+$$
+</LinkedMath>
+
+and otherwise it reports the true range plus Gaussian noise, clipped to the sensor's range:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{z_t^k} = \min\!\left(\htmlClass{term-truth}{z^{k*}} + \varepsilon,\ z_{\max}\right),
+\qquad \varepsilon \sim \Normal(0, \sigma_r^2).
+$$
+</LinkedMath>
+
+<Deferred>
+  <LidarAnatomy />
+</Deferred>
+
+Three observations, each of which becomes a chapter later on.
+
+**A scan is a vector of numbers, not a shape.** The strip beneath the scene is the entire content of
+a measurement: 180 floats indexed by beam. The wall you perceive in the top panel is something
+*you* inferred. Recovering it is what [Chapter 16](/chapters/ch16-scan-matching)'s scan matcher and
+[Chapter 13](/chapters/ch13-occupancy-grids)'s mapping do, and neither of them is free.
+
+**Corners are discontinuities in range space.** Scrub the beam index past 78, and again past 103,
+and watch the range fall off a cliff — 2.474 m to 1.179 m — as the beam catches the door frame. In
+between, the beams fly through the doorway and land on the far corridor wall. Those cliffs are the
+only places a range scan carries information about *along-wall* position, which is precisely why a
+robot in a long featureless corridor knows its distance to each wall and almost nothing about how
+far down it has driven. That anisotropy is why [Chapter 11](/chapters/ch11-localization-gaussian)
+draws covariance *ellipses* rather than circles.
+
+**A dropout is the sensor's largest number and its smallest amount of information.** Turn the
+dropout rate up. Every dropped beam reports $z_{\max}$, so a naive model that treats 8 m as evidence
+of an 8 m wall will happily localize the robot onto a pane of glass. Handling this properly is the
+$z_{\max}$ spike in Chapter 10's four-way mixture.
+
+<Callout type="warn">
+**An honest disclosure about this model.** It has *two* components — a hit and a max — while
+[Chapter 10](/chapters/ch10-sensor-models) fits an inference model with *four*: hit, short, max, and
+random. That is deliberate. This world contains no people, no chair legs, and no multipath, so a
+short-return term would be modelling something that does not exist. When Chapter 10 fits its
+four-way mixture to data generated here and recovers $z_{\text{short}} \approx 0$, that is not a
+failure of the fit; it is the fit telling you the truth about the world it was given. Then we turn
+on dynamic obstacles and watch the parameter move.
+</Callout>
+
+## The algorithms
+
+<Algorithm
+  name="diff_drive_step(x_{t-1}, u_t, Δt)"
+  inputs="the true pose, the commanded twist (v, ω), the tick length"
+  outputs="the new true pose and the accumulated wheel angles"
+  complexity="O(1)"
+>
+1. $\omega_L = (v - \omega\ell/2)/r$, &nbsp; $\omega_R = (v + \omega\ell/2)/r$
+2. $\theta^{\text{wheel}}_i \mathrel{+}= \omega_i \Delta t$ &nbsp;&nbsp; *(the encoders will see this)*
+3. sample $\epsilon_L, \epsilon_R \sim \Normal(0, \sigma_{\mathrm{slip}}^2)$
+4. $\Delta s_i = r_i^{\text{eff}}\,\omega_i \Delta t\,(1 + \epsilon_i)$ &nbsp;&nbsp; *(the floor delivers this)*
+5. $\Delta s = \tfrac{1}{2}(\Delta s_R + \Delta s_L)$, &nbsp; $\Delta\theta = (\Delta s_R - \Delta s_L)/\ell$
+6. $x_t = x_{t-1} \bplus (\Delta s,\, 0,\, \Delta\theta)\T$
+7. if the segment $x_{t-1} \to x_t$ crosses a wall, **keep $x_{t-1}$** and return blocked
+8. return $x_t$
+</Algorithm>
+
+Line 7 is not a technicality. A blocked robot's wheels keep turning, so its encoders keep counting,
+so its dead-reckoned pose keeps advancing — straight through the wall. Hold the throttle against a
+wall in the widget above and watch the orange ghost leave the building.
+
+<Algorithm
+  name="odometry_delta(ticks_{t-1}, ticks_t, params)"
+  inputs="two cumulative encoder readings and the robot geometry"
+  outputs="a tangent vector τ ∈ se(2), ready for ⊞"
+  complexity="O(1)"
+>
+1. $\Delta s_L = \lambda\,(\text{ticks}_t.L - \text{ticks}_{t-1}.L)$, &nbsp; likewise $\Delta s_R$
+2. $\Delta s = \tfrac{1}{2}(\Delta s_R + \Delta s_L)$
+3. $\Delta\theta = (\Delta s_R - \Delta s_L)/\ell$
+4. return $(\Delta s,\ 0,\ \Delta\theta)\T$
+</Algorithm>
+
+<Algorithm
+  name="raycast_scan(m, x_t, lidar)"
+  inputs="the map, the true pose, the LiDAR parameters"
+  outputs="a scan: one range per beam"
+  complexity="O(n_beams · log n_segments) with a BVH"
+>
+1. $T = x_t \circ T_{\text{lidar}}$ &nbsp;&nbsp; *(sensor pose = body pose ∘ extrinsic)*
+2. **for** $k = 0$ **to** $n_{\text{beams}} - 1$ **do**
+3. &nbsp;&nbsp;&nbsp;&nbsp;$z^{k*} = $ first-hit distance from $T$ along bearing $\varphi_k$, capped at $z_{\max}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;draw $u \sim \mathcal{U}[0,1)$ and $\varepsilon \sim \Normal(0, \sigma_r^2)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;**if** $u < p_{\mathrm{drop}}$ **or** $z^{k*} \ge z_{\max}$ **then** $z^k = z_{\max}$
+6. &nbsp;&nbsp;&nbsp;&nbsp;**else** $z^k = \operatorname{clamp}(z^{k*} + \varepsilon,\ 0,\ z_{\max})$
+7. **endfor**
+8. **return** $z$
+</Algorithm>
+
+Line 4 draws *both* random numbers on every beam, whether or not the branch on line 5 uses them.
+That looks wasteful; it is deliberate. Consuming a fixed number of samples per beam means toggling
+dropout off does not reshuffle the noise on the beams that survive, so two runs that differ in one
+parameter differ *only* in that parameter. Random-number discipline of this kind is what makes an
+A/B comparison between two configurations mean anything.
+
+## Implementation in Rust
+
+This section fixes the workspace architecture. Later chapters add crates and modules; none of them
+restructure what is decided here.
+
+```text title="workspace layout"
+crates/
+  pr-core/        # accumulating core: prob (Ch. 2), geom (Ch. 3)
+  sim/            # THIS CHAPTER: worlds, robot, sensors, logs
+  widget-kit/     # THIS CHAPTER: the chrome every demo reuses
+  ...             # bayes_core (Ch. 5), motion (Ch. 9), sensor (Ch. 10), ...
+demos/
+  ch04-lab/       # one [[bin]] per widget: w4-1-dashboard, w4-2-lidar-anatomy, ...
+```
+
+### The world
+
+The map is polyline geometry, not a grid. Exact ray/segment intersection is cheap, exact, and
+resolution-independent; [Chapter 13](/chapters/ch13-occupancy-grids) *builds* a grid from these
+walls, but the walls themselves are never one.
+
+```rust title="crates/sim/src/world.rs" {24-29}
+use nalgebra::{Point2, Vector2};
+use parry2d_f64::bounding_volume::Aabb;
+use parry2d_f64::partitioning::Qbvh;
+use parry2d_f64::query::visitors::RayIntersectionsVisitor;
+use parry2d_f64::query::{Ray, RayCast};
+use parry2d_f64::shape::Segment;
+
+/// Materials exist so a surface can be *optically* different from a wall
+/// without being *geometrically* different. Glass is a wall to a planner and
+/// nearly invisible to a LiDAR, and that mismatch is a real failure mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Material {
+    Wall,
+    Glass,
+    Door(u8),
+}
+
+pub struct Wall {
+    pub seg: Segment,
+    pub material: Material,
+}
+
+pub struct World {
+    walls: Vec<Wall>,
+    /// Quantized BVH over the wall segments. Rebuilt only when the map changes,
+    /// which for a static world means exactly once — and it turns the scan cost
+    /// from O(n_beams · n_segments) into O(n_beams · log n_segments).
+    bvh: Qbvh<u32>,
+    pub bounds: Aabb,
+}
+
+impl World {
+    pub fn hallway() -> Self { /* corridor with three identical doors */ }
+    pub fn apartment() -> Self { /* 12 × 9 m, five rooms off one corridor */ }
+
+    /// First hit along a ray, or `max` if nothing is struck.
+    ///
+    /// The visitor is handed only the segments whose bounding volumes the ray
+    /// actually crosses, and it keeps scanning after a hit because a nearer one
+    /// may live in a sibling leaf.
+    pub fn raycast(&self, origin: Point2<f64>, angle: f64, max: f64) -> Hit {
+        let ray = Ray::new(origin, Vector2::new(angle.cos(), angle.sin()));
+        let mut best = Hit { distance: max, material: None };
+        let mut leaf = |&idx: &u32| {
+            let w = &self.walls[idx as usize];
+            if let Some(t) = w.seg.cast_local_ray(&ray, best.distance, true) {
+                if t < best.distance {
+                    best = Hit { distance: t, material: Some(w.material) };
+                }
+            }
+            true
+        };
+        let mut visitor = RayIntersectionsVisitor::new(&ray, max, &mut leaf);
+        self.bvh.traverse_depth_first(&mut visitor);
+        best
+    }
+
+    /// Would a body of the given radius sweeping from `from` to `to` touch a wall?
+    pub fn blocks(&self, from: &SE2, to: &SE2, radius: f64) -> bool { /* ... */ }
+
+    /// Chapter 10's likelihood field wants this, so it lives here from the start.
+    pub fn distance_to_nearest(&self, p: Point2<f64>) -> f64 { /* ... */ }
+}
+```
+
+### The robot
+
+```rust title="crates/sim/src/robot.rs" {37-49}
+use nalgebra::Vector3;
+use pr_core::geom::SE2;
+use rand::rngs::SmallRng;
+use rand_distr::{Distribution, Normal};
+
+#[derive(Clone, Copy, Debug)]
+pub struct RobotParams {
+    pub wheel_radius: f64,       // r = 0.033 m
+    pub track: f64,              // ℓ = 0.16 m
+    pub body_radius: f64,        //     0.11 m
+    pub ticks_per_rev: u32,      // N = 4096
+    /// Stochastic, zero-mean, redrawn every tick.
+    pub slip_std: f64,           // σ = 0.02
+    /// Systematic: the *true* right wheel is r(1 + δ). Odometry never learns this.
+    pub radius_bias_right: f64,  // δ = 0.0
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Twist { pub v: f64, pub omega: f64 }
+
+pub struct Robot {
+    pub pose: SE2,
+    /// Cumulative wheel rotation, radians. This — not the ground travel — is
+    /// what an encoder integrates, and the difference is the whole chapter.
+    wheel_angles: [f64; 2],
+    params: RobotParams,
+    slip: SmallRng,
+}
+
+impl Robot {
+    /// Actuate with slip, integrate exactly, refuse to pass through walls.
+    pub fn step(&mut self, cmd: Twist, dt: f64, world: &World) -> StepOutcome {
+        let RobotParams { wheel_radius: r, track: l, .. } = self.params;
+        let half = cmd.omega * l / 2.0;
+        let (wl, wr) = ((cmd.v - half) / r, (cmd.v + half) / r);
+
+        // The wheels turn by the commanded amount, always.
+        self.wheel_angles[0] += wl * dt;
+        self.wheel_angles[1] += wr * dt;
+
+        // The floor is under no such obligation.
+        let eps = match Normal::new(0.0, self.params.slip_std) {
+            Ok(n) => [n.sample(&mut self.slip), n.sample(&mut self.slip)],
+            // σ = 0 is not a valid Normal, and is exactly the noise-free case
+            // the regression test in `odometry_zero_noise_is_exact` exercises.
+            Err(_) => [0.0, 0.0],
+        };
+        let ds_l = r * wl * dt * (1.0 + eps[0]);
+        let ds_r = r * (1.0 + self.params.radius_bias_right) * wr * dt * (1.0 + eps[1]);
+
+        let ds = 0.5 * (ds_r + ds_l);
+        let dtheta = (ds_r - ds_l) / l;
+        // Exact arc integration. Not an approximation of one — the arc itself.
+        let next = self.pose.boxplus(&Vector3::new(ds, 0.0, dtheta));
+
+        if world.blocks(&self.pose, &next, self.params.body_radius) {
+            return StepOutcome::Blocked;  // wheels advanced; pose did not
+        }
+        self.pose = next;
+        StepOutcome::Moved { ds, dtheta }
+    }
+}
+```
+
+### The encoders
+
+```rust title="crates/sim/src/encoders.rs"
+use nalgebra::Vector3;
+use std::f64::consts::TAU;
+
+/// Cumulative quadrature counts. Integers on purpose: an encoder has no
+/// fractional state to report, and pretending otherwise hides the error budget.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct EncoderTicks { pub left: i64, pub right: i64 }
+
+pub fn observe(wheel_angles: [f64; 2], p: &RobotParams) -> EncoderTicks {
+    let per_rad = f64::from(p.ticks_per_rev) / TAU;
+    EncoderTicks {
+        left: (wheel_angles[0] * per_rad).round() as i64,
+        right: (wheel_angles[1] * per_rad).round() as i64,
+    }
+}
+
+/// Metres of wheel travel per count: λ = 2πr / N.
+pub fn tick_length(p: &RobotParams) -> f64 {
+    TAU * p.wheel_radius / f64::from(p.ticks_per_rev)
+}
+
+/// `odometry_delta` — counts to a tangent vector, ready for ⊞.
+///
+/// The middle component is a structural zero, not a rounding artefact: a
+/// differential drive has no lateral degree of freedom, and writing the twist
+/// this way makes the compiler agree.
+pub fn odometry_delta(prev: EncoderTicks, cur: EncoderTicks, p: &RobotParams) -> Vector3<f64> {
+    let lambda = tick_length(p);
+    let ds_l = lambda * (cur.left - prev.left) as f64;
+    let ds_r = lambda * (cur.right - prev.right) as f64;
+    Vector3::new(0.5 * (ds_r + ds_l), 0.0, (ds_r - ds_l) / p.track)
+}
+```
+
+### Determinism, and the log every later chapter consumes
+
+```rust title="crates/sim/src/run.rs" {15-27}
+use rand::{Rng, SeedableRng};
+use rand::rngs::SmallRng;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SimConfig {
+    pub world: WorldId,
+    pub robot: RobotParams,
+    pub lidar: LidarParams,
+    pub seed: u64,
+    pub dt: f64,          // 0.02 s (the widgets on this page tick at 0.1 s, for legibility)
+    pub scan_every: u32,  // one scan per 5 ticks
+}
+
+/// One RNG stream per noise source, all derived from the single config seed.
+///
+/// Sharing one generator between wheel slip and LiDAR noise would make the
+/// trajectory depend on how many beams the LiDAR happens to have — so adding a
+/// sensor would silently invalidate every recorded log in the repository. The
+/// streams cost nothing and buy a guarantee.
+fn split_streams(seed: u64) -> (SmallRng, SmallRng) {
+    let mut master = SmallRng::seed_from_u64(seed);
+    (
+        SmallRng::seed_from_u64(master.random()),  // wheel slip
+        SmallRng::seed_from_u64(master.random()),  // LiDAR
+    )
+}
+
+/// What every estimator in this book consumes.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Frame {
+    pub t: f64,
+    /// Ground truth. Present in the log, and forbidden to every algorithm that
+    /// is not scoring one. The type system cannot enforce that; code review can.
+    pub truth: SE2,
+    pub ticks: EncoderTicks,
+    pub scan: Option<Scan>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Log { pub cfg: SimConfig, pub cmds: Vec<Twist>, pub frames: Vec<Frame> }
+
+impl Log {
+    /// Chapters 11 and 12 benchmark on *identical* saved logs. That promise is
+    /// made here, and `tests/replay.rs` is where it is kept.
+    pub fn record(cfg: SimConfig, script: &dyn Script) -> Log { /* ... */ }
+    pub fn save(&self, path: &Path) -> io::Result<()> { /* postcard */ }
+    pub fn load(path: &Path) -> io::Result<Log> { /* postcard */ }
+}
+```
+
+### The tests that pin all of it
+
+```rust title="crates/sim/tests/odometry.rs"
+use approx::assert_relative_eq;
+
+/// The chapter's hand-checkable worked example, to the digit.
+#[test]
+fn worked_example_ch04_one_arc() {
+    let p = RobotParams { track: 0.16, ..RobotParams::rusty() };
+    // Exact arc lengths, so the only thing under test is the geometry.
+    let (ds_l, ds_r) = (0.72, 0.88);
+    let ds = 0.5 * (ds_r + ds_l);
+    let dtheta = (ds_r - ds_l) / p.track;
+    assert_relative_eq!(ds, 0.80, epsilon = 1e-12);
+    assert_relative_eq!(dtheta, 1.00, epsilon = 1e-12);
+
+    let step = SE2::exp(&Vector3::new(ds, 0.0, dtheta));
+    assert_relative_eq!(step.x(), 0.673_176_788, epsilon = 1e-9);
+    assert_relative_eq!(step.y(), 0.367_758_155, epsilon = 1e-9);
+    assert_relative_eq!(step.theta(), 1.0, epsilon = 1e-12);
+
+    // The chord points along half the heading change, and falls short of the
+    // arc by exactly what the midpoint rule overshoots by.
+    let chord = (step.x().powi(2) + step.y().powi(2)).sqrt();
+    assert_relative_eq!(chord, ds * (dtheta / 2.0).sin() / (dtheta / 2.0), epsilon = 1e-12);
+    assert_relative_eq!(step.y().atan2(step.x()), dtheta / 2.0, epsilon = 1e-12);
+    assert_relative_eq!(ds - chord, 0.032_919_138, epsilon = 1e-9);
+
+    // Naive Euler: right distance, wrong direction, 39 cm of it.
+    let euler = (ds - step.x()).hypot(step.y());
+    assert_relative_eq!(euler, 0.389_011_810, epsilon = 1e-9);
+}
+
+/// Derivations 2 and 3 describe the same map, so with no noise and an encoder
+/// fine enough to ignore, dead reckoning must reproduce ground truth exactly.
+#[test]
+fn odometry_zero_noise_is_exact() {
+    let p = RobotParams { slip_std: 0.0, radius_bias_right: 0.0,
+                          ticks_per_rev: 1 << 26, ..RobotParams::rusty() };
+    let mut sim = Sim::new(SimConfig { robot: p, seed: 7, dt: 0.02, ..cfg() });
+    let mut dr = sim.truth();
+    let mut prev = EncoderTicks::default();
+
+    for t in 0..3_000 {
+        let frame = sim.step(figure_eight(t));
+        dr = dr.boxplus(&odometry_delta(prev, frame.ticks, &p));
+        prev = frame.ticks;
+    }
+    let err = (dr.boxminus(&sim.truth())).norm();
+    assert!(err < 1e-7, "dead reckoning drifted {err} m with no noise");
+}
+
+/// The determinism regression lock. Two runs from the same seed must agree
+/// bit-for-bit — not "to 1e-9", bit-for-bit — or a benchmark comparing two
+/// algorithms on "the same" log is comparing two different logs.
+#[test]
+fn replay_is_bit_exact() {
+    fn bits(p: &SE2) -> [u64; 3] {
+        [p.x().to_bits(), p.y().to_bits(), p.theta().to_bits()]
+    }
+
+    let cfg = SimConfig { seed: 20_260_811, ..cfg() };
+    let a = Log::record(cfg.clone(), &FigureEight);
+    let b = Log::record(cfg, &FigureEight);
+    assert_eq!(a.frames.len(), b.frames.len());
+    for (fa, fb) in a.frames.iter().zip(&b.frames) {
+        assert_eq!(bits(&fa.truth), bits(&fb.truth));
+        assert_eq!(fa.ticks, fb.ticks);
+    }
+}
+```
+
+<Callout type="info">
+The widgets on this page run the same algorithms: `web/lib/sim/rusty.ts` is a line-for-line port of
+`crates/sim`, and the numbers quoted in this chapter — 0.673177, 0.032919, 0.389012, the 2.678 m
+systematic drift — were produced by it. Where the prose and the code disagree, the tests decide.
+</Callout>
+
+## Measuring the lab like an experimentalist
+
+Every claim above is a claim about a distribution, and a distribution is not something you can see
+in one run. So do what an experimentalist would: run the same command script many times and look at
+the spread.
+
+<Deferred>
+  <SeedLab />
+</Deferred>
+
+This widget is the reason every benchmark in this book reports over many seeds. Three things it
+makes visible that no single trajectory can:
+
+**A run is a sample.** Any one of those orange traces looks like *the* answer. Forty-eight of them
+are a distribution over futures, and the honest summary of "what will Rusty do" is the fan, not any
+member of it.
+
+**Growth is superlinear in time.** Measured on the straight leg over 480 seeds (the widget runs 48,
+so expect a little more scatter), the total spread at 1, 2 and 3 seconds is 2.1 cm, 5.7 cm and
+10.1 cm — ratios of 2.7 and 4.9 against the $t^{3/2}$ predictions of 2.83 and 5.20. Heading error
+accumulates as a random walk, $\sqrt{t}$; position error integrates heading error, adding a factor
+of $t$. Anyone who tells you odometry error grows like $\sqrt{t}$ is quoting the heading.
+
+**The spread is anisotropic, and it is the wrong shape for a circle.** At the end of the straight
+leg the cross-track spread is nine times the along-track spread: slip that differs between the
+wheels turns you, and a heading error only becomes a position error *sideways*. That crescent is the
+"banana" distribution [Chapter 9](/chapters/ch09-motion-models) derives analytically, grown here from
+nothing but per-wheel noise — and it is the first concrete demonstration in this book that a
+Gaussian is going to be an approximation.
+
+Now push the second slider off zero. The fan stops being centred on the dashed line at all; the
+whole ensemble leaves together. That is bias, and no number of seeds will average it away.
+
+## Anatomy of a book widget
+
+One last piece of infrastructure, and it is the one you will use most: the contract every figure in
+this book obeys.
+
+<Deferred>
+  <WidgetAnatomy />
+</Deferred>
+
+Two clauses deserve their own paragraph.
+
+**The seed is visible.** Not logged, not configurable-if-you-dig — printed in the transport bar of
+every widget. This is a claim the book makes about itself: a figure you cannot reproduce is a
+figure you cannot check, and a benchmark whose seed is hidden is a benchmark you should not
+believe. On the Rust side the same claim is enforced by `replay_is_bit_exact`, which is why `Sim`
+contains no parallelism and no unordered summation. Speed inside the simulator core is worth less
+than the guarantee.
+
+**Autoplay is not decoration; it is an accessibility position.** Interaction is an invitation, not a
+requirement. A reader who never touches a control should still learn the lesson from the default
+run, which means the default parameters have to be chosen for legibility rather than realism — and
+where they are, this book says so out loud, as it did for $\sigma_{\mathrm{slip}}$ above.
+
+## Where this goes
+
+You now own the instrument. Everything else in the book is measurement.
+
+[Chapter 5](/chapters/ch05-bayes-filter) puts a belief on top of it and gives the corridor a filter.
+[Chapter 9](/chapters/ch09-motion-models) fits a probabilistic motion model to this simulator's
+slip — deliberately in a parametrization the simulator does not use, so the reader meets model
+mismatch honestly rather than by accident. [Chapter 10](/chapters/ch10-sensor-models) learns beam
+intrinsics from `Lidar` data recorded here. [Chapter 12](/chapters/ch12-localization-global) runs
+its grid-versus-MCL benchmark on *identical* saved `Log`s. And the Apartment is the arena for all of
+it, right through [Chapter 26](/chapters/ch26-capstone).
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={1} title="Inverse kinematics and the ICR">
+    Derive $(v,\omega) \mapsto (\omega_L, \omega_R)$ from Derivation 1 and show that the
+    instantaneous centre of rotation lies on the wheel axle at signed distance $R = v/\omega$.
+    Then exhibit a body twist that a differential drive **cannot** produce at any instant, and
+    connect it to the Pfaffian constraint $\dot{x}\sin\theta - \dot{y}\cos\theta = 0$. Finally:
+    Rusty has $r = 0.033$ m and a motor limit of 20 rad/s per wheel. What is the tightest turn it
+    can make at 0.4 m/s?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Price the approximation over a real trajectory">
+    Using the polar form of Derivation 2, prove that the midpoint rule's error is purely radial and
+    equal to $\Delta s\left(1 - \operatorname{sinc}(\Delta\theta/2)\right)$. Then bound the total
+    error accumulated over a 60-second figure-eight at $v = 0.5$ m/s, $|\omega| = 0.6$ rad/s, when
+    the odometry is integrated at (a) 50 Hz, (b) 5 Hz, and (c) 2 Hz. At which rate does the
+    integration error exceed the quantization error from a 4096-count encoder? At which does it
+    exceed the slip drift at $\sigma_{\mathrm{slip}} = 0.02$?
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Why t to the three halves">
+    Model the per-tick heading increment error as i.i.d. $\Normal(0, s^2)$ and the forward step as a
+    constant $d$ metres. Show that the variance of the accumulated cross-track position error after
+    $n$ ticks is $d^2 s^2 \sum_{k=1}^{n-1} k \sim d^2 s^2 n^2/2$, so the standard deviation grows
+    like $n^{3/2}$. Then state precisely which assumption you would have to break for odometry error
+    to grow like $\sqrt{t}$, and give a physical situation in which it does.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict the fan, then check it">
+    Before touching the Seed Lab, sketch two pictures. (a) The fan when the right wheel's radius is
+    $1\%$ too large and slip is zero. (b) The fan when slip is at maximum and $\delta = 0$. For each:
+    where is the centre of the fan relative to the gray dashed line, and how wide is it? Now set both
+    sliders and check. Write one sentence per picture distinguishing a systematic from a stochastic
+    error. Then a harder one, which the widget cannot show you: if *stochastic* slip afflicted only
+    the right wheel, would the fan skew? Argue from the sign of $\Delta\theta = (\Delta s_R -
+    \Delta s_L)/\ell$, and say why that is not the same experiment as turning $\delta$ up.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Read the cliff edges">
+    In LiDAR Anatomy, predict — before scrubbing — the beam indices at which the range jumps as the
+    beam crosses the doorway edges, given that the sensor sits 1.06 m from the corridor's south wall,
+    centred on a doorway 1.0 m wide, with 180 beams over a full circle and beam 90 pointing straight
+    ahead. Verify with the scrubber. There is a third cliff, near beam 5. What is it? Now raise the
+    dropout rate to 20% and answer:
+    if you smoothed the range-versus-beam curve to suppress the dropout spikes, what would you
+    destroy? (This is not a rhetorical question. It is why Chapter 10 models dropouts as a mixture
+    component rather than filtering them out.)
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Give Rusty a sonar">
+    Add a `Sonar` type to `crates/sim` beside `Lidar`, exposing the same `scan`-style API: aperture
+    15°, return equal to the nearest hit anywhere *within* the cone plus Gaussian noise. Implement
+    the cone query by sampling the aperture finely enough that the error is below $\sigma$, and say
+    what "finely enough" is. Then write one paragraph explaining why sonar walls smear at corners
+    where LiDAR walls do not, and what that does to a scan matcher.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Break determinism on purpose">
+    Make `replay_is_bit_exact` pass in your fork, native and WASM. Then break it deliberately in two
+    different ways: (a) share one `SmallRng` between wheel slip and LiDAR noise, then change
+    `n_beams` from 180 to 181 and watch the *trajectory* change; (b) accumulate a per-beam sum over a
+    scan with a `rayon` parallel reduction instead of a sequential fold, and exhibit two runs that
+    disagree in the last bits. For each, explain in two sentences what property was lost and which
+    downstream chapter's benchmark it would silently corrupt.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Lynch, K. M. and Park, F. C."
+    year={2017}
+    title="Modern Robotics: Mechanics, Planning, and Control"
+    venue="Cambridge University Press (ISBN 9781107156302)"
+    url="http://modernrobotics.org"
+    note="§13.3 gives the differential-drive kinematics of Derivation 1 and §13.4 the odometry update of Derivation 3 — already in exponential-coordinate form. Their eq. (13.35) is our V(ω)ρ with the algebra spelled out; recognizing it as exp is the only thing this chapter adds."
+  />
+  <Reference
+    authors="Borenstein, J. and Feng, L."
+    year={1996}
+    title="Measurement and Correction of Systematic Odometry Errors in Mobile Robots"
+    venue="IEEE Transactions on Robotics and Automation 12(6), 869–880"
+    doi="10.1109/70.544770"
+    note="The UMBmark procedure, and the source of this chapter's insistence on separating systematic from stochastic error. Their two dominant terms — uncertain wheelbase and unequal wheel diameters — are exactly the second slider in w4.1."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="§5.2.1 sets up the kinematic configuration this chapter simulates; Chapter 6's beam mixture is the inference model our two-component generative LiDAR is deliberately not."
+  />
+  <Reference
+    authors="Solà, J., Deray, J., and Atchuthan, D."
+    year={2018}
+    title="A Micro Lie Theory for State Estimation in Robotics"
+    venue="arXiv:1812.01537"
+    url="https://arxiv.org/abs/1812.01537"
+    note="The reference for the ⊞ / ⊟ notation used throughout, and for why composing odometry increments on the group is not the same as adding them in coordinates."
+  />
+  <Reference
+    authors="Manivasagam, S., Wang, S., Wong, K., Zeng, W., Sazanovich, M., Tan, S., Yang, B., Ma, W.-C., and Urtasun, R."
+    year={2020}
+    title="LiDARsim: Realistic LiDAR Simulation by Leveraging the Real World"
+    venue="CVPR 2020, 11164–11173"
+    url="https://arxiv.org/abs/2006.09348"
+    note="The state of the art in going beyond a ray-cast-plus-Gaussian sensor: physics for the geometry, a learned residual for everything the geometry misses. Read it as the honest upper bound on how wrong our σ_r model is."
+  />
+  <Reference
+    authors="Guillard, B., Vemprala, S., Gupta, J. K., Miksik, O., Vineet, V., Fua, P., and Kapoor, A."
+    year={2022}
+    title="Learning to Simulate Realistic LiDARs"
+    venue="IEEE/RSJ IROS 2022 (arXiv:2209.10986)"
+    url="https://arxiv.org/abs/2209.10986"
+    note="Learns ray-drop and intensity from real scans, and shows that dropout is strongly surface-dependent rather than the i.i.d. p_drop we use. The right thing to read before believing any dropout number in this chapter."
+  />
+  <Reference
+    authors="Macenski, S., Foote, T., Gerkey, B., Lalancette, C., and Woodall, W."
+    year={2022}
+    title="Robot Operating System 2: Design, Architecture, and Uses in the Wild"
+    venue="Science Robotics 7(66), eabm6074"
+    doi="10.1126/scirobotics.abm6074"
+    note="Where the interfaces this chapter's Frame type imitates actually live in production. Useful for seeing which of our simplifications a deployed stack also makes, and which it does not."
+  />
+  <Reference
+    authors="Fischer, T., Paredes, I., Batchelor, M., Beier, T., Haviland, J., Traversaro, S., Vollprecht, W., Schmitz, M., and Milford, M."
+    year={2024}
+    title="ROS2WASM: Bringing the Robot Operating System to the Web"
+    venue="arXiv:2409.09941"
+    url="https://arxiv.org/abs/2409.09941"
+    note="Independent evidence for this book's central bet: compiling a robotics stack to WebAssembly makes results reproducible and shareable in a way a README never does. Their argument for the browser is our argument for every widget on this page."
+  />
+</References>

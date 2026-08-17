@@ -1,0 +1,331 @@
+---
+title: 'Multi-Armed Bandits: Exploration & Exploitation'
+chapter: 3
+quote:
+  text: The agent must exploit what it already knows in order to obtain reward, but it also has to explore in order to make better action selections in the future. The dilemma is that neither exploration nor exploitation can be pursued exclusively without failing at the task.
+  author: Richard S. Sutton & Andrew G. Barto
+  affiliation: University of Alberta · University of Massachusetts Amherst
+  source: Reinforcement Learning — An Introduction, 2nd edition
+---
+
+<ChapterOverview
+  summary="Strip a reinforcement learning problem of everything except the difficulty that makes it reinforcement learning, and you get a bandit. There is no state, no sequence, no credit assignment across time — only a repeated choice among actions whose values you must estimate from the rewards they produce. What survives this stripping is the exploration–exploitation dilemma, and here it is simple enough to analyze exactly. We derive real regret bounds, meet the softmax rule that becomes the policy gradient in Chapter 10, and introduce Reacher, for whom every attempt costs hardware."
+  outcomes={[
+    'Define regret and explain why it, not reward, is the right measure of a bandit algorithm',
+    'Derive the UCB action-selection rule from Hoeffding’s inequality rather than accepting it as given',
+    'Prove that constant-ε exploration incurs linear regret, and say what that means for a deployed robot',
+    'Derive the gradient-bandit update and recognize it as the policy gradient theorem on a one-state problem',
+    'Explain what a contextual bandit adds, and identify the precise moment a problem stops being a bandit at all',
+  ]}
+  foundation="Action-value estimation, the incremental update as Robbins–Monro, regret decomposition, Hoeffding’s inequality and the UCB bound, the gradient-bandit derivation, and Thompson sampling."
+  conceptual="A live 10-armed testbed racing every algorithm on the three questions that matter: how much reward, how often right, how much lost to exploration."
+  practical="The Bandit and BanditPolicy traits in rl-core — the book’s first abstraction, and the shape every later agent follows."
+/>
+
+## 3.1 The simplest problem that is still hard
+
+Reacher, a two-link arm, faces a mug. It has $k$ grasp primitives available — top grasp, side grasp, rim hook, and so on. Each attempt either succeeds, partially succeeds, or knocks the mug over, and the outcome is noisy: the same primitive on the same mug does not always produce the same result.
+
+Reacher must choose repeatedly, and wants to accumulate as much success as possible. Formally: at each step $t$ it selects an action $A_t \in \{1, \ldots, k\}$ and receives a reward $R_t$ drawn from a fixed but unknown distribution associated with that action. Define the **true value** of an action as its expected reward:
+
+$$q_*(a) \doteq \mathbb{E}[R_t \mid A_t = a].$$
+
+If Reacher knew $q_*$, the problem would be trivial: always pick the argmax. It does not know $q_*$, and the only way to learn about an action is to *take* it — spending a trial that could have gone to the currently-best-looking option.
+
+<Callout variant="warning" title="Why this is not an academic toy">
+For a software bandit, a wasted pull costs a fraction of a cent. For Reacher, every attempt costs gripper wear, a possible dropped mug, and thirty seconds of wall-clock time that a human must supervise. The cost asymmetry is why robotics cares more about sample efficiency than almost any other application area of RL, and it is the thread running from here to the off-policy methods of Chapter 11 and the offline methods of Chapter 16.
+</Callout>
+
+## 3.2 Estimating values, incrementally
+
+The obvious estimator is the sample average of the rewards received from action $a$ so far:
+
+$$Q_n(a) \doteq \frac{R_1 + R_2 + \cdots + R_{n-1}}{n - 1}.$$
+
+Storing every reward would be wasteful, and it is unnecessary. Expand the average at step $n+1$ and rearrange:
+
+$$
+\begin{aligned}
+Q_{n+1} &= \frac{1}{n}\sum_{i=1}^{n} R_i
+= \frac{1}{n}\left(R_n + \sum_{i=1}^{n-1} R_i\right)
+= \frac{1}{n}\Big(R_n + (n-1) Q_n\Big) \\[4pt]
+&= \frac{1}{n}\Big(R_n + n Q_n - Q_n\Big)
+= Q_n + \frac{1}{n}\Big(R_n - Q_n\Big).
+\end{aligned}
+$$
+
+Which is exactly the master pattern promised in Chapter 2:
+
+$$\text{New} \leftarrow \text{Old} + \alpha\left(\text{Target} - \text{Old}\right).$$
+
+With $\alpha_n = 1/n$ the Robbins–Monro conditions hold ($\sum 1/n = \infty$, $\sum 1/n^2 < \infty$), so $Q_n(a) \to q_*(a)$ almost surely. Sample averaging is stochastic approximation, and we already proved it converges.
+
+**Non-stationarity changes the calculus.** Replace $1/n$ with a constant $\alpha$ and unroll:
+
+$$Q_{n+1} = (1-\alpha)^n Q_1 + \sum_{i=1}^{n} \alpha (1-\alpha)^{n-i} R_i.$$
+
+The weights $\alpha(1-\alpha)^{n-i}$ decay geometrically into the past — an exponential recency-weighted average. The second Robbins–Monro condition now fails, so the estimate never fully settles. That is a feature when Reacher's gripper wears down and old data becomes actively misleading.
+
+## 3.3 Regret: the right scorecard
+
+Total reward is a bad way to compare algorithms, because it depends on how generous the bandit happens to be. The standard measure is **regret** — how much worse you did than an oracle that knew $q_*$ from the start:
+
+$$L_n \doteq n \max_a q_*(a) - \sum_{t=1}^{n} q_*(A_t) = \sum_{a} \Delta_a\, \mathbb{E}[N_n(a)],$$
+
+where $\Delta_a = \max_{a'} q_*(a') - q_*(a)$ is the **gap** of action $a$ and $N_n(a)$ counts how often it was chosen. That identity is worth sitting with: **regret is the sum over suboptimal actions of how bad they are, times how often you took them.** An algorithm is good precisely when it stops taking bad actions quickly.
+
+<Theorem kind="Proposition" n="3.1" title="Constant ε-greedy has linear regret">
+An $\varepsilon$-greedy policy with fixed $\varepsilon > 0$ explores uniformly at random on an $\varepsilon$ fraction of steps regardless of what it has learned. Each such step incurs expected regret $\frac{1}{k}\sum_a \Delta_a$, so after $n$ steps
+
+$$\mathbb{E}[L_n] \ge \frac{\varepsilon\, n}{k} \sum_a \Delta_a = \Omega(n).$$
+</Theorem>
+
+Linear regret means the *per-step* penalty never vanishes: however long Reacher runs, it keeps paying the same exploration tax forever. Any algorithm worth using achieves sublinear regret, so that the average penalty tends to zero. Decaying $\varepsilon$ toward zero — slowly enough that every action is still tried infinitely often — recovers sublinearity, and is the seed of the **GLIE** conditions Chapter 6 needs for Q-learning to converge.
+
+## 3.4 UCB: deriving optimism from a concentration bound
+
+The most elegant answer to "which action should I try?" comes from asking a sharper question: **which action could plausibly be best, given what I have seen?**
+
+Hoeffding's inequality gives the tool. For $n$ independent samples of a bounded random variable with mean $\mu$ and sample mean $\hat\mu$,
+
+$$\mathbb{P}\big(\hat\mu + u \le \mu\big) \le e^{-2 n u^2}.$$
+
+Set the failure probability to $p = e^{-2nu^2}$ and solve for the bonus:
+
+$$u = \sqrt{\frac{-\log p}{2n}}.$$
+
+Now choose how confident to be. If we want the bound to hold more tightly as we gather data — say $p = t^{-4}$ at time $t$ — then $-\log p = 4 \log t$ and
+
+$$u = \sqrt{\frac{2 \log t}{n}}.$$
+
+That is the UCB bonus. The rule is: act greedily with respect to an *optimistic* estimate,
+
+$$A_t = \arg\max_a \left[ Q_t(a) + c\sqrt{\frac{\ln t}{N_t(a)}} \right].$$
+
+<Callout variant="insight" title="Why optimism is the right instinct">
+The bonus term is large when $N_t(a)$ is small — an action tried rarely could still be excellent, and the algorithm gives it the benefit of the doubt. As $N_t(a)$ grows the bonus shrinks and the estimate must stand on its own merits. Meanwhile $\ln t$ in the numerator grows slowly, so an action ignored for a long time gradually becomes attractive again.
+
+The result is exploration that is *directed* rather than random. ε-greedy explores by occasionally throwing away the decision; UCB explores by preferring actions whose value it is genuinely uncertain about. Auer and colleagues proved this achieves regret $O(\sum_a \frac{\log n}{\Delta_a})$ — logarithmic, and matching the lower bound of Lai and Robbins up to constants.
+</Callout>
+
+<BanditTestbed />
+
+Three things are worth doing in that testbed before reading on. Set $\varepsilon = 0$ and watch the greedy curve plateau below every other method — it locks onto whichever arm happened to look good first. Raise $\varepsilon$ and observe that early reward *drops* while the percent-optimal curve keeps climbing: exploration is paid for immediately and repaid later. Finally, compare the regret panel: UCB's curve visibly bends toward logarithmic while ε-greedy's stays a straight line, exactly as Proposition 3.1 predicts.
+
+## 3.5 Gradient bandits: the seed of everything in Chapter 10
+
+So far we have estimated values and acted greedily on them. There is a different approach: learn a **preference** $H_t(a)$ for each action, with no interpretation as a reward estimate, and act stochastically according to a softmax:
+
+$$\pi_t(a) \doteq \frac{e^{H_t(a)}}{\sum_b e^{H_t(b)}}.$$
+
+This is the book's first **stochastic policy**, and it is a genuinely different object from $Q$. Preferences are only meaningful relative to each other; adding a constant to all of them changes nothing.
+
+The update rule is:
+
+$$H_{t+1}(a) = H_t(a) + \alpha\left(R_t - \bar R_t\right)\left(\mathbb{1}[a = A_t] - \pi_t(a)\right),$$
+
+where $\bar R_t$ is a running average of all rewards, serving as a **baseline**. This is not a heuristic — it is exact stochastic gradient ascent on expected reward. In expectation,
+
+$$\mathbb{E}\left[H_{t+1}(a) - H_t(a)\right] = \alpha \frac{\partial\, \mathbb{E}[R_t]}{\partial H_t(a)}.$$
+
+<Proof title="Why the baseline changes variance but not direction">
+The key step is that the baseline term vanishes in expectation. Since $\sum_a \pi_t(a) = 1$, differentiating both sides with respect to $H_t(a)$ gives $\sum_b \frac{\partial \pi_t(b)}{\partial H_t(a)} = 0$. Therefore, for **any** baseline $B_t$ that does not depend on the action taken,
+
+$$\sum_b B_t \frac{\partial \pi_t(b)}{\partial H_t(a)} = B_t \sum_b \frac{\partial \pi_t(b)}{\partial H_t(a)} = 0.$$
+
+Subtracting $\bar R_t$ therefore leaves the expected update direction untouched. What it *does* change is the variance of the sample estimate: if all rewards are around $+10$, then without a baseline every action gets its preference pushed up, and only the differences carry signal. Subtracting the mean centres the signal, and the noise shrinks accordingly. $\qquad \blacksquare$
+</Proof>
+
+<Callout variant="insight" title="Remember this proof">
+You have just seen, in its simplest possible setting, the argument that Chapter 10 will make for advantage estimation in full reinforcement learning. The score-function trick, the baseline that reduces variance without introducing bias, the stochastic policy — all of it is here, on a problem with one state. When the policy gradient theorem arrives with states and returns and discounting, the skeleton will be this.
+</Callout>
+
+## 3.6 Thompson sampling, and what comes next
+
+One more algorithm, because it is both the oldest (1933) and among the best performing in practice. **Thompson sampling** maintains a posterior distribution over each action's value, then at each step draws one sample from each posterior and acts greedily on the samples.
+
+The elegance is that exploration falls out for free. An action with a wide posterior sometimes draws a high sample and gets tried; as evidence accumulates its posterior narrows and it is chosen only if it deserves to be. There is no bonus term to tune — the uncertainty *is* the exploration mechanism.
+
+**Contextual bandits** add the one ingredient we have been suppressing: a context $x_t$ observed before choosing. Reacher now sees the mug's estimated pose and picks a grasp conditioned on it. Regret is redefined against the best *policy* in a class rather than the best fixed action.
+
+And here is the cliff the chapter ends on, stated precisely because it defines the rest of the book:
+
+<Callout variant="warning" title="The moment a bandit stops being a bandit">
+In a contextual bandit, the context process is **independent of your actions**. The next mug arrives however it arrives, regardless of what you just did.
+
+The instant your action influences the next context — grasping the mug *moves* it, driving down a corridor *changes* which corridor you face next — the problem is no longer a bandit. Your choice now has consequences that outlive its immediate reward, and maximizing immediate reward becomes provably suboptimal.
+
+That requirement has a name, and Chapter 4 derives its equations.
+</Callout>
+
+<RustSnippet title="rl-core/src/bandit.rs" caption="The book's first abstraction. Note the shape: a policy selects, observes, and updates — the same three-verb interface that every agent in this book implements, all the way to PPO in Chapter 10.">
+
+```rust
+use rand::Rng;
+
+/// A k-armed bandit problem with unknown true action values.
+pub trait Bandit {
+    fn arms(&self) -> usize;
+    fn pull<R: Rng>(&self, arm: usize, rng: &mut R) -> f64;
+    fn optimal_arm(&self) -> usize;
+}
+
+/// Any rule for choosing among arms and learning from what it observes.
+pub trait BanditPolicy {
+    fn select<R: Rng>(&mut self, step: usize, rng: &mut R) -> usize;
+    fn update(&mut self, arm: usize, reward: f64);
+}
+
+pub struct Ucb1 {
+    q: Vec<f64>,
+    counts: Vec<u64>,
+    c: f64,
+}
+
+impl BanditPolicy for Ucb1 {
+    fn select<R: Rng>(&mut self, step: usize, _rng: &mut R) -> usize {
+        // Untried arms have an infinite bound — try each one once first.
+        if let Some(a) = self.counts.iter().position(|&n| n == 0) {
+            return a;
+        }
+        let t = (step.max(2)) as f64;
+        self.q
+            .iter()
+            .zip(&self.counts)
+            .map(|(&q, &n)| q + self.c * (t.ln() / n as f64).sqrt())
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .map(|(a, _)| a)
+            .unwrap()
+    }
+
+    fn update(&mut self, arm: usize, reward: f64) {
+        self.counts[arm] += 1;
+        // Robbins–Monro with α = 1/n: the sample average, computed incrementally.
+        self.q[arm] += (reward - self.q[arm]) / self.counts[arm] as f64;
+    }
+}
+```
+
+</RustSnippet>
+
+## 3.7 Chapter bridge
+
+We isolated the exploration–exploitation dilemma by removing state, and found that even then the problem has real mathematical content: regret decomposes into gaps times counts, optimism in the face of uncertainty is derivable from a concentration inequality rather than merely sensible, and a softmax over learned preferences performs exact gradient ascent on expected reward.
+
+Chapter 4 puts state back. Once actions influence what you face next, "the value of an action" must account for the future it leads to, and the equations that express this — the Bellman equations — are the mathematical centre of the entire subject. Rusty's warehouse becomes a formal object, and the contraction theorem from Chapter 2 finally does the job it was built for.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Derive the incremental update',
+    difficulty: 1,
+    body: 'Reproduce the algebra from §3.2 turning the sample average into Q_{n+1} = Q_n + (1/n)(R_n − Q_n), showing every step. Then do the same for a weighted average where recent rewards count double.',
+  },
+  {
+    layer: 'F',
+    title: 'Recency weights sum to one',
+    difficulty: 2,
+    body: 'For the constant-α update, verify that the weights (1−α)^n on Q₁ plus Σ α(1−α)^{n−i} sum to exactly 1. Why does this matter for the interpretation of Q as an average?',
+  },
+  {
+    layer: 'F',
+    title: 'UCB from scratch',
+    difficulty: 3,
+    body: 'Rederive the UCB bonus from Hoeffding’s inequality, this time choosing the failure probability p = t^{−2} instead of t^{−4}. How does the constant change, and what does that mean for how aggressively the rule explores?',
+  },
+  {
+    layer: 'F',
+    title: 'The baseline argument',
+    difficulty: 2,
+    body: 'Prove that Σ_b ∂π(b)/∂H(a) = 0 for the softmax, and use it to show that ANY action-independent baseline leaves the expected gradient-bandit update unchanged. Then construct a baseline that would break this — what property does it violate?',
+  },
+  {
+    layer: 'C',
+    title: 'The optimism transient',
+    difficulty: 2,
+    body: 'In the testbed, run optimistic greedy (Q₁ = 5) against ε-greedy. Optimistic initialization wins early then is overtaken. Explain the mechanism: what is optimism doing at step 20 that it has stopped doing at step 500?',
+  },
+  {
+    layer: 'C',
+    title: 'Find where UCB overtakes',
+    difficulty: 2,
+    body: 'Determine the step at which UCB’s cumulative regret first drops below ε-greedy’s at ε = 0.1. Then repeat at ε = 0.01. Explain the direction the crossover moves and why.',
+  },
+  {
+    layer: 'P',
+    title: 'Implement Thompson sampling',
+    difficulty: 3,
+    body: 'Add a Thompson sampling policy for Gaussian rewards with known variance, using conjugate Normal updates. Race it against UCB in the parameter study. Does the ranking depend on the number of arms?',
+  },
+  {
+    layer: 'P',
+    title: 'A non-stationary bandit',
+    difficulty: 2,
+    body: 'Make the true values q*(a) drift by a random walk each step. Compare sample-average against constant-α estimation on this problem. The winner should reverse relative to the stationary case — explain the reversal in terms of the Robbins–Monro conditions.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 2 in full: §2.1 the k-armed bandit, §2.4 incremental implementation, §2.6 optimistic initial values, §2.7 UCB, §2.8 gradient bandits, §2.9 associative search.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§3.2 the curse of real-world samples — why a wasted pull costs so much more on hardware than in simulation.',
+  },
+  {
+    key: 'lai1985',
+    authors: 'Lai, T. L. & Robbins, H.',
+    year: 1985,
+    title: 'Asymptotically efficient adaptive allocation rules',
+    venue: 'Advances in Applied Mathematics 6(1)',
+    note: 'The logarithmic regret lower bound — proof that UCB is optimal in order, not merely good.',
+  },
+  {
+    key: 'auer2002',
+    authors: 'Auer, P., Cesa-Bianchi, N. & Fischer, P.',
+    year: 2002,
+    title: 'Finite-time Analysis of the Multiarmed Bandit Problem',
+    venue: 'Machine Learning 47',
+    note: 'UCB1 and its finite-time regret bound, derived in the form used in §3.4.',
+  },
+  {
+    key: 'thompson1933',
+    authors: 'Thompson, W. R.',
+    year: 1933,
+    title: 'On the likelihood that one unknown probability exceeds another in view of the evidence of two samples',
+    venue: 'Biometrika 25',
+    note: 'Ninety years old and still competitive. Worth reading for the framing alone.',
+  },
+  {
+    key: 'lattimore2020',
+    authors: 'Lattimore, T. & Szepesvári, C.',
+    year: 2020,
+    title: 'Bandit Algorithms',
+    venue: 'Cambridge University Press',
+    url: 'https://tor-lattimore.com/downloads/book/book.pdf',
+    note: 'The comprehensive modern treatment. Where to go for the proofs this chapter states but does not carry to completion.',
+  },
+  {
+    key: 'li2010',
+    authors: 'Li, L., Chu, W., Langford, J. & Schapire, R. E.',
+    year: 2010,
+    title: 'A Contextual-Bandit Approach to Personalized News Article Recommendation',
+    venue: 'WWW 2010',
+    note: 'LinUCB — the contextual extension sketched in §3.6.',
+  },
+]} />

@@ -1,0 +1,323 @@
+---
+title: 'Learning from Experience: Monte Carlo & Temporal-Difference'
+chapter: 6
+quote:
+  text: If one had to identify one idea as central and novel to reinforcement learning, it would undoubtedly be temporal-difference learning.
+  author: Richard S. Sutton & Andrew G. Barto
+  affiliation: University of Alberta · University of Massachusetts Amherst
+  source: Reinforcement Learning — An Introduction, 2nd edition
+---
+
+<ChapterOverview
+  summary="Take away the blueprint. Rusty gets no transition probabilities, no reward function he can inspect — only the ability to act and observe what happens. Remarkably, almost everything survives. Monte Carlo methods learn from complete episodes by averaging returns. Temporal-difference methods do something stranger and more powerful: they update a guess toward another guess, learning from single transitions without waiting for the outcome. This chapter derives both, proves what can be proved, and confronts the systematic optimism that makes Q-learning overestimate everything it values."
+  outcomes={[
+    'Explain why first-visit Monte Carlo is an unbiased estimator of v_π, and what it costs in variance',
+    'Derive the importance-sampling correction for off-policy evaluation and explain why its variance can be infinite',
+    'Write the TD(0) update and identify the bias–variance trade it makes against Monte Carlo',
+    'State the difference between SARSA and Q-learning precisely, in terms of which policy the target evaluates',
+    'Explain maximization bias, prove it occurs even with unbiased estimates, and show how Double Q-learning removes it',
+    'Recognize GLIE conditions and their role in convergence guarantees',
+  ]}
+  foundation="First-visit MC and its unbiasedness, importance sampling with variance analysis, the TD(0) update, SARSA/Expected SARSA/Q-learning, Watkins' convergence theorem, and the double-estimator argument."
+  conceptual="Rusty learning the warehouse from scratch — value bleeding backwards from the dock as the TD error propagates, with δ and the return streaming live."
+  practical="rl-tabular's model-free learners over the Chapter 4 Env trait, with the update returning δ so dashboards can display the learning signal itself."
+/>
+
+## 6.1 No model, no problem — the Monte Carlo idea
+
+Chapter 5 needed $p(s',r\mid s,a)$ to compute expectations. Without it, one option remains: **sample**.
+
+The value $v_\pi(s)$ is by definition an average of returns. So run episodes, record the returns that actually followed each state, and average them. That is **Monte Carlo prediction**, and its correctness follows from the law of large numbers rather than from any property of the MDP.
+
+**First-visit MC** averages the returns following the first visit to $s$ in each episode. Its estimator is unbiased: each first-visit return is an independent sample from the distribution whose mean is $v_\pi(s)$, so the average converges to $v_\pi(s)$ as the number of visits grows, with standard error falling as $1/\sqrt{n}$.
+
+<Callout variant="note" title="What Monte Carlo does not need">
+MC makes no use of the Markov property. It never bootstraps — never uses one estimate to update another. Each state's estimate is built from complete, actual returns.
+
+That independence is a genuine advantage when your state representation is imperfect, which for robots it always is. If Rusty's state is only approximately Markov, MC degrades gracefully; methods that bootstrap can compound the error. The cost is that MC must wait for episodes to end, learns nothing from a run that never terminates, and has high variance because a return accumulates every random event along the whole trajectory.
+</Callout>
+
+## 6.2 Off-policy evaluation and importance sampling
+
+A robot often needs to evaluate one policy while behaving according to another — estimate the value of an aggressive policy while running a safe one, or reuse data collected last week. This is **off-policy** learning, and it is the setting that dominates robotics because data is expensive enough that you want to reuse all of it.
+
+Let $b$ be the **behaviour policy** generating the data and $\pi$ the **target policy** we want to evaluate. The returns we observe come from the wrong distribution. Importance sampling reweights them by the ratio of trajectory probabilities:
+
+$$\rho_{t:T-1} \doteq \prod_{k=t}^{T-1} \frac{\pi(A_k \mid S_k)}{b(A_k \mid S_k)}.$$
+
+Notice that the environment dynamics cancel: $p(s'\mid s,a)$ appears identically in numerator and denominator. Only the policy probabilities survive, which is what makes this usable without a model. Then
+
+$$v_\pi(s) = \mathbb{E}_b\left[\rho_{t:T-1} G_t \mid S_t = s\right],$$
+
+so **ordinary importance sampling** — averaging $\rho G$ — is unbiased.
+
+<Callout variant="warning" title="Unbiased, and sometimes useless">
+That product of ratios is the problem. Over a long episode, $\rho$ is a product of many terms; if $\pi$ and $b$ differ even modestly, the product's variance grows exponentially in the horizon. Sutton and Barto exhibit cases where **the variance is literally infinite** — the estimator is unbiased but its sample average does not settle.
+
+**Weighted importance sampling** divides by $\sum \rho$ instead of by the count. It is biased (the bias vanishes asymptotically) but has dramatically lower — often finite — variance. In practice it wins so consistently that the biased estimator is the default.
+
+The lesson generalizes far beyond this section: unbiasedness is worth much less than practitioners assume, and the variance of an estimator usually decides whether it is usable. Chapter 10 makes exactly this trade again with GAE, and Chapter 16 makes it again with offline RL.
+</Callout>
+
+## 6.3 Temporal difference: learning a guess from a guess
+
+Monte Carlo waits for the episode to end. TD does not, and the trick is disarmingly simple.
+
+The return recursion from Chapter 4 says $G_t = R_{t+1} + \gamma G_{t+1}$. Monte Carlo uses the observed $G_t$ as its target. TD substitutes the current estimate for the tail:
+
+$$V(S_t) \leftarrow V(S_t) + \alpha \underbrace{\Big[\,\underbrace{R_{t+1} + \gamma V(S_{t+1})}_{\text{TD target}} - V(S_t)\Big]}_{\text{TD error } \delta_t}.$$
+
+That is TD(0). It updates immediately after one transition, needs no episode boundary, and works on continuing tasks.
+
+The quantity $\delta_t = R_{t+1} + \gamma V(S_{t+1}) - V(S_t)$ is the **TD error**, and it deserves a name because it recurs everywhere in this book. It measures the surprise: how much better or worse the transition turned out than the current estimate predicted. When $\delta = 0$ everywhere, the value function is self-consistent and satisfies the Bellman equation.
+
+<Callout variant="insight" title="Bootstrapping is the bet">
+TD updates an estimate toward a target that is itself partly an estimate. This looks circular, and it is — productively so. The bet is that $V(S_{t+1})$, though wrong, is *less* wrong than a single noisy sampled return, because it already aggregates many past experiences.
+
+The bet usually pays. TD converges faster than MC on most problems, has far lower variance, and learns online. What it buys with that speed is **bias**: if $V(S_{t+1})$ is systematically wrong, the error propagates. And Chapter 8 will show that when function approximation enters, this same bootstrapping is one leg of the "deadly triad" that can make learning diverge outright.
+</Callout>
+
+## 6.4 Control: SARSA, Expected SARSA, Q-learning
+
+To *control* rather than merely predict, learn action values and follow the GPI pattern from Chapter 5: estimate $Q$, act greedily-ish with respect to it, repeat.
+
+Three algorithms differ only in what they put in the target.
+
+**SARSA** uses the action actually taken next:
+
+$$Q(S_t,A_t) \leftarrow Q(S_t,A_t) + \alpha\left[R_{t+1} + \gamma\, Q(S_{t+1}, A_{t+1}) - Q(S_t,A_t)\right].$$
+
+It is **on-policy**: the target evaluates the same $\varepsilon$-greedy policy the agent is executing, exploration included.
+
+**Q-learning** uses the best action available, whether or not it is taken:
+
+$$Q(S_t,A_t) \leftarrow Q(S_t,A_t) + \alpha\left[R_{t+1} + \gamma \max_a Q(S_{t+1}, a) - Q(S_t,A_t)\right].$$
+
+It is **off-policy**: the target evaluates the greedy policy while the agent behaves $\varepsilon$-greedily.
+
+**Expected SARSA** replaces the sample with its expectation under the policy:
+
+$$Q(S_t,A_t) \leftarrow Q(S_t,A_t) + \alpha\left[R_{t+1} + \gamma \sum_a \pi(a\mid S_{t+1}) Q(S_{t+1},a) - Q(S_t,A_t)\right],$$
+
+eliminating the variance due to sampling $A_{t+1}$ at the cost of a sum over actions. It usually dominates SARSA, and reduces to Q-learning when $\pi$ is greedy.
+
+<Callout variant="warning" title="The cliff, and why robots care">
+The classic demonstration is a gridworld with a cliff along the optimal path. Q-learning learns the optimal policy — walk the cliff edge — and then, because it *behaves* ε-greedily, occasionally steps off and dies. SARSA learns a safer path further from the edge, because its target accounts for the fact that the behaving policy explores.
+
+SARSA's answer is worse under the MDP's stated objective and better in the world. For a robot that can actually break, that distinction is not academic, and it is why on-policy methods retain a following in robotics long after off-policy methods became more sample-efficient. Chapter 14 returns to this as a safety question, with constrained MDPs as the principled version.
+</Callout>
+
+<TdDashboard />
+
+Press play and watch the mechanism directly. Value appears at the dock and bleeds backwards, one cell per episode-ish, because that is how far a one-step TD error can carry information. Early arrows are nonsense — every $Q$ is zero and ties break randomly. The policy sharpens only where the TD error has actually reached.
+
+Then set $\varepsilon = 0$ and watch the run stall. With no exploration, Rusty commits to the first corridor that ever paid off and never discovers the better one. This is the Chapter 3 dilemma, now with states.
+
+## 6.5 Does it converge?
+
+Yes, under conditions worth knowing precisely.
+
+<Theorem kind="Theorem" n="6.1" title="Convergence of tabular Q-learning (Watkins & Dayan, 1992)">
+In a finite MDP, tabular Q-learning converges to $q_*$ with probability 1, provided:
+
+1. every state–action pair is visited infinitely often;
+2. the learning rates satisfy the Robbins–Monro conditions, $\sum_t \alpha_t(s,a) = \infty$ and $\sum_t \alpha_t^2(s,a) < \infty$ for every pair;
+3. rewards are bounded.
+</Theorem>
+
+The proof combines the two things Chapter 2 built. The Bellman optimality operator is a $\gamma$-contraction, so the *expected* update moves $Q$ toward $q_*$; stochastic approximation theory then shows the noisy sampled updates track the expected ones almost surely, given Robbins–Monro step sizes. The full argument is in Watkins and Dayan and in Bertsekas & Tsitsiklis.
+
+Condition 1 is the one that bites. "Visited infinitely often" requires persistent exploration, which is why $\varepsilon$ must decay slowly — the **GLIE** conditions (Greedy in the Limit with Infinite Exploration): explore forever, but let exploration vanish so the policy becomes greedy in the limit. A schedule like $\varepsilon_t = 1/t$ satisfies both.
+
+<Callout variant="warning" title="What this theorem does not say">
+It says nothing about *how fast*, and every hypothesis fails on a real robot. A physical arm cannot visit every state–action pair even once, let alone infinitely often. The state space is continuous, so "tabular" does not apply. And in Part II, when tables become function approximators, this theorem's guarantee evaporates entirely — Chapter 8 shows it can be replaced by divergence.
+
+Know what you have proved. The theorem justifies the algorithm's form and tells you which knobs matter. It does not promise your robot will learn to walk.
+</Callout>
+
+## 6.6 Maximization bias and the double estimator
+
+One more phenomenon, because it explains a family of algorithms in Chapter 9.
+
+Q-learning's target contains $\max_a Q(S_{t+1},a)$. Suppose all the $Q$ estimates are unbiased but noisy. Is the max unbiased?
+
+No. By Jensen's inequality applied to the convex max function,
+
+$$\mathbb{E}\left[\max_a Q(s,a)\right] \ge \max_a \mathbb{E}\left[Q(s,a)\right] = \max_a q(s,a).$$
+
+**Taking the maximum of noisy estimates systematically overestimates the true maximum.** The max operator preferentially selects whichever action got lucky, and luck does not persist — but the inflated estimate does, and it propagates through every subsequent backup.
+
+This is **maximization bias**, and it is not a small effect. With many actions and noisy returns, the overestimation compounds through bootstrapping until the value function is meaningfully optimistic everywhere.
+
+<Theorem kind="Proposition" n="6.2" title="Double estimation removes the bias">
+Maintain two independent estimates $Q_1$ and $Q_2$. Use one to *select* the maximizing action and the other to *evaluate* it:
+
+$$A^* = \arg\max_a Q_1(s,a), \qquad \text{target uses } Q_2(s, A^*).$$
+
+Since $Q_2$ is independent of the selection, $\mathbb{E}[Q_2(s, A^*)] = q(s, A^*) \le \max_a q(s,a)$ — the estimate is no longer biased upward.
+</Theorem>
+
+**Double Q-learning** implements this by keeping two tables and flipping a coin each step to decide which is updated and which evaluates. It costs twice the memory and nothing in computation, and the fix carries directly into deep RL: Double DQN in Chapter 9 is this exact idea with the target network playing the role of the second estimator, and TD3's clipped double-Q in Chapter 11 is the continuous-control version.
+
+<RustSnippet title="rl-tabular/src/td.rs" caption="The Q-learning update. Returning δ rather than discarding it is a deliberate API choice: the TD error is the learning signal, and every dashboard in this book plots it.">
+
+```rust
+use rl_core::{Env, Transition};
+
+pub struct QLearning {
+    q: Vec<f64>,          // flat: state * n_actions + action
+    n_actions: usize,
+    alpha: f64,
+    gamma: f64,
+}
+
+impl QLearning {
+    #[inline]
+    fn idx(&self, s: usize, a: usize) -> usize { s * self.n_actions + a }
+
+    fn max_q(&self, s: usize) -> f64 {
+        (0..self.n_actions)
+            .map(|a| self.q[self.idx(s, a)])
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// One off-policy update. Returns the TD error δ — the learning signal.
+    pub fn update(&mut self, s: usize, a: usize, t: &Transition<usize>) -> f64 {
+        // The target bootstraps from the GREEDY action, whatever we actually do next.
+        let target = if t.done {
+            t.reward
+        } else {
+            t.reward + self.gamma * self.max_q(t.next_state)
+        };
+
+        let i = self.idx(s, a);
+        let delta = target - self.q[i];
+        self.q[i] += self.alpha * delta;
+        delta
+    }
+}
+```
+
+</RustSnippet>
+
+## 6.7 Chapter bridge
+
+Rusty can now learn without a map. He samples, bootstraps, and improves — the GPI pattern of Chapter 5 with expectations replaced by samples.
+
+But we have accepted a stark choice. Monte Carlo waits for the whole return: unbiased, high variance, no bootstrapping. TD(0) uses one step: low variance, biased, fast. Nothing in the mathematics says those are the only options, and they are not.
+
+Chapter 7 puts a dial between them. The $\lambda$-return blends every $n$-step return at once; eligibility traces make the blend cheap enough to compute online. And then a second idea: if we can learn a *model* from experience, we can plan with it as in Chapter 5 while continuing to learn as in this chapter — Dyna, the architecture that unifies both halves of Part I.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'First-visit MC is unbiased',
+    difficulty: 2,
+    body: 'Prove that the first-visit MC estimator of v_π(s) is unbiased. Then explain precisely why the every-visit estimator is biased, and why the bias nonetheless vanishes asymptotically.',
+  },
+  {
+    layer: 'F',
+    title: 'Infinite variance',
+    difficulty: 3,
+    body: 'Construct a two-state MDP with a behaviour policy b and target π for which ordinary importance sampling has infinite variance. Show the variance integral diverges, then verify empirically that weighted importance sampling behaves acceptably on the same problem.',
+  },
+  {
+    layer: 'F',
+    title: 'MC error as a sum of TD errors',
+    difficulty: 2,
+    body: 'Prove the identity G_t − V(S_t) = Σ_{k≥t} γ^{k−t} δ_k, assuming V does not change during the episode. This identity is the bridge to Chapter 7 — make sure you can produce it from memory.',
+  },
+  {
+    layer: 'F',
+    title: 'Maximization bias by construction',
+    difficulty: 2,
+    body: 'Build a single-state MDP with several actions whose true values are all zero but whose sampled returns are noisy. Show analytically that Q-learning’s estimate is positive in expectation, and compute how it grows with the number of actions.',
+  },
+  {
+    layer: 'C',
+    title: 'The backward wave',
+    difficulty: 1,
+    body: 'In the live training dashboard, note the episode at which the cell farthest from the dock first acquires a non-zero value under Q-learning. Increase α and repeat. Explain the relationship you observe and its limit.',
+  },
+  {
+    layer: 'C',
+    title: 'SARSA versus Q-learning under risk',
+    difficulty: 2,
+    body: 'Set the slip probability high and compare the greedy policies SARSA and Q-learning converge to near the shelves. Which hugs the obstacles? Explain in terms of what each algorithm’s target evaluates.',
+  },
+  {
+    layer: 'P',
+    title: 'Expected SARSA',
+    difficulty: 2,
+    body: 'Implement Expected SARSA and compare it against SARSA across learning rates from 0.05 to 0.6. Expected SARSA should tolerate larger α — explain why in terms of the variance of the target.',
+  },
+  {
+    layer: 'P',
+    title: 'Measure the overestimation',
+    difficulty: 3,
+    body: 'Instrument Q-learning and Double Q-learning to log max_a Q(s,a) against the true q*(s) computed by Chapter 5’s value iteration. Plot the gap over training. The single-estimator version should sit visibly above the truth for a long time.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 5 (Monte Carlo methods, importance sampling) and Chapter 6 (TD learning, SARSA, Q-learning, Expected SARSA, maximization bias).',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§2.2.1 value-function approaches, and §3.2 on why sample cost dominates algorithm choice in robotics.',
+  },
+  {
+    key: 'sutton1988',
+    authors: 'Sutton, R. S.',
+    year: 1988,
+    title: 'Learning to predict by the methods of temporal differences',
+    venue: 'Machine Learning 3(1)',
+    note: 'The paper that introduced TD learning.',
+  },
+  {
+    key: 'watkins1992',
+    authors: 'Watkins, C. J. C. H. & Dayan, P.',
+    year: 1992,
+    title: 'Q-learning',
+    venue: 'Machine Learning 8',
+    note: 'The convergence proof of Theorem 6.1.',
+  },
+  {
+    key: 'vanhasselt2010',
+    authors: 'van Hasselt, H.',
+    year: 2010,
+    title: 'Double Q-learning',
+    venue: 'NeurIPS 23',
+    note: 'Maximization bias identified and fixed — the ancestor of Double DQN (Chapter 9) and TD3 (Chapter 11).',
+  },
+  {
+    key: 'rummery1994',
+    authors: 'Rummery, G. A. & Niranjan, M.',
+    year: 1994,
+    title: 'On-line Q-learning using connectionist systems',
+    venue: 'Cambridge University Engineering Department, Technical Report',
+    note: 'The origin of SARSA, under its original name.',
+  },
+  {
+    key: 'bertsekas1996',
+    authors: 'Bertsekas, D. P. & Tsitsiklis, J. N.',
+    year: 1996,
+    title: 'Neuro-Dynamic Programming',
+    venue: 'Athena Scientific',
+    note: 'The rigorous stochastic-approximation treatment underlying every convergence claim in this chapter.',
+  },
+]} />

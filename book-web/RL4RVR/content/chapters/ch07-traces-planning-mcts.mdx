@@ -1,0 +1,314 @@
+---
+title: 'Unifying Learning & Planning: n-step, Traces, Dyna & MCTS'
+chapter: 7
+quote:
+  text: Planning and learning are deeply related. Both involve estimating value functions by backing up updates; the difference is only whether the experience is real or simulated.
+  author: Richard S. Sutton & Andrew G. Barto
+  affiliation: On the Dyna architecture
+  source: Reinforcement Learning — An Introduction, 2nd edition
+---
+
+<ChapterOverview
+  summary="Chapter 6 left a false dichotomy: Monte Carlo waits for the whole return, TD(0) uses one step. This chapter puts a continuous dial between them — the λ-return blends every n-step return at once, and eligibility traces make that blend computable online with one update per step. Then a second unification: if a robot can learn a model from experience, it can plan with it exactly as in Chapter 5 while still learning as in Chapter 6. Dyna is that architecture, and it is the intellectual ancestor of every model-based method in Chapter 12."
+  outcomes={[
+    'Write the n-step return and state the error-reduction property that justifies intermediate n',
+    'Define the λ-return and prove the forward and backward views are equivalent offline',
+    'Implement eligibility traces and explain what the trace vector physically represents',
+    'Build Dyna-Q and explain why planning steps buy sample efficiency at the cost of model bias',
+    'Explain how Dyna-Q+ detects a world that has changed underneath a stale model',
+    'Describe MCTS as decision-time planning, and name the two substitutions AlphaZero makes',
+  ]}
+  foundation="n-step returns and the error-reduction property, the λ-return, forward/backward equivalence proved, accumulating traces, Dyna-Q and Dyna-Q+, prioritized sweeping, and UCT."
+  conceptual="The λ dial: drag it from 0 to 1 and watch weight slide from the one-step return onto the full return, with the trace decaying along Rusty's corridor beside it."
+  practical="Sarsa(λ) with traces, Dyna-Q(+) composed from Chapter 6's learner, and prioritized sweeping on a binary heap."
+/>
+
+## 7.1 The space between one step and all of them
+
+Rusty delivers a package and receives $+25$. Which of the forty decisions that got him there deserves credit?
+
+TD(0) credits exactly one: the state immediately before the reward. The state two steps back learns nothing this episode — it must wait until its successor's value improves, then inherit a little. Monte Carlo credits all forty at once, but every one of them absorbs the noise of the entire trajectory.
+
+The **$n$-step return** interpolates by looking ahead $n$ steps before bootstrapping:
+
+$$G_{t:t+n} \doteq R_{t+1} + \gamma R_{t+2} + \cdots + \gamma^{n-1} R_{t+n} + \gamma^n V(S_{t+n}).$$
+
+At $n=1$ this is the TD target; at $n = \infty$ (or the episode end) it is the Monte Carlo return. The update is the usual one, $V(S_t) \leftarrow V(S_t) + \alpha[G_{t:t+n} - V(S_t)]$.
+
+Intermediate $n$ is not a compromise — it is usually strictly better than either extreme, and there is a theorem saying why.
+
+<Theorem kind="Theorem" n="7.1" title="Error-reduction property of n-step returns">
+For any value function $V$,
+
+$$\max_s \left| \mathbb{E}_\pi\!\left[G_{t:t+n} \mid S_t = s\right] - v_\pi(s) \right| \;\le\; \gamma^n \max_s \left| V(s) - v_\pi(s) \right|.$$
+</Theorem>
+
+The expected $n$-step return is a better estimate of $v_\pi$ than $V$ itself, by a factor $\gamma^n$. Larger $n$ contracts the bias faster — while adding the variance of $n$ extra sampled rewards. That is the whole trade, and it has no universal optimum.
+
+## 7.2 The λ-return: averaging all of them
+
+Rather than choosing one $n$, average them all, with geometrically decaying weights:
+
+$$G_t^\lambda \doteq (1-\lambda) \sum_{n=1}^{\infty} \lambda^{n-1} G_{t:t+n}.$$
+
+The factor $(1-\lambda)$ normalizes the weights to sum to one. At $\lambda = 0$ only the $n=1$ term survives — TD(0). At $\lambda = 1$ all the weight slides onto the full return — Monte Carlo. In between, a smooth blend.
+
+<LambdaDial />
+
+Drag the dial and watch both panels. On the left, the weight distribution over $n$-step returns; on the right, the eligibility trace decaying backwards along the corridor Rusty just drove. Those are two views of the same number.
+
+## 7.3 Forward and backward views
+
+The definition above is the **forward view**: to update $V(S_t)$ you look ahead over future returns. It is conceptually clean and computationally useless online — you would have to wait for the episode to finish.
+
+The **backward view** achieves the same thing causally. Maintain an **eligibility trace** $E_t(s)$ for every state, decaying by $\gamma\lambda$ each step and incremented when the state is visited:
+
+$$E_t(s) = \gamma\lambda\, E_{t-1}(s) + \mathbb{1}[S_t = s].$$
+
+Then at every step, compute the one-step TD error $\delta_t$ and apply it to **every** state in proportion to its trace:
+
+$$V(s) \leftarrow V(s) + \alpha\, \delta_t\, E_t(s) \quad \text{for all } s.$$
+
+The trace is a short-term memory of *who is responsible* for what happens now. A cell visited recently has a large trace and receives most of the credit; a cell visited long ago has a small one.
+
+<Theorem kind="Theorem" n="7.2" title="Forward–backward equivalence (offline)">
+If updates are accumulated and applied at the end of an episode, the total update made by the backward view with accumulating traces equals the total update prescribed by the forward view using $\lambda$-returns.
+</Theorem>
+
+<Proof>
+Unroll the trace at time $t$ for a state $s$ first visited at time $k \le t$: $E_t(s) = (\gamma\lambda)^{t-k}$. The total backward update to $s$ over the episode is therefore
+
+$$\alpha \sum_{t \ge k} (\gamma\lambda)^{t-k}\, \delta_t.$$
+
+Now take the forward view. Chapter 6's exercise established that the MC error decomposes as a discounted sum of TD errors; the same telescoping applied to the $\lambda$-return gives
+
+$$G_k^\lambda - V(S_k) = \sum_{t \ge k} (\gamma\lambda)^{t-k} \delta_t.$$
+
+The two expressions are identical, so the accumulated updates agree. $\qquad \blacksquare$
+
+The equivalence is exact only offline, because online updates change $V$ mid-episode and the two views then diverge slightly. *True online* TD(λ) repairs this at modest extra cost.
+</Proof>
+
+<Callout variant="insight" title="Why traces matter for robots specifically">
+Robot tasks have long horizons and sparse, delayed rewards. A quadruped that falls at step 800 did something wrong around step 780, not at step 799. One-step methods must propagate that information backwards one step per update — hundreds of updates to assign credit correctly.
+
+Traces do it in one sweep, at the cost of one vector the size of the state (or the parameters). This is why $\lambda \approx 0.9$–$0.97$ is nearly universal in practice, and why the GAE parameter in Chapter 10's PPO — which is precisely this idea applied to advantages — is one of the few hyperparameters practitioners rarely change.
+</Callout>
+
+## 7.4 Dyna: planning with a learned model
+
+Now the second unification. Chapter 5 planned with a *given* model; Chapter 6 learned with *no* model. Dyna does both: learn a model from real experience, then use it to generate simulated experience and learn from that too.
+
+The architecture is small enough to state completely. After each real transition $(S, A, R, S')$:
+
+1. **Direct RL** — apply a Q-learning update from the real transition.
+2. **Model learning** — store $\text{Model}(S,A) \leftarrow (R, S')$.
+3. **Planning** — repeat $n$ times: sample a previously-seen $(S,A)$, look up the model's prediction, and apply the *same* Q-learning update to that imagined transition.
+
+The planning updates are indistinguishable from real ones as far as the learner is concerned. That is the insight in the epigraph: **planning and learning differ only in where the experience comes from.**
+
+The payoff is sample efficiency, which for a robot is the currency that matters. With $n = 50$ planning steps per real step, Dyna-Q typically reaches good policies in an order of magnitude fewer *real* interactions than Q-learning — because each expensive real transition is mined fifty times.
+
+<Callout variant="warning" title="The model is wrong, and the world moves">
+Dyna trusts its model completely. When the model is wrong, the agent confidently learns nonsense — this is **model bias**, and Chapter 12 shows it compounding with the planning horizon.
+
+Worse is a model that *was* right. Suppose the warehouse is re-shelved overnight: a corridor that used to be open is now blocked. Dyna-Q keeps planning through the remembered corridor and may never re-explore it, because its policy sees no reason to go there.
+
+**Dyna-Q+** fixes this by adding an exploration bonus $\kappa\sqrt{\tau}$ to simulated rewards, where $\tau$ counts the steps since that state–action pair was tried *for real*. Long-untested transitions become attractive again, so the agent periodically re-verifies its beliefs. The idea — curiosity about the staleness of your own knowledge — recurs in modern exploration research.
+</Callout>
+
+**Prioritized sweeping** improves on uniform sampling of imagined transitions. Instead of picking $(S,A)$ at random, maintain a priority queue ordered by the magnitude of the change a backup would produce, and always work on the largest. When a state's value changes, all its predecessors are enqueued with priority proportional to the change. Computation flows to where it matters, and the speedup over uniform Dyna is often an order of magnitude.
+
+<RustSnippet title="rl-tabular/src/dyna.rs" caption="Dyna-Q+ composed from Chapter 6's QLearning. The planning loop calls exactly the same update as real experience — that identity is the entire point of the architecture.">
+
+```rust
+use std::collections::HashMap;
+use rl_core::Transition;
+use crate::td::QLearning;
+
+pub struct DynaQPlus {
+    learner: QLearning,
+    model: HashMap<(usize, usize), (f64, usize)>,
+    /// Steps since each (s, a) was tried for real — drives the bonus.
+    last_tried: HashMap<(usize, usize), u64>,
+    planning_steps: usize,
+    kappa: f64,
+    step: u64,
+}
+
+impl DynaQPlus {
+    pub fn observe<R: rand::Rng>(&mut self, s: usize, a: usize, t: &Transition<usize>, rng: &mut R) {
+        self.step += 1;
+
+        // 1. Direct RL from real experience.
+        self.learner.update(s, a, t);
+
+        // 2. Model learning.
+        self.model.insert((s, a), (t.reward, t.next_state));
+        self.last_tried.insert((s, a), self.step);
+
+        // 3. Planning — the same update, on remembered transitions.
+        let keys: Vec<_> = self.model.keys().copied().collect();
+        for _ in 0..self.planning_steps {
+            let &(ps, pa) = &keys[rng.gen_range(0..keys.len())];
+            let (reward, next) = self.model[&(ps, pa)];
+
+            // Dyna-Q+ bonus: reward staleness, so the agent re-checks old beliefs.
+            let tau = (self.step - self.last_tried[&(ps, pa)]) as f64;
+            let imagined = Transition {
+                next_state: next,
+                reward: reward + self.kappa * tau.sqrt(),
+                done: false,
+            };
+            self.learner.update(ps, pa, &imagined);
+        }
+    }
+}
+```
+
+</RustSnippet>
+
+## 7.5 Decision-time planning and MCTS
+
+Everything so far uses planning to improve a *stored* policy — Sutton and Barto call this **background planning**. There is another use: plan at the moment of decision, for the state you are actually in, then throw the computation away.
+
+**Monte Carlo tree search** is the canonical method. From the current state, repeat four steps:
+
+1. **Selection** — descend the tree using a rule that balances exploitation and exploration. The standard is UCT, which is Chapter 3's UCB applied at each node: $\arg\max_a \left[ Q(s,a) + c\sqrt{\ln N(s)/N(s,a)} \right]$.
+2. **Expansion** — add a child node for an untried action.
+3. **Simulation** — roll out to a terminal state with a cheap default policy.
+4. **Backpropagation** — propagate the outcome up the path, updating $N$ and $Q$.
+
+Given enough iterations, UCT converges to the optimal action at the root. The tree grows asymmetrically, concentrating depth along promising lines — which is exactly how you would want a finite computation budget spent.
+
+<Callout variant="insight" title="What AlphaZero changed">
+AlphaZero keeps the MCTS skeleton and makes two substitutions. First, the random rollout is replaced by a **learned value network** evaluating the leaf directly — no simulation to the end at all. Second, the UCT exploration term is replaced by **PUCT**, which weights exploration by a learned policy network's prior, so the search spends its budget on moves that look plausible.
+
+The result is a loop in which search improves the policy and the improved policy makes search better — generalized policy iteration again, with search as the improvement operator. Chapter 12 builds the robotics version, where the "search" is trajectory optimization through a learned dynamics model and the horizon is a few hundred milliseconds rather than a whole game.
+</Callout>
+
+For robots, decision-time planning is most familiar as **model predictive control**: at each control step, optimize a short action sequence against a model, execute the first action, discard the rest, and re-plan. Chapter 12 derives it properly and Chapter 13 gives it its classical-control context.
+
+## 7.6 Chapter bridge
+
+Part I is complete, and it is worth naming what has been assembled.
+
+We have a formalism (Chapter 4), an exact planning method for when the model is known (Chapter 5), sampling methods for when it is not (Chapter 6), a continuous dial between one-step and full-return credit assignment (this chapter), and an architecture that learns a model and plans with it while continuing to learn (also this chapter). All of it is unified by generalized policy iteration and underwritten by the contraction mathematics of Chapter 2.
+
+All of it also assumes **tables**. Every method here stores one number per state or per state–action pair, and Chapter 5's arithmetic already showed that a modest robot arm has more states than a sweep can touch before the sun burns out.
+
+Part II abandons tables. We will represent value functions and policies as parameterized functions — linear in features, then deep networks — and discover that the guarantees do not survive the transition intact. Chapter 8 begins with what breaks, because knowing precisely how approximation can diverge is what makes the engineering of Chapters 9 through 12 comprehensible rather than superstitious.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Prove the error-reduction property',
+    difficulty: 3,
+    body: 'Prove Theorem 7.1. Then explain why it does NOT imply that larger n is always better in practice — what does the theorem measure, and what does it ignore?',
+  },
+  {
+    layer: 'F',
+    title: 'λ-weights sum to one',
+    difficulty: 1,
+    body: 'Verify that (1−λ)Σ_{n≥1} λ^{n−1} = 1, and work out what the weights become when an episode terminates at step T. Why must the remaining weight go onto the full return?',
+  },
+  {
+    layer: 'F',
+    title: 'The equivalence, in full',
+    difficulty: 3,
+    body: 'Reproduce the proof of Theorem 7.2, justifying the telescoping step explicitly. Then construct a small example where online updating makes the forward and backward views differ, and quantify the discrepancy.',
+  },
+  {
+    layer: 'F',
+    title: 'Effective lookahead',
+    difficulty: 2,
+    body: 'Show that the mean n under the λ-weighting is 1/(1−λ), and interpret this as an effective lookahead horizon. Compare with the effective horizon 1/(1−γ) from Chapter 4 — what does the product γλ mean?',
+  },
+  {
+    layer: 'C',
+    title: 'The two extremes',
+    difficulty: 1,
+    body: 'In the λ dial, set λ = 0 and λ = 1 and describe precisely what each does to the trace along the corridor. Then find the λ at which the trace half-life is about five steps, at γ = 0.95.',
+  },
+  {
+    layer: 'P',
+    title: 'Sarsa(λ) with traces',
+    difficulty: 2,
+    body: 'Implement Sarsa(λ) with accumulating traces and sweep λ ∈ {0, 0.5, 0.9, 0.95, 0.99} on Rusty’s warehouse. Plot episodes-to-threshold against λ. The curve should be U-shaped — explain both arms.',
+  },
+  {
+    layer: 'P',
+    title: 'The blocking maze',
+    difficulty: 3,
+    body: 'Build a maze whose optimal corridor is blocked halfway through training. Run Dyna-Q and Dyna-Q+ across the change. Measure how many episodes each needs to recover, and tune κ to trade recovery speed against steady-state performance.',
+  },
+  {
+    layer: 'P',
+    title: 'Prioritized sweeping',
+    difficulty: 3,
+    body: 'Implement prioritized sweeping with a binary heap and compare total backups to convergence against uniform Dyna-Q at equal planning budgets. Report the speedup, and identify what problem structure makes the advantage largest.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 7 (n-step bootstrapping), Chapter 12 (eligibility traces, forward and backward views, true online TD(λ)), and Chapter 8 (Dyna, prioritized sweeping, MCTS).',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§6 mental rehearsal — the robotics case for planning with learned models, developed fully in Chapter 12.',
+  },
+  {
+    key: 'sutton1990',
+    authors: 'Sutton, R. S.',
+    year: 1990,
+    title: 'Integrated architectures for learning, planning, and reacting based on approximating dynamic programming',
+    venue: 'ICML 1990',
+    note: 'The Dyna architecture, in the original.',
+  },
+  {
+    key: 'moore1993',
+    authors: 'Moore, A. W. & Atkeson, C. G.',
+    year: 1993,
+    title: 'Prioritized sweeping: Reinforcement learning with less data and less time',
+    venue: 'Machine Learning 13',
+    note: 'The priority-queue idea of §7.4.',
+  },
+  {
+    key: 'vanseijen2014',
+    authors: 'van Seijen, H. & Sutton, R. S.',
+    year: 2014,
+    title: 'True Online TD(λ)',
+    venue: 'ICML 2014',
+    note: 'Repairs the online gap in the forward–backward equivalence exactly, rather than approximately.',
+  },
+  {
+    key: 'kocsis2006',
+    authors: 'Kocsis, L. & Szepesvári, C.',
+    year: 2006,
+    title: 'Bandit based Monte-Carlo Planning',
+    venue: 'ECML 2006',
+    note: 'UCT — Chapter 3’s UCB applied inside a search tree, with the consistency proof.',
+  },
+  {
+    key: 'silver2018',
+    authors: 'Silver, D. et al.',
+    year: 2018,
+    title: 'A general reinforcement learning algorithm that masters chess, shogi, and Go through self-play',
+    venue: 'Science 362(6419)',
+    note: 'AlphaZero — the two substitutions described in §7.5, and search as a policy improvement operator.',
+  },
+]} />

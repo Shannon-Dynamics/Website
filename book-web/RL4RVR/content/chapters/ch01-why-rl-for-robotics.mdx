@@ -1,0 +1,378 @@
+---
+title: Why Reinforcement Learning for Robotics?
+chapter: 1
+quote:
+  text: Reinforcement learning offers to robotics a framework and set of tools for the design of sophisticated and hard-to-engineer behaviors.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: TU Delft · Carnegie Mellon · TU Darmstadt
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Before any theorem, the case for the whole enterprise. Robots that must perceive, decide, and act in unstructured worlds outgrow hand-written controllers — not because engineers are careless, but because the number of situations to specify grows faster than anyone can enumerate them. Reinforcement learning is the discipline of replacing hand-written decision rules with optimized ones. This chapter gives you the vocabulary, the cast of robots, and — most importantly — the felt experience of watching a perfectly good controller fail in your own browser."
+  outcomes={[
+    'Trace the see–think–act loop on a concrete robot and name which stage each robotics subfield automates',
+    'Explain why direct programming stops scaling, using the four axes of structure, perception, contact, and deformation',
+    'Position learning from demonstration, reinforcement learning, and hybrid pipelines relative to each other, and state each one’s preconditions',
+    'Describe the four informal ingredients of an RL problem — agent, environment, reward, policy — on three different robots',
+    'Place any published robot-RL system in Tang’s taxonomy: competency, formulation, solution approach, and level of real-world success',
+    'Read the rest of this book knowing exactly which promises have been made and which are still IOUs',
+  ]}
+  foundation="The perception–decision–actuation loop written as a discrete-time dynamical system, with every informal word flagged for the chapter that makes it precise."
+  conceptual="A hand-coded robot controller you can break yourself, and the field’s real-world results arranged on an honesty ladder."
+  practical="The unicycle kinematics and controller trait that Rusty runs on, plus the first reproducible experiment: a noise sweep with pinned seeds."
+/>
+
+## 1.1 See, think, act
+
+Every robot that does anything useful runs the same loop. It **senses** the world, it **decides** what to do, and it **acts** — changing the world, which it then senses again. Cameras, lidar, and joint encoders feed the first stage; planners, controllers, and policies occupy the second; motors and grippers execute the third.
+
+Write it down with a little more care. At discrete time step $t$, the robot receives an observation $o_t$, chooses an action
+
+$$a_t = \pi(o_t),$$
+
+and the world advances to a new configuration influenced by $a_t$ together with whatever disturbances the universe supplies. The function $\pi$ is called a **policy**, and essentially all of robotics is the search for good policies.
+
+Three words in that paragraph are doing unearned work, and it is worth naming the debt now.
+
+<Callout variant="note" title="Three IOUs">
+**"Receives"** and **"advances"** describe random processes — the same action in the same situation does not produce the same result twice. Chapter 2 builds the probability machinery; Chapter 4 turns "advances" into a conditional distribution $p(s' \mid s, a)$.
+
+**"Observation"** is deliberately not "state". A robot never sees the true configuration of the world — only noisy, partial projections of it. We plant that distinction here and harvest it in Chapter 4, where the honest formalism turns out to be a *partially observable* Markov decision process.
+</Callout>
+
+The loop looks innocent because we have all watched robots work. The interesting question is what happens to it when the world stops cooperating.
+
+<Figure label="Figure 1.1" caption="The see–think–act loop. Perception maps the world to an observation, the policy maps the observation to an action, and actuation changes the world — which changes the next observation. Everything this book does happens inside the middle box.">
+<svg viewBox="0 0 620 190" width="100%" style={{ maxWidth: '620px', margin: '0 auto', display: 'block' }} role="img" aria-label="Diagram of the see-think-act loop: world feeds perception, which feeds the policy, which feeds actuation, which feeds back into the world">
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="var(--text-muted)" />
+    </marker>
+  </defs>
+
+  <rect x="20" y="70" width="110" height="52" rx="9" fill="color-mix(in srgb, var(--series-3) 14%, transparent)" stroke="var(--series-3)" strokeWidth="1.5" />
+  <text x="75" y="93" textAnchor="middle" fontSize="13" fontWeight="600" fill="var(--text-primary)">SEE</text>
+  <text x="75" y="109" textAnchor="middle" fontSize="10" fill="var(--text-secondary)">lidar, camera</text>
+
+  <rect x="255" y="70" width="110" height="52" rx="9" fill="color-mix(in srgb, var(--series-1) 16%, transparent)" stroke="var(--series-1)" strokeWidth="2" />
+  <text x="310" y="93" textAnchor="middle" fontSize="13" fontWeight="600" fill="var(--text-primary)">THINK</text>
+  <text x="310" y="109" textAnchor="middle" fontSize="10" fill="var(--text-secondary)">policy π</text>
+
+  <rect x="490" y="70" width="110" height="52" rx="9" fill="color-mix(in srgb, var(--series-2) 14%, transparent)" stroke="var(--series-2)" strokeWidth="1.5" />
+  <text x="545" y="93" textAnchor="middle" fontSize="13" fontWeight="600" fill="var(--text-primary)">ACT</text>
+  <text x="545" y="109" textAnchor="middle" fontSize="10" fill="var(--text-secondary)">motors</text>
+
+  <line x1="132" y1="96" x2="248" y2="96" stroke="var(--text-muted)" strokeWidth="1.5" markerEnd="url(#arrowhead)" />
+  <text x="190" y="88" textAnchor="middle" fontSize="11" fill="var(--text-secondary)">oₜ</text>
+
+  <line x1="367" y1="96" x2="483" y2="96" stroke="var(--text-muted)" strokeWidth="1.5" markerEnd="url(#arrowhead)" />
+  <text x="425" y="88" textAnchor="middle" fontSize="11" fill="var(--text-secondary)">aₜ</text>
+
+  <path d="M545 128 L545 165 L75 165 L75 130" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeDasharray="5 4" markerEnd="url(#arrowhead)" />
+  <text x="310" y="180" textAnchor="middle" fontSize="11" fill="var(--text-secondary)">the world advances — and it does not always advance the same way</text>
+
+  <text x="310" y="35" textAnchor="middle" fontSize="11" fill="var(--text-muted)">Chapters 2 and 4 make every arrow in this diagram a precise mathematical object</text>
+</svg>
+</Figure>
+
+## 1.2 Why direct programming breaks
+
+Meet **Rusty**, a differential-drive mobile robot and the first member of this book's cast. Rusty's job is to reach a goal without hitting anything. His controller is the textbook potential-field method: steer toward the goal, steer away from obstacles, sum the two.
+
+It is a good controller. It is also about to fail in front of you.
+
+<RustyDrive />
+
+Nothing went wrong with the code. The potential-field method is correct, well understood, and provably convergent under assumptions — assumptions the concave trap violates. And here is the uncomfortable part: you fixed it instantly. You looked at the screen, saw that backing up was progress, and drove out. Encoding *that* judgment — for every trap, in every room, under every lighting condition — is the job direct programming asks of us.
+
+A controller is a function $\pi : \mathcal{O} \to \mathcal{A}$ from observations to actions. Programming means specifying $\pi$ by hand, case by case. The effort required grows not with the size of the code but with **the diversity of inputs the robot actually encounters**. Four axes generate that diversity, and they explain why some robots shipped decades ago while others remain research projects:
+
+| Axis | Easy end | Hard end |
+|---|---|---|
+| **Structure & consistency** | Vacuum robot: flat floor, same room nightly | Home-cleaning robot: novel clutter every time |
+| **Perception** | Pool cleaner: featureless tiled basin | Cooking robot: identify ingredients by sight and state |
+| **Manipulation contact** | Manufacturing arm: fixtured parts, known poses | Assembly under uncertainty: contact decides the outcome |
+| **Deformation** | Warehouse robot: rigid boxes | Laundry robot: cloth has effectively infinite configurations |
+
+Robots that shipped commercially live at the left of every row. Robots that remain research projects live at the right of at least one.
+
+<Callout variant="warning" title="The scale of the problem, in numbers">
+It is tempting to think the state space is small because the robot is small. Kober, Bagnell and Peters make the point concrete: **10–30 dimensional continuous state–action spaces are entirely normal in robotics**, and already count as large. A modest 7-degree-of-freedom arm has a 14-dimensional state — positions and velocities — before you add a single object to the scene. Chapter 14 turns that observation into arithmetic that ends the argument permanently.
+</Callout>
+
+Here is what Rusty's world actually looks like in code — the unicycle kinematics and the controller trait that the sandbox above runs on.
+
+<RustSnippet title="rl-envs/src/rusty/diff_drive.rs" caption="Rusty's body and the interface every controller implements. The hand-coded WallFollower is deliberately simple — it exists to be broken.">
+
+```rust
+pub struct Pose { pub x: f64, pub y: f64, pub theta: f64 }
+pub struct Twist { pub v: f64, pub omega: f64 }   // forward m/s, yaw rad/s
+
+/// Unicycle kinematics, advanced by one control period `dt` (zero-order hold).
+pub fn step(p: &Pose, u: &Twist, dt: f64) -> Pose {
+    Pose {
+        x: p.x + u.v * p.theta.cos() * dt,
+        y: p.y + u.v * p.theta.sin() * dt,
+        theta: p.theta + u.omega * dt,
+    }
+}
+
+pub trait Controller {
+    fn act(&mut self, scan: &LidarScan) -> Twist;
+}
+
+/// The hand-coded baseline this chapter exists to break.
+pub struct WallFollower { pub target_gap: f64, pub k_p: f64 }
+
+impl Controller for WallFollower {
+    fn act(&mut self, scan: &LidarScan) -> Twist {
+        let gap = scan.min_range_deg(-95.0..=-85.0); // right-side beams
+        Twist { v: 0.4, omega: self.k_p * (gap - self.target_gap) }
+    }
+}
+```
+
+</RustSnippet>
+
+Notice what the `Controller` trait does *not* say: nothing about how `act` arrives at its answer. A hand-written proportional rule satisfies it. So does a neural network trained for three days on a GPU cluster. That interface is the seam along which this entire book is built.
+
+## 1.3 Three roads to a policy
+
+If hand-writing $\pi$ does not scale, what does? There are exactly three families of answers, and they differ in what they demand from you rather than in how clever they are.
+
+**Demonstrate.** Collect a set $D = \{(s, a)\}$ of situations and the actions an expert took in them, then fit a function to it. This is *learning from demonstration*, and it is supervised learning wearing a robotics hat. Its preconditions are strong and worth stating aloud: **a teacher must exist**, and **demonstration must be physically possible**. You can demonstrate driving. Demonstrating a backflip on a quadruped, or the precise force profile of an insertion, is another matter.
+
+**Reinforce.** Provide no teacher at all — only a scalar judgment of how well things are going. The robot practices, receives reward, and improves. This is *reinforcement learning*. The precondition is subtler: you must be able to write down what success means as a number. Reward specifies **what** you want, never **how** to achieve it, and that gap is simultaneously the method's power and its most reliable source of disaster (Chapter 14 catalogues the disasters).
+
+**Hybridize.** Use demonstrations to get a competent starting point, then let reinforcement learning refine it beyond what the demonstrator could do. Nearly every real-world success in manipulation takes this road, and Chapters 16 and 17 build it properly.
+
+| | Teacher required | Sample cost | Reward-design burden |
+|---|---|---|---|
+| **Demonstration** | Yes — and must be able to perform the task | Low (one-time collection) | None |
+| **Reinforcement** | No | High — the robot must practice | High — and unforgiving |
+| **Hybrid** | Yes, for initialization only | Medium | Medium |
+
+<Callout variant="insight" title="When does RL apply at all?">
+Kober and colleagues give the cleanest test in the literature: reinforcement learning applies when a task **can be phrased as an optimization problem** and **exhibits temporal structure** — when what you do now changes what you will face later.
+
+Both halves matter. Choosing the best grasp for a stationary object is an optimization problem with no temporal structure; that is a *bandit* problem, and Chapter 3 solves it with far simpler machinery. The moment grasping the object moves it, and the next decision depends on where it moved, you need the full apparatus.
+</Callout>
+
+## 1.4 The anatomy of an RL problem
+
+Four ingredients, stated informally here and made precise in Chapter 4.
+
+The **agent** is the thing that chooses. The **environment** is everything else — including, importantly, the robot's own motors, since the agent controls them only through commands that may not be obeyed exactly. The **reward** $r_{t+1} \in \mathbb{R}$ is a scalar arriving after action $a_t$; the indexing is deliberate and follows Sutton and Barto, because the reward is a consequence of the action, not a property of the situation that preceded it. The **policy** $\pi$ maps what the agent perceives to what it does.
+
+From these, one derived quantity dominates everything: the **return**, the accumulated reward over an episode. An agent that maximizes immediate reward is myopic; an agent that maximizes return is strategic. Making that distinction rigorous — and finite, since sums of infinitely many rewards need care — occupies Chapter 4.
+
+Sutton and Barto identify four elements of any RL system. Each lands somewhere concrete on Rusty:
+
+- **Policy** — Rusty's rule for choosing a heading given what the lidar reports.
+- **Reward signal** — $+25$ for reaching the dock, $-1$ per step elapsed, $-10$ for hitting a shelf.
+- **Value function** — how promising a corridor is *in the long run*, accounting for where it leads. Not the same as its immediate reward, and vastly more useful.
+- **Model** — a floor map, if the robot has one. Chapters 5 and 12 show what becomes possible when it does; Chapters 6 and 7 show what to do when it does not.
+
+<Callout variant="insight" title="The tension that generates the entire field">
+Rusty knows one corridor that reaches the dock in forty steps. There may be a twenty-step route through an aisle he has never entered. Taking the known route earns a reliable return. Trying the unknown one might earn more, or might waste an episode.
+
+He cannot do both. This is the **exploration–exploitation dilemma**, and it is not an engineering annoyance to be tuned away — it is the structural feature that separates reinforcement learning from every other kind of machine learning. Chapter 3 isolates it in the simplest setting that still contains it, and derives what optimal exploration actually looks like.
+</Callout>
+
+## 1.5 What actually worked
+
+Enthusiasm is cheap. The useful question is what reinforcement learning has genuinely achieved on physical hardware, and the honest answer is: a great deal in a few competencies, and remarkably little in others.
+
+Tang and colleagues surveyed the field with an unusually disciplined instrument — a six-level maturity ladder running from "validated only in simulation" to "deployed in a commercial product". It is worth internalizing, because it converts vague claims into checkable ones, and because this book applies it to its own capstone in Chapter 22.
+
+<SuccessLevels />
+
+Read the pattern rather than the individual entries. **Locomotion reached commercial deployment** because its dynamics simulate faithfully, its rewards shape naturally, and a stumble costs a fall rather than a lawsuit. **Manipulation stalls below the real-world tiers** because object diversity defeats simulation and contact is where physics engines are least trustworthy. **Human–robot interaction sits near the bottom** for a reason no algorithm will fix: humans are the part of the environment nobody can simulate, so neither zero-shot transfer nor cheap practice is available.
+
+That spread — not any particular algorithm — is the map this book navigates. Part IV devotes a chapter to each region of it.
+
+## 1.6 The method, the cast, and the contract
+
+Three commitments run through every remaining chapter.
+
+**Foundation.** Derivations are complete. When this book states a theorem, it either proves it or states it precisely and says exactly where the proof lives. "It can be shown" is not an argument, and you should not accept it from a textbook any more than from a colleague.
+
+**Conceptual.** Every hard concept gets something you can manipulate. This is not decoration. A discount factor you have dragged from 0.5 to 0.99, watching the value function's reach stretch across a warehouse, is a discount factor you understand in a way that reading $1/(1-\gamma)$ does not deliver.
+
+**Practical.** Every algorithm is implemented in Rust, with seeded randomness and real tests. You will finish with working code, not pseudocode with the hard parts elided.
+
+The cast is small and fixed. **Rusty** you have met. **Pendle**, a pendulum, arrives in Chapter 2 — simple enough that we can do every calculation exactly, which makes him the perfect vehicle for the mathematics. **Reacher**, a two-link arm, arrives in Chapter 3 and carries the manipulation thread. **Ferris**, a quadruped, arrives in Chapter 15 and gets a full chapter of his own plus the capstone.
+
+<Callout variant="robot" title="Rusty's state at the end of this chapter">
+Rusty has a body (unicycle kinematics), a sensor (2-D lidar with a noise model), an environment (a warehouse pen), a hand-coded controller with documented failure modes, and a reward configuration. He has everything he needs except the ability to learn. Chapter 4 formalizes his world as a Markov decision process; Chapters 5 through 7 teach him.
+</Callout>
+
+## 1.7 Chapter bridge
+
+We have made claims and issued IOUs. Let us be precise about which is which.
+
+Claimed and defended: hand-written controllers fail through input diversity rather than programmer error; there are three roads to a policy with different preconditions; robot RL's real-world successes cluster in competencies that simulate well.
+
+Still owed: the loop is not yet mathematics. "Reward" is not yet a random variable. "The agent eventually finds the best policy" is not yet a limit theorem — and until it is, it is marketing.
+
+Chapter 2 pays these debts. It supplies probability spaces and conditional expectation, contraction mappings and the fixed-point theorem that every convergence proof in this book eventually invokes, the discretization that turns a robot's continuous dynamics into discrete decisions, and the Robbins–Monro theorem — the single result that makes learning from noisy samples work at all. Pendle arrives to carry all of it, because he is simple enough that we can compute everything exactly and check the theory against arithmetic.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Name your own hard tasks',
+    difficulty: 1,
+    body: 'For each of the four diversity axes (structure, perception, contact, deformation), give one easy/hard task pair not used in this chapter, and justify each placement in two sentences.',
+  },
+  {
+    layer: 'F',
+    title: 'Optimization without time',
+    difficulty: 2,
+    body: 'Kober’s test says RL applies when a task is an optimization problem AND exhibits temporal structure. Give a robot task that is genuinely an optimization problem but has no temporal structure. Name the problem class it belongs to — you have just previewed Chapter 3.',
+  },
+  {
+    layer: 'F',
+    title: 'The thermostat',
+    difficulty: 1,
+    body: 'Write the see–think–act loop for a household thermostat: identify $o_t$, $a_t$, and $r_{t+1}$ explicitly. Is exploration present in a standard thermostat? Should it be? Argue both sides in a paragraph.',
+  },
+  {
+    layer: 'C',
+    title: 'Find the failure boundary',
+    difficulty: 2,
+    body: 'In the Rusty sandbox, work out which room geometry first defeats the hand-coded controller. Then describe, in one sentence, the property of that geometry that the potential-field method cannot represent.',
+  },
+  {
+    layer: 'C',
+    title: 'Diagnose a stalled competency',
+    difficulty: 2,
+    body: 'In the success-levels explorer, find a competency with no entry above L2. Propose one reason grounded in the survey’s own analysis — is the bottleneck simulation fidelity, reward design, sample cost, or safety?',
+  },
+  {
+    layer: 'P',
+    title: 'A second hand-coded controller',
+    difficulty: 2,
+    body: 'Implement a bang-bang gap keeper alongside the proportional WallFollower and add it to the parameter sweep. Does it dominate the P-controller anywhere in the noise–slip plane, or is it uniformly worse?',
+  },
+  {
+    layer: 'P',
+    title: 'Tag a recent paper',
+    difficulty: 3,
+    body: 'Take a robot-RL paper from the last two years and tag it with all four taxonomy axes: competency, problem formulation, solution approach, and level of real-world success. Defend the level assignment in a paragraph, citing only the experimental evidence the paper actually reports — not what it claims in the abstract.',
+  },
+  {
+    layer: 'C',
+    title: 'Judge your own driving',
+    difficulty: 2,
+    body: 'Drive Rusty manually for sixty seconds, then score that same trajectory under three reward configurations: dock-only sparse, step-penalty dense, and collision-heavy. Your ranking will change. Explain why — you have just previewed the curse of goal specification (Chapter 14).',
+  },
+]} />
+
+<CodingTask
+  title="Reproduce the failure cliff"
+  crate="rl-envs, rl-core"
+  deliverables={[
+    'A seeded sweep over lidar noise σ ∈ [0, 0.5] m across 100 layout seeds',
+    'A success-rate plot showing the cliff, exported as the page’s static figure',
+    'Byte-identical results on re-run from the pinned seed — the book’s reproducibility standard',
+  ]}
+>
+
+Build the noise sweep described above using `rayon` for parallel rollouts and a seeded `StdRng` per run. The point is not the plot — it is that you now own a reproducible experimental harness, and every later chapter assumes you can run one.
+
+Success is not "the controller fails". Success is knowing *at which noise level* it fails, and being able to show someone else the same number tomorrow.
+
+</CodingTask>
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 1, especially §1.1–1.3 (elements of RL) and §1.5 (tic-tac-toe as a first complete example).',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§1.1 RL in the context of machine learning; §1.2 versus optimal control; §1.3 in the context of robotics — dimensionality, partial observability, and the cost of real experience.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C., Abbatematteo, B., Hu, J., Chandra, R., Martín-Martín, R. & Stone, P.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.1 competencies, §3.2 problem formulation, §3.3 solution approach, §3.4 the L0–L5 levels of real-world success used throughout this book.',
+  },
+  {
+    key: 'akinola',
+    authors: 'Akinola, I.',
+    year: 'n.d.',
+    title: 'Reinforcement Learning for Robotics',
+    venue: 'Columbia University lecture notes',
+    baseline: true,
+    note: 'The see–think–act framing, the direct-programming difficulty axes, and the LfD / RL / hybrid taxonomy.',
+  },
+  {
+    key: 'kaufmann2023',
+    authors: 'Kaufmann, E., Bauersfeld, L., Loquercio, A., Müller, M., Koltun, V. & Scaramuzza, D.',
+    year: 2023,
+    title: 'Champion-level drone racing using deep reinforcement learning',
+    venue: 'Nature 620',
+    url: 'https://www.nature.com/articles/s41586-023-06419-4',
+    note: 'The clearest demonstration that RL can beat expert humans on a physical, dynamic, safety-critical task.',
+  },
+  {
+    key: 'lee2020',
+    authors: 'Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2020,
+    title: 'Learning quadrupedal locomotion over challenging terrain',
+    venue: 'Science Robotics 5(47)',
+    note: 'The teacher–student recipe rebuilt in Chapters 15 and 18.',
+  },
+  {
+    key: 'miki2022',
+    authors: 'Miki, T., Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2022,
+    title: 'Learning robust perceptive locomotion for quadrupedal robots in the wild',
+    venue: 'Science Robotics 7(62)',
+    note: 'Perceptive locomotion at L4 — diverse, representative real-world conditions.',
+  },
+  {
+    key: 'hwangbo2019',
+    authors: 'Hwangbo, J., Lee, J., Dosovitskiy, A., Bellicoso, D., Tsounis, V., Koltun, V. & Hutter, M.',
+    year: 2019,
+    title: 'Learning agile and dynamic motor skills for legged robots',
+    venue: 'Science Robotics 4(26)',
+    note: 'Where the modern sim-to-real locomotion pipeline begins.',
+  },
+  {
+    key: 'akkaya2019',
+    authors: 'Akkaya, I. et al. (OpenAI)',
+    year: 2019,
+    title: 'Solving Rubik’s Cube with a Robot Hand',
+    venue: 'arXiv:1910.07113',
+    url: 'https://arxiv.org/abs/1910.07113',
+    note: 'The in-hand manipulation line traced in Chapter 20 — and a case study in how much randomization dexterity costs.',
+  },
+  {
+    key: 'sunderhauf2018',
+    authors: 'Sünderhauf, N. et al.',
+    year: 2018,
+    title: 'The limits and potentials of deep learning for robotics',
+    venue: 'International Journal of Robotics Research 37(4–5)',
+    note: 'The pre-success-era assessment that the 2024 survey positions itself against — useful for calibrating how fast this field moves.',
+  },
+]} />

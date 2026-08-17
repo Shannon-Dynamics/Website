@@ -1,0 +1,363 @@
+---
+title: Motor-Skill Policy Representations
+chapter: 17
+quote:
+  text: A good policy representation reduces the search space dramatically. The choice of representation is often more important than the choice of learning algorithm.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On tractability through representation
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Sixteen chapters have asked how a policy should learn. This one asks what it should output — and the answer matters at least as much. A policy commanding joint torques must discover gravity compensation from scratch; a policy commanding a movement primitive's goal has ten parameters and inherits stability by construction. Kober's insight that representation dominates algorithm survives intact into the deep era, and Tang's action-space taxonomy is its modern statement. We derive dynamic movement primitives, then recreate the ball-in-a-cup experiment with both the 2013 pipeline and a modern one, compared honestly."
+  outcomes={[
+    'Classify an action space as low, mid, or high level and predict the consequences of each choice',
+    'Derive the DMP equations and prove convergence to the goal regardless of the learned forcing term',
+    'Explain how DMPs generalize across goals and time scalings, and what they cannot represent',
+    'Describe CPGs and the phase-locking condition that produces coordinated gaits',
+    'Formulate residual RL and explain why the classical prior bounds the learned policy’s damage',
+    'Write the semi-MDP Bellman equations for options and explain what temporal abstraction buys',
+  ]}
+  foundation="Action-space levels with their trade-offs, the DMP canonical and transformation systems with a stability proof, CPG phase-locking, residual policy stability, and the semi-MDP option framework."
+  conceptual="A movement primitive you reshape and re-target: drag the goal and watch the demonstrated style survive the deformation."
+  practical="The DMP module in nalgebra, a CPG oscillator bank, a residual-RL wrapper, and ball-in-a-cup solved by both eras' pipelines."
+/>
+
+## 17.1 What should the policy output?
+
+Reacher must move its end-effector to a target. Which of these should the network produce?
+
+- **Joint torques** $\tau \in \mathbb{R}^2$, at 1 kHz.
+- **Joint position targets** $q^{\text{des}}$, tracked by a PD loop.
+- **End-effector velocity** $\dot p$, converted through the Jacobian.
+- **The goal of a movement primitive**, executed over a second.
+
+All four are valid, and they produce radically different learning problems for identical hardware. Tang's survey organizes them into three levels.
+
+| Level | Output | Learns fast? | Expressive? | Safety |
+|---|---|---|---|---|
+| **Low** — joint torques | $\tau$ at 1 kHz | Slow — must discover gravity, inertia, damping | Maximal | Poor: a bad torque is immediately dangerous |
+| **Mid** — position/velocity targets | $q^{\text{des}}$, $\dot p$ at 50 Hz | Faster — PD loop absorbs fast dynamics | High | Good: PD gains bound the force |
+| **High** — primitives, skills | goal, duration, skill index | Fastest — search space is tiny | Limited to the primitive library | Best: primitives are pre-validated |
+
+<Callout variant="insight" title="Difficulty moves; it does not disappear">
+Chapter 4 made this point about MDP formulation, and here is its concrete form. Choosing a higher action level makes the RL problem easier **only because a hand-written controller is absorbing the difficulty.** The composite system is exactly as complex as before; you have decided which part learns.
+
+That decision affects project outcomes more reliably than the choice between PPO and SAC. And it explains an empirical pattern in Chapter 1's maturity ladder: results at higher action levels reach real robots sooner, because there is less for the learned component to get catastrophically wrong.
+</Callout>
+
+## 17.2 Dynamic movement primitives
+
+The most influential motor representation in robotics, and still the right answer for a surprising number of problems.
+
+A DMP models a movement as a **spring–damper system pulled toward a goal, perturbed by a learned forcing term**. Two coupled systems.
+
+The **canonical system** is a clock that decays monotonically to zero:
+
+$$\tau \dot x = -\alpha_x x, \qquad x(0) = 1.$$
+
+The **transformation system** is the movement itself:
+
+$$\tau^2 \ddot y = \alpha_y\left(\beta_y (g - y) - \tau \dot y\right) + f(x),$$
+
+where $g$ is the goal and $f(x)$ is the learned forcing term, represented as a normalized weighted sum of Gaussian basis functions:
+
+$$f(x) = \frac{\sum_i \psi_i(x)\, w_i}{\sum_i \psi_i(x)}\, x\,(g - y_0), \qquad \psi_i(x) = \exp\left(-h_i (x - c_i)^2\right).$$
+
+<Theorem kind="Theorem" n="17.1" title="DMPs converge to the goal for any weights">
+For $\alpha_y > 0$, $\beta_y = \alpha_y/4$ (critical damping), and any bounded weights $w$, the transformation system converges to $y = g$, $\dot y = 0$.
+</Theorem>
+
+<Proof>
+Three steps.
+
+**The clock vanishes.** $\tau\dot x = -\alpha_x x$ has solution $x(t) = e^{-\alpha_x t/\tau} \to 0$.
+
+**The forcing term vanishes with it.** $f(x)$ carries an explicit factor of $x$, and the normalized basis sum is bounded. Hence $f(x(t)) \to 0$ as $t \to \infty$, regardless of the weights.
+
+**The remaining system is a stable spring.** With $f = 0$, writing $e = g - y$ gives $\tau^2\ddot e + \alpha_y \tau \dot e + \alpha_y\beta_y e = 0$, a linear second-order system with characteristic roots $\lambda = \frac{-\alpha_y \pm \sqrt{\alpha_y^2 - 4\alpha_y\beta_y}}{2\tau}$. At $\beta_y = \alpha_y/4$ the discriminant is zero, giving a repeated negative root — critical damping, and the fastest non-oscillatory convergence. So $e \to 0$. $\qquad \blacksquare$
+</Proof>
+
+<Callout variant="insight" title="Why this theorem is the whole point">
+The weights $w$ are **learned** — fitted to a demonstration, or optimized by policy search. They could be anything, including nonsense produced by a half-trained optimizer.
+
+The theorem says it does not matter: **the movement always terminates at the goal.** A learned component cannot make the robot fly off, because the learning only shapes the path, never the destination.
+
+That is what a good motor representation does. It makes whole classes of failure *unrepresentable* rather than merely unlikely. Compare with a neural network outputting raw torques, where every safety property must be enforced externally.
+</Callout>
+
+<DmpSculptor />
+
+DMPs also generalize in two ways that fall out of the structure for free. Changing $g$ re-targets the movement while preserving its shape — one demonstration covers a continuum of targets. Changing $\tau$ rescales time without changing the path — one demonstration covers a range of speeds.
+
+**Fitting from a demonstration** is a linear least-squares problem, not an RL problem. Given a recorded trajectory $y_{\text{demo}}(t)$, invert the transformation system for the forcing term it must have produced:
+
+$$f_{\text{target}}(t) = \tau^2 \ddot y_{\text{demo}} - \alpha_y\left(\beta_y(g - y_{\text{demo}}) - \tau \dot y_{\text{demo}}\right),$$
+
+then solve for $w$ by locally weighted regression. One demonstration, one linear solve, done.
+
+<RustSnippet title="rl-core/src/primitives/dmp.rs" caption="A DMP in nalgebra. The whole movement is ten to thirty numbers — which is why CMA-ES could optimize these on real hardware in 2013, long before anyone could train a network on a robot.">
+
+```rust
+use nalgebra::DVector;
+
+pub struct Dmp {
+    alpha_x: f64,
+    alpha_y: f64,
+    beta_y: f64,        // = alpha_y / 4 for critical damping
+    centers: DVector<f64>,
+    widths: DVector<f64>,
+    pub weights: DVector<f64>,   // the learned parameters — all of them
+}
+
+pub struct DmpState { pub y: f64, pub dy: f64, pub x: f64 }
+
+impl Dmp {
+    /// Normalized basis activation, gated by the canonical clock.
+    fn forcing(&self, x: f64, y0: f64, goal: f64) -> f64 {
+        let psi = (&self.centers - DVector::repeat(self.centers.len(), x))
+            .map(|d| d * d)
+            .component_mul(&self.widths)
+            .map(|v| (-v).exp());
+        let den = psi.sum();
+        if den < 1e-10 { return 0.0; }
+        // The factor x forces f → 0 as the clock decays: this is what makes
+        // Theorem 17.1 hold for ANY weights.
+        (psi.dot(&self.weights) / den) * x * (goal - y0)
+    }
+
+    pub fn step(&self, s: &DmpState, y0: f64, goal: f64, tau: f64, dt: f64) -> DmpState {
+        let f = self.forcing(s.x, y0, goal);
+        let ddy = (self.alpha_y * (self.beta_y * (goal - s.y) - tau * s.dy) + f) / (tau * tau);
+        DmpState {
+            dy: s.dy + ddy * dt,
+            y: s.y + (s.dy + ddy * dt) * dt,
+            x: s.x - (self.alpha_x * s.x * dt) / tau,
+        }
+    }
+
+    /// Fit weights from one demonstration by locally weighted regression.
+    /// Note: a linear solve, not an RL problem.
+    pub fn fit(&mut self, demo: &[f64], dt: f64, tau: f64) {
+        let (y0, goal) = (demo[0], *demo.last().unwrap());
+        let n = demo.len();
+
+        let dy: Vec<f64> = (0..n).map(|i|
+            if i == 0 { 0.0 } else { (demo[i] - demo[i - 1]) / dt }
+        ).collect();
+        let ddy: Vec<f64> = (0..n).map(|i|
+            if i == 0 { 0.0 } else { (dy[i] - dy[i - 1]) / dt }
+        ).collect();
+
+        // Invert the transformation system for the forcing term it implies.
+        let mut x = 1.0;
+        let mut xs = Vec::with_capacity(n);
+        let mut targets = Vec::with_capacity(n);
+        for i in 0..n {
+            targets.push(
+                tau * tau * ddy[i]
+                    - self.alpha_y * (self.beta_y * (goal - demo[i]) - tau * dy[i])
+            );
+            xs.push(x);
+            x -= self.alpha_x * x * dt / tau;
+        }
+
+        // Weighted least squares, one basis function at a time.
+        for k in 0..self.weights.len() {
+            let (mut num, mut den) = (0.0, 0.0);
+            for i in 0..n {
+                let psi = (-self.widths[k] * (xs[i] - self.centers[k]).powi(2)).exp();
+                let s = xs[i] * (goal - y0);
+                num += psi * s * targets[i];
+                den += psi * s * s;
+            }
+            self.weights[k] = if den.abs() > 1e-10 { num / den } else { 0.0 };
+        }
+    }
+}
+```
+
+</RustSnippet>
+
+## 17.3 Central pattern generators
+
+DMPs represent discrete point-to-point movements. Locomotion is **rhythmic**, and the natural representation is different: a bank of coupled oscillators, one per limb, whose relative phases define the gait.
+
+Each oscillator has phase $\phi_i$ evolving as
+
+$$\dot\phi_i = \omega + \sum_j K_{ij} \sin\left(\phi_j - \phi_i - \Phi_{ij}\right),$$
+
+where $\omega$ is the base frequency and $\Phi_{ij}$ the desired phase offset between limbs $i$ and $j$. The coupling drives the system toward those offsets and holds it there — a **phase-locked** solution exists and is stable when the coupling gains $K_{ij}$ are large enough relative to frequency mismatch.
+
+Gaits are then just phase-offset patterns: a trot sets diagonal pairs in phase and the two diagonals in antiphase; a bound pairs front and rear. Switching gait is changing $\Phi$, not retraining.
+
+For learned locomotion, CPGs appear in two roles: as an explicit action space where the policy modulates frequency and amplitude, or — more commonly now — as a **phase input** to an otherwise-free policy, giving it a clock to organize its behaviour around. Chapter 18 uses the second.
+
+## 17.4 Residual RL: keep the controller, learn the correction
+
+Chapter 13 built classical controllers that work well when the model is right. Chapter 15 showed the model is never quite right. **Residual RL** takes both facts seriously:
+
+$$a = \underbrace{\pi_{\text{classical}}(s)}_{\text{known, validated}} + \underbrace{\pi_\theta(s)}_{\text{learned correction}}.$$
+
+The properties are exactly what a deployment engineer wants. At initialization $\pi_\theta \approx 0$, so the system starts at the classical controller's competence rather than at random flailing — no dangerous exploration phase. Bounding $\|\pi_\theta\| \le \Delta$ bounds how far the composite can deviate from validated behaviour, which converts an unbounded safety question into a tunable one. And the learned component only has to model what the classical controller *missed*, which is typically a far smaller function than the whole policy.
+
+This is the pragmatic answer for many real deployments, and it is under-represented in the literature relative to how often it is the right choice.
+
+## 17.5 Options: temporal abstraction
+
+The highest action level is **skills**: policies that run for many steps and terminate on a condition. The formalism is the **option**, a triple $\langle \mathcal{I}, \pi_o, \beta \rangle$ — an initiation set, an internal policy, and a termination condition.
+
+With options the problem becomes a **semi-MDP**, and the Bellman equation acquires a variable duration:
+
+$$Q(s, o) = \mathbb{E}\left[ r_{t+1} + \cdots + \gamma^{k-1} r_{t+k} + \gamma^k \max_{o'} Q(s_{t+k}, o') \right],$$
+
+where $k$ is the (random) number of steps the option ran.
+
+The benefit is that a decision every 50 steps rather than every step shortens the effective horizon by that factor, which transforms credit assignment. The open question — which Tang's survey names as central — is **what skills should the robot learn at all?** Hand-specified skills work and require domain knowledge; discovering them automatically remains unsolved in general. Chapter 19 builds a hierarchical navigation system with hand-specified skills, and Chapter 21 returns to the discovery question.
+
+## 17.6 Ball-in-a-cup: 2013 and now
+
+Kober's survey closes with a case study: a robot swinging a ball on a string into a cup attached to its end-effector. It is a good benchmark — underactuated, contact-rich at the moment of capture, and genuinely hard to demonstrate perfectly.
+
+**The 2013 pipeline.** Represent the movement as a DMP fitted from a kinesthetic demonstration. Optimize the ~30 DMP weights by episodic policy search — Kober's PoWER algorithm, an EM-based method exploiting the fact that the reward is a function of a low-dimensional parameter vector. Roughly 75 real rollouts suffice.
+
+**A modern pipeline.** SAC from images with demonstrations seeded into the replay buffer, an action space of joint-position targets at 20 Hz, and domain randomization for transfer. Roughly $10^5$–$10^6$ simulated steps plus fine-tuning.
+
+<Callout variant="warning" title="What the honest comparison shows">
+The 2013 pipeline uses **three orders of magnitude fewer real samples**. It also requires a demonstration, a hand-designed parameterization, and a reward computable from tracked ball position — and it produces a policy that does exactly one task and cannot adapt if the string length changes.
+
+The modern pipeline needs vastly more data, most of it simulated, and produces a policy that can work from raw images and tolerate variation. It also required someone to build a simulator good enough to transfer.
+
+Neither dominates. The correct reading is that **structure and data are substitutes**: DMPs encode strong priors and need little data; deep policies encode weak priors and need much. Choose based on which you actually have. Practitioners who reach for deep RL when a movement primitive would do are spending data to avoid thinking, and it is often the wrong trade.
+
+*(Implementation note: this book's code uses CMA-ES for the primitive-weight optimization rather than Kober's PoWER — a substitution made for library availability. PoWER is derived in the exercises; the comparison above is unaffected, as both are episodic policy-search methods over the same parameter vector.)*
+</Callout>
+
+## 17.7 Chapter bridge
+
+Part III is complete. Chapter 13 opened the robot; Chapter 14 named the four structural difficulties; Chapter 15 built the sim-to-real bridge; Chapter 16 brought in data the robot did not generate; and this chapter established that what the policy outputs is a design decision on par with how it learns.
+
+Part IV puts all of it to work, one competency at a time, following the taxonomy Tang's survey uses to organize the field's real results. Chapter 18 is locomotion — the flagship, the one that reached commercial deployment, and the place where every technique in Part III appears together. Ferris learns to walk, and we build the reward function, the terrain curriculum, and the teacher–student transfer that make it happen.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Prove DMP convergence',
+    difficulty: 3,
+    body: 'Reproduce Theorem 17.1 in full, including the characteristic-root analysis showing β = α/4 gives critical damping. Then determine what happens for β > α/4 and β < α/4, and say which you would choose for a robot that must not overshoot.',
+  },
+  {
+    layer: 'F',
+    title: 'Fitting is linear',
+    difficulty: 2,
+    body: 'Show that fitting DMP weights from a demonstration is a linear least-squares problem. Then explain why the same is not true of fitting a neural-network policy to the same demonstration, and what that costs.',
+  },
+  {
+    layer: 'F',
+    title: 'Phase locking',
+    difficulty: 3,
+    body: 'For two coupled oscillators, derive the condition on coupling strength K under which a phase-locked solution exists and is stable, given a frequency mismatch Δω. Relate the result to how robustly a CPG maintains a gait under disturbance.',
+  },
+  {
+    layer: 'F',
+    title: 'Semi-MDP Bellman',
+    difficulty: 2,
+    body: 'Write the option-value Bellman equation and verify it reduces to the standard one when every option terminates after a single step. What replaces γ when option durations vary?',
+  },
+  {
+    layer: 'C',
+    title: 'Style survives re-targeting',
+    difficulty: 1,
+    body: 'In the DMP sculptor, note the trajectory shape at goal g = 1.0, then move the goal to 2.0 and to −0.5. Describe precisely what is preserved and what deforms.',
+  },
+  {
+    layer: 'C',
+    title: 'Basis capacity',
+    difficulty: 2,
+    body: 'Reduce the basis count to 3 and raise it to 30 at fixed forcing amplitude. Identify the point at which the primitive can no longer represent the intended shape, and the point past which extra basis functions buy nothing.',
+  },
+  {
+    layer: 'P',
+    title: 'The action-space race',
+    difficulty: 3,
+    body: 'Solve the same Reacher task with three action spaces — joint torques, joint position targets, and DMP goal parameters. Plot learning curves on a shared axis of environment steps. The ordering should be dramatic; explain it in terms of what each policy must discover.',
+  },
+  {
+    layer: 'P',
+    title: 'Ball-in-a-cup, both eras',
+    difficulty: 3,
+    body: 'Implement ball-in-a-cup in rapier2d. Solve it once with CMA-ES over DMP weights initialized from a demonstration, and once with SAC on joint-position targets. Report real-equivalent sample counts, final success rates, and robustness to a 10% change in string length.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§4 tractability through representation (§4.3 pre-structured policies), and §7 the ball-in-a-cup case study recreated in §17.6.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.2 the low/mid/high action-space taxonomy of §17.1, and §5 on skill discovery as an open problem.',
+  },
+  {
+    key: 'ijspeert2013',
+    authors: 'Ijspeert, A. J., Nakanishi, J., Hoffmann, H., Pastor, P. & Schaal, S.',
+    year: 2013,
+    title: 'Dynamical Movement Primitives: Learning Attractor Models for Motor Behaviors',
+    venue: 'Neural Computation 25(2)',
+    note: 'The definitive DMP reference — formulation, stability, and the generalization properties of §17.2.',
+  },
+  {
+    key: 'kober2009',
+    authors: 'Kober, J. & Peters, J.',
+    year: 2009,
+    title: 'Policy Search for Motor Primitives in Robotics',
+    venue: 'NeurIPS 22',
+    note: 'PoWER, and the ball-in-a-cup result — roughly 75 real rollouts.',
+  },
+  {
+    key: 'ijspeert2008',
+    authors: 'Ijspeert, A. J.',
+    year: 2008,
+    title: 'Central pattern generators for locomotion control in animals and robots: a review',
+    venue: 'Neural Networks 21(4)',
+    note: 'CPGs, phase coupling, and gait transitions.',
+  },
+  {
+    key: 'johannink2019',
+    authors: 'Johannink, T., Bahl, S., Nair, A., Luo, J., Kumar, A., Loskyll, M., Ojea, J. A., Solowjow, E. & Levine, S.',
+    year: 2019,
+    title: 'Residual Reinforcement Learning for Robot Control',
+    venue: 'ICRA 2019',
+    note: 'The residual formulation of §17.4, with real-robot assembly results.',
+  },
+  {
+    key: 'sutton1999',
+    authors: 'Sutton, R. S., Precup, D. & Singh, S.',
+    year: 1999,
+    title: 'Between MDPs and semi-MDPs: A framework for temporal abstraction in reinforcement learning',
+    venue: 'Artificial Intelligence 112(1–2)',
+    note: 'The options framework and the semi-MDP Bellman equations of §17.5.',
+  },
+  {
+    key: 'schaal2006',
+    authors: 'Schaal, S.',
+    year: 2006,
+    title: 'Dynamic Movement Primitives — A Framework for Motor Control in Humans and Humanoid Robotics',
+    venue: 'Adaptive Motion of Animals and Machines, Springer',
+    note: 'The motor-control framing behind the representation.',
+  },
+]} />

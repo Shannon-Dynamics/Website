@@ -1,0 +1,406 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+@import 'katex/dist/katex.min.css';
+@import './shannon.css';
+
+@source '../node_modules/fumadocs-ui/dist/**/*.js';
+
+/* ==========================================================================
+   Probabilistic Robotics via Rust — design tokens
+   --------------------------------------------------------------------------
+   Identity: Shannon Dynamics. The site's typeface pair (Inter + JetBrains
+   Mono), its graphite/white reading surface, and its #4C7EFF accent, so the
+   book reads as the same property as the rest of shannondynamics — see
+   `shannon.css` for the chrome those tokens dress.
+
+   The load-bearing rule survives the reskin unchanged: the four estimation
+   colors are RESERVED for data. Chrome never borrows them, so blue always
+   means prior, orange always means prediction, green always measurement,
+   purple always posterior, whether the reader is looking at a figure, an
+   equation term, or a code comment.
+
+   That rule is why the site accent stops at the edge of a figure. Shannon
+   blue sits close enough to `--pr-prior` that using it for a scrubber or a
+   role dot would read as an estimation color; those keep the original
+   instrument teal (`--pr-widget-ink` below).
+   ========================================================================== */
+
+@theme {
+  /* Four names, one family: the type system is Inter throughout, as on the
+     rest of the site. The names stay distinct so the reading surface can be
+     given a serif again by editing one line. */
+  --font-display: var(--font-inter), system-ui, sans-serif;
+  --font-prose: var(--font-inter), system-ui, sans-serif;
+  --font-ui: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Semantic estimation palette — the book's color code (TOC.md §2). */
+  --color-prior: #3b82f6;
+  --color-prediction: #f97316;
+  --color-measurement: #22c55e;
+  --color-posterior: #a855f7;
+  --color-truth: #6b7280;
+
+  /* Chrome accent: instrument phosphor, deliberately outside the data hues. */
+  --color-instrument: #0d9488;
+}
+
+:root {
+  --pr-prior: #3b82f6;
+  --pr-prediction: #ea580c;
+  --pr-measurement: #16a34a;
+  --pr-posterior: #9333ea;
+  --pr-truth: #6b7280;
+
+  --pr-grid: rgb(15 23 42 / 0.07);
+  --pr-canvas-bg: #fcfcfd;
+  --pr-canvas-ink: #0f172a;
+  --pr-wall: #334155;
+  --pr-free: #ffffff;
+  --pr-occupied: #0f172a;
+  --pr-unknown: #cbd5e1;
+
+  /* In-figure chrome — scrubbable numbers, role dots, range tracks. Stays the
+     instrument teal: it has to be a hue no estimation quantity owns, and the
+     site accent is too close to `--pr-prior` to qualify. */
+  --pr-widget-ink: #0d9488;
+
+  /* --- Shannon shell ---------------------------------------------------- */
+  /* The families themselves come from Fontsource, imported in app/layout.tsx. */
+  --font-inter: 'Inter Variable';
+  --font-jetbrains-mono: 'JetBrains Mono Variable';
+  --sd-font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Fumadocs' chrome tokens, remapped onto the Shannon reading surface: a
+     white page, graphite ink, hairlines at 12%, and the site accent. */
+  --color-fd-background: #ffffff;
+  --color-fd-foreground: #10181b;
+  --color-fd-muted: #f4f7f9;
+  --color-fd-muted-foreground: rgba(16, 24, 27, 0.55);
+  --color-fd-popover: #ffffff;
+  --color-fd-popover-foreground: #10181b;
+  --color-fd-card: #ffffff;
+  --color-fd-card-foreground: #10181b;
+  --color-fd-border: rgba(16, 24, 27, 0.12);
+  --color-fd-primary: #4c7eff;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: #f4f7f9;
+  --color-fd-secondary-foreground: #10181b;
+  --color-fd-accent: rgba(76, 126, 255, 0.08);
+  --color-fd-accent-foreground: #10181b;
+  --color-fd-ring: #4c7eff;
+}
+
+.dark {
+  /* Slightly lifted hues so each stays legible on a dark ground. */
+  --pr-prior: #60a5fa;
+  --pr-prediction: #fb923c;
+  --pr-measurement: #4ade80;
+  --pr-posterior: #c084fc;
+  --pr-truth: #94a3b8;
+
+  --pr-grid: rgb(226 232 240 / 0.09);
+  --pr-canvas-bg: #0d1117;
+  --pr-canvas-ink: #e2e8f0;
+  --pr-wall: #94a3b8;
+  --pr-free: #1e293b;
+  --pr-occupied: #f1f5f9;
+  --pr-unknown: #475569;
+
+  --pr-widget-ink: #2dd4bf;
+
+  /* --- Shannon shell, dark ----------------------------------------------
+     The site is light-only, so its dark counterpart is built from the same
+     two greys the chrome already uses: graphite for the page, slate for the
+     surfaces raised off it. The accent lifts to the site's soft blue, which
+     clears AA on graphite where #4C7EFF does not. */
+  --color-fd-background: #10181b;
+  --color-fd-foreground: rgba(255, 255, 255, 0.92);
+  --color-fd-muted: #1b2529;
+  --color-fd-muted-foreground: rgba(255, 255, 255, 0.62);
+  --color-fd-popover: #1b2529;
+  --color-fd-popover-foreground: rgba(255, 255, 255, 0.92);
+  --color-fd-card: #162024;
+  --color-fd-card-foreground: rgba(255, 255, 255, 0.92);
+  --color-fd-border: rgba(255, 255, 255, 0.12);
+  --color-fd-primary: #8faeff;
+  --color-fd-primary-foreground: #10181b;
+  --color-fd-secondary: #1b2529;
+  --color-fd-secondary-foreground: rgba(255, 255, 255, 0.92);
+  --color-fd-accent: rgba(143, 174, 255, 0.14);
+  --color-fd-accent-foreground: rgba(255, 255, 255, 0.92);
+  --color-fd-ring: #8faeff;
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar footer
+
+   Fumadocs frames that row for a search box beside the theme toggle. This book
+   is a static export with no search endpoint, so the box is gone and the frame
+   is left standing around a single button — where it reads as an empty input.
+   Drop the frame and let the toggle sit on its own.
+   -------------------------------------------------------------------------- */
+
+#nd-sidebar div:has(> [data-theme-toggle]) {
+  border: 0;
+  background: none;
+  padding: 0;
+  width: fit-content;
+  margin-inline-start: auto;
+}
+
+#nd-sidebar [data-theme-toggle] {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 9999px;
+}
+
+/* --------------------------------------------------------------------------
+   Reading surface
+   -------------------------------------------------------------------------- */
+
+body {
+  font-family: var(--font-ui);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+#nd-page article,
+.prose-book {
+  font-family: var(--font-prose);
+  font-size: 1.0625rem;
+  line-height: 1.72;
+}
+
+#nd-page h1,
+#nd-page h2,
+#nd-page h3,
+#nd-page h4,
+.font-display {
+  font-family: var(--font-display);
+  font-weight: 550;
+  letter-spacing: -0.012em;
+  text-wrap: balance;
+}
+
+#nd-page h2 {
+  margin-top: 2.75rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--color-fd-border);
+}
+
+/* --------------------------------------------------------------------------
+   The reading column
+   --------------------------------------------------------------------------
+   Two widths, one column. Running text is held to a comfortable measure —
+   roughly 70 characters, which is where long-form reading stops being work —
+   while figures, simulations, tables and code use the column's full width,
+   because a floorplan or a covariance matrix needs the room.
+
+   Figures never bleed *outside* the column: this page has a sidebar on one
+   side and a table of contents on the other, and a negative margin large
+   enough to be useful is also large enough to slide underneath them.
+   -------------------------------------------------------------------------- */
+
+/* The shell sits in a grid track that sizes to its content, so it must be
+   told it may shrink — otherwise a single unbreakable equation widens the
+   whole page and the reader gets a horizontal scrollbar on a phone. */
+.pr-chapter-shell {
+  width: 100%;
+  max-width: min(72rem, 100%);
+  min-width: 0;
+}
+
+#nd-page {
+  --pr-measure: 40rem;
+  max-width: 54rem;
+  min-width: 0;
+}
+
+/* Nothing in the column may force the page wider than the screen; wide
+   material scrolls inside its own box instead. */
+#nd-page > * {
+  min-width: 0;
+}
+
+/* Everything follows the measure by default, so the right edge stays even… */
+#nd-page > * {
+  max-width: var(--pr-measure);
+}
+
+/* …except the things that genuinely need room: simulations, figures, code
+   blocks, tables, and the chapter-opening grid. A floorplan, a covariance
+   matrix or a line of Rust is not running text and should not be squeezed to
+   the same measure as a sentence. */
+#nd-page > figure,
+#nd-page > table,
+#nd-page > .pr-figure-wide,
+#nd-page > .pr-full,
+#nd-page > .fd-codeblock,
+#nd-page > [data-rehype-pretty-code-figure],
+#nd-page > div:has(> table),
+#nd-page > div:has(> pre),
+#nd-page > .pr-linked-math,
+#nd-page > .katex-display {
+  max-width: 100%;
+}
+
+/* A caption is prose, even when it belongs to a wide figure. */
+#nd-page figure > figcaption,
+#nd-page figure .pr-caption {
+  max-width: var(--pr-measure);
+}
+
+#nd-page code,
+#nd-page kbd {
+  font-family: var(--font-mono);
+}
+
+/* Small caps eyebrow used by section labels and widget captions. */
+.eyebrow {
+  font-family: var(--font-ui);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* --------------------------------------------------------------------------
+   Math
+   -------------------------------------------------------------------------- */
+
+.katex { font-size: 1.045em; }
+
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.35rem 0;
+}
+
+/* KaTeX 0.18 renumbers equations page-globally; we number per chapter in the
+   text itself, and suppress the desynced MathML counter so screen readers do
+   not announce a different number than the one on screen. */
+.katex .mml-eqn-num::before {
+  content: none;
+  counter-increment: none;
+}
+
+/* Color-coded equation terms: \htmlClass{term-prior}{...} in MDX. */
+.term-prior { color: var(--pr-prior); }
+.term-prediction { color: var(--pr-prediction); }
+.term-measurement { color: var(--pr-measurement); }
+.term-posterior { color: var(--pr-posterior); }
+.term-truth { color: var(--pr-truth); }
+
+/* --------------------------------------------------------------------------
+   Explorable prose — numbers you can drag, terms you can point at
+   -------------------------------------------------------------------------- */
+
+/* A scrubbable number reads as part of the sentence until you approach it: the
+   dotted underline is the only standing hint, and the grab cursor plus the
+   filled track appear on hover. Anything louder would turn running prose into
+   a control panel. */
+.pr-scrub {
+  --pr-scrub-ink: var(--pr-widget-ink);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.08em;
+  padding: 0 0.18em;
+  border-radius: 3px;
+  cursor: ew-resize;
+  font-family: var(--font-mono);
+  font-size: 0.93em;
+  font-weight: 500;
+  color: var(--pr-scrub-ink);
+  background-image: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--pr-scrub-ink) 14%, transparent) var(--pr-scrub-fill, 0%),
+    transparent var(--pr-scrub-fill, 0%)
+  );
+  border-bottom: 1px dotted color-mix(in oklab, var(--pr-scrub-ink) 55%, transparent);
+  touch-action: none;
+  transition: background-color 0.12s ease;
+}
+
+.pr-scrub:hover,
+.pr-scrub:focus-visible,
+.pr-scrub[data-scrubbing] {
+  background-color: color-mix(in oklab, var(--pr-scrub-ink) 10%, transparent);
+  border-bottom-style: solid;
+}
+
+.pr-scrub:focus-visible {
+  outline: 2px solid var(--pr-scrub-ink);
+  outline-offset: 2px;
+}
+
+.pr-scrub-unit {
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+/* Equation terms become pointable once wrapped in <LinkedMath>. */
+.pr-linked-math [data-pr-term] {
+  cursor: help;
+  border-radius: 2px;
+  transition: background-color 0.12s ease;
+}
+
+.pr-linked-math [data-pr-term]:hover,
+.pr-linked-math [data-pr-term]:focus-visible {
+  background-color: color-mix(in oklab, currentColor 16%, transparent);
+  outline: none;
+}
+
+.pr-role-tag {
+  --pr-role-ink: var(--pr-widget-ink);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  cursor: help;
+  color: var(--pr-role-ink);
+  font-weight: 500;
+}
+
+.pr-role-dot {
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--pr-role-ink);
+  transform: translateY(-0.05em);
+}
+
+/* --------------------------------------------------------------------------
+   Simulation chrome
+   -------------------------------------------------------------------------- */
+
+.sim-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+  background: var(--pr-canvas-bg);
+}
+
+input[type='range'] {
+  accent-color: var(--pr-widget-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Wide content never scrolls the page sideways. */
+#nd-page table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}

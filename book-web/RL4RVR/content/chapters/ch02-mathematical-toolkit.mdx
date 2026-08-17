@@ -1,0 +1,341 @@
+---
+title: The Mathematical Toolkit
+chapter: 2
+quote:
+  text: The relationship between disciplines has sufficient promise to be likened to that between physics and mathematics.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On the relationship between robotics and reinforcement learning
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Chapter 1 left three debts: the loop is not yet mathematics, reward is not yet a random variable, and 'eventually finds the best policy' is not yet a theorem. This chapter pays all three. We build the probability that makes expectations meaningful, the contraction machinery that every convergence proof in this book eventually invokes, the discretization that turns a robot's continuous physics into discrete decisions, and the Robbins–Monro theorem — the single result that explains why learning from noisy samples works at all. Pendle arrives to carry it, because he is simple enough that every calculation can be checked by hand."
+  outcomes={[
+    'State what a random variable and a conditional expectation actually are, and use the tower property fluently',
+    'Prove the Banach fixed-point theorem and explain why it guarantees a unique optimal value function',
+    'Discretize a continuous robot dynamics with Euler and RK4, and predict which one will explode and when',
+    'State the Robbins–Monro conditions and recognize them in every learning rate you will meet later',
+    'Read the incremental update rule New ← Old + α(Target − Old) as an instance of stochastic approximation',
+  ]}
+  foundation="Probability spaces, conditional expectation and the tower property, contraction mappings with Banach proved in full, ODE discretization with error orders, and Robbins–Monro convergence."
+  conceptual="A contraction you can iterate at any γ, and Pendle's dynamics integrated three ways so you can watch explicit Euler manufacture energy from nothing."
+  practical="Pendle's dynamics and integrators in Rust with nalgebra, plus a Robbins–Monro estimator you can drive with noisy samples."
+/>
+
+## 2.1 Probability, quickly but honestly
+
+Chapter 1 said the world "advances" after an action. Making that precise requires almost no machinery, but it does require the right machinery.
+
+A **probability space** is a triple $(\Omega, \mathcal{F}, \mathbb{P})$: a set of outcomes $\Omega$, a collection $\mathcal{F}$ of events we can assign probabilities to, and a measure $\mathbb{P}$ assigning each event a number in $[0,1]$ with $\mathbb{P}(\Omega) = 1$. A **random variable** $X$ is a function from $\Omega$ to $\mathbb{R}$ — not a number, a *function*. When we write $X = 3$ we mean the event $\{\omega : X(\omega) = 3\}$.
+
+This matters for us because Rusty's next position is exactly such a function: it depends on the wheel slip that happened to occur, which is the outcome $\omega$. Two identical commands from two identical positions produce two different results, and the difference is not error — it is the environment.
+
+The **expectation** of $X$ is its probability-weighted average, $\mathbb{E}[X] = \sum_\omega \mathbb{P}(\omega) X(\omega)$ in the discrete case. Expectation is linear, which is the property we will lean on constantly:
+
+$$\mathbb{E}[aX + bY] = a\,\mathbb{E}[X] + b\,\mathbb{E}[Y]$$
+
+— and note this holds whether or not $X$ and $Y$ are independent. A surprising amount of reinforcement learning is linearity of expectation applied patiently.
+
+<Theorem kind="Definition" n="2.1" title="Conditional expectation">
+For random variables $X$ and $Y$, the conditional expectation $\mathbb{E}[X \mid Y]$ is a random variable — a function of $Y$ — whose value at $Y = y$ is the average of $X$ over the outcomes where $Y = y$:
+
+$$\mathbb{E}[X \mid Y = y] = \sum_\omega \mathbb{P}(\omega \mid Y = y)\, X(\omega).$$
+</Theorem>
+
+The single most useful fact about conditional expectation is that averaging it recovers the unconditional average.
+
+<Theorem kind="Theorem" n="2.2" title="Tower property (law of total expectation)">
+$$\mathbb{E}\big[\mathbb{E}[X \mid Y]\big] = \mathbb{E}[X].$$
+</Theorem>
+
+<Proof>
+Write the outer expectation as a sum over values of $Y$, then expand the inner one:
+
+$$\mathbb{E}\big[\mathbb{E}[X \mid Y]\big] = \sum_y \mathbb{P}(Y = y)\, \mathbb{E}[X \mid Y = y] = \sum_y \mathbb{P}(Y = y) \sum_\omega \mathbb{P}(\omega \mid Y = y) X(\omega).$$
+
+By the definition of conditional probability, $\mathbb{P}(Y = y)\,\mathbb{P}(\omega \mid Y=y) = \mathbb{P}(\omega,\, Y = y)$. Substituting and exchanging the order of summation:
+
+$$= \sum_\omega X(\omega) \sum_y \mathbb{P}(\omega,\, Y = y) = \sum_\omega X(\omega)\, \mathbb{P}(\omega) = \mathbb{E}[X]. \qquad \blacksquare$$
+</Proof>
+
+Every Bellman equation in this book is the tower property applied to a return, conditioned on the first action. That is genuinely all it is. When Chapter 4 derives
+
+$$v_\pi(s) = \mathbb{E}_\pi\!\left[R_{t+1} + \gamma\, v_\pi(S_{t+1}) \,\middle|\, S_t = s\right],$$
+
+the derivation will consist of splitting the return into "first reward" plus "the rest", conditioning on where you land, and invoking Theorem 2.2.
+
+## 2.2 Markov chains and the memory assumption
+
+A sequence of random variables $S_0, S_1, S_2, \ldots$ has the **Markov property** if the future is conditionally independent of the past given the present:
+
+$$\mathbb{P}(S_{t+1} = s' \mid S_t, S_{t-1}, \ldots, S_0) = \mathbb{P}(S_{t+1} = s' \mid S_t).$$
+
+The state is then a **sufficient statistic** for prediction: knowing it, the history adds nothing.
+
+<Callout variant="warning" title="Robots violate this constantly">
+The Markov property is an assumption about your *state representation*, not about the world. Rusty's position alone is not Markov if his wheels slip in a way that depends on accumulated dust. A camera image is not Markov if velocity matters and a single frame cannot reveal it.
+
+The standard fixes are to enlarge the state (stack frames, add velocities) or to admit partial observability and carry a belief. Chapter 4 formalizes the second option; Chapter 19 builds recurrent policies that learn to track a belief without being told to.
+</Callout>
+
+## 2.3 Contraction mappings and the theorem behind everything
+
+Here is the mathematical heart of the chapter — the result that will justify value iteration, Q-learning, and half of Part I.
+
+<Theorem kind="Definition" n="2.3" title="Contraction mapping">
+Let $(\mathcal{X}, d)$ be a metric space. An operator $T : \mathcal{X} \to \mathcal{X}$ is a **$\gamma$-contraction** for $\gamma \in [0,1)$ if for all $x, y \in \mathcal{X}$,
+
+$$d(T x, T y) \le \gamma\, d(x, y).$$
+</Theorem>
+
+Applying $T$ moves any two points strictly closer together. Intuitively, repeated application must crush everything toward a single point. The theorem says exactly that, and adds a computable error bound.
+
+<Theorem kind="Theorem" n="2.4" title="Banach fixed-point theorem">
+Let $(\mathcal{X}, d)$ be a **complete** metric space and $T$ a $\gamma$-contraction. Then:
+
+1. $T$ has exactly one fixed point $x^*$ with $T x^* = x^*$;
+2. for any starting point $x_0$, the sequence $x_{k+1} = T x_k$ converges to $x^*$;
+3. the convergence is geometric, with the a-priori bound
+
+$$d(x_k, x^*) \le \frac{\gamma^k}{1 - \gamma}\, d(x_1, x_0).$$
+</Theorem>
+
+<Proof>
+**The sequence is Cauchy.** From the contraction property, consecutive iterates satisfy $d(x_{k+1}, x_k) \le \gamma\, d(x_k, x_{k-1})$, and by induction
+
+$$d(x_{k+1}, x_k) \le \gamma^k\, d(x_1, x_0).$$
+
+For any $m > k$, the triangle inequality and the geometric series give
+
+$$d(x_m, x_k) \le \sum_{i=k}^{m-1} d(x_{i+1}, x_i) \le \sum_{i=k}^{m-1} \gamma^i\, d(x_1, x_0) \le \frac{\gamma^k}{1-\gamma}\, d(x_1, x_0).$$
+
+Since $\gamma < 1$, the right-hand side goes to zero as $k \to \infty$, so the sequence is Cauchy. Completeness gives a limit $x^*$.
+
+**The limit is a fixed point.** A contraction is continuous (take $\delta = \varepsilon$ in the definition), so
+
+$$T x^* = T\big(\lim_k x_k\big) = \lim_k T x_k = \lim_k x_{k+1} = x^*.$$
+
+**Uniqueness.** Suppose $Tx^* = x^*$ and $Ty^* = y^*$. Then $d(x^*, y^*) = d(Tx^*, Ty^*) \le \gamma\, d(x^*, y^*)$, so $(1-\gamma)\, d(x^*, y^*) \le 0$. Since $\gamma < 1$, this forces $d(x^*, y^*) = 0$, hence $x^* = y^*$.
+
+**The bound.** Let $m \to \infty$ in the Cauchy estimate above. $\qquad \blacksquare$
+</Proof>
+
+Three payoffs, all collected later: **existence** (an optimal value function exists), **uniqueness** (there is only one, so "the" optimal value function is well defined), and **an algorithm with a stopping rule** (iterate, and the bound tells you when to stop).
+
+<ContractionDemo />
+
+<Callout variant="insight" title="A pun that is actually a theorem">
+The contraction modulus is written $\gamma$, and so is the discount factor. That is not a coincidence or a notational collision. Chapter 4 proves that the Bellman operator is a $\gamma$-contraction **where $\gamma$ is precisely the discount factor**. Discounting the future is what makes the mathematics converge; a robot that values the infinite future equally is a robot whose value function may not exist.
+</Callout>
+
+## 2.4 From continuous physics to discrete decisions
+
+Robots obey differential equations. Reinforcement learning acts at discrete time steps. Something must bridge them, and the bridge is not free.
+
+Meet **Pendle**, a torque-actuated pendulum, measured with $\theta = 0$ at the upright position:
+
+$$m \ell^2 \ddot\theta = m g \ell \sin\theta - b\,\dot\theta + \tau.$$
+
+Writing the state as $x = [\theta, \dot\theta]^\top$ turns this into a first-order system $\dot x = f(x, \tau)$. To simulate it we need to advance $x$ by a finite step $\Delta t$. The simplest choice is **explicit Euler**:
+
+$$x_{k+1} = x_k + \Delta t \cdot f(x_k, \tau_k),$$
+
+which is exact if $f$ is constant over the interval and wrong otherwise, with local error $O(\Delta t^2)$ and global error $O(\Delta t)$. **Fourth-order Runge–Kutta** samples the derivative four times per step:
+
+$$x_{k+1} = x_k + \frac{\Delta t}{6}\left(k_1 + 2k_2 + 2k_3 + k_4\right),$$
+
+with global error $O(\Delta t^4)$ — four extra derivative evaluations buying three extra orders of accuracy.
+
+The difference is not academic. With $\tau = 0$ the true pendulum conserves total mechanical energy exactly. Explicit Euler does not merely approximate that conservation — it systematically *violates* it, injecting energy at every step until the pendulum spins up out of nothing.
+
+<PendleSim />
+
+<Callout variant="warning" title="This is a sim-to-real failure in miniature">
+A policy trained against an integrator that manufactures energy has learned to exploit a physics that does not exist. Chapter 15 shows this exact failure at full scale, where contact solvers — far harder than a pendulum — are where simulation and reality part company. Everything you just watched happen to Pendle happens to quadrupeds, with more expensive consequences.
+</Callout>
+
+<RustSnippet title="rl-envs/src/pendle.rs" caption="Pendle's dynamics and two integrators. The state is [θ, θ̇]; note that rk4_step is a drop-in replacement for euler_step, which is exactly how the widget above swaps them.">
+
+```rust
+use nalgebra::Vector2;
+
+pub struct PendleParams {
+    pub mass: f64,
+    pub length: f64,
+    pub gravity: f64,
+    pub damping: f64,
+}
+
+/// ẋ = f(x, τ) for the torque-actuated pendulum, θ = 0 at upright.
+pub fn dynamics(x: &Vector2<f64>, tau: f64, p: &PendleParams) -> Vector2<f64> {
+    let (theta, omega) = (x[0], x[1]);
+    let inertia = p.mass * p.length * p.length;
+    let alpha = (p.mass * p.gravity * p.length * theta.sin()
+                 - p.damping * omega
+                 + tau) / inertia;
+    Vector2::new(omega, alpha)
+}
+
+pub fn euler_step(x: &Vector2<f64>, tau: f64, dt: f64, p: &PendleParams) -> Vector2<f64> {
+    x + dt * dynamics(x, tau, p)
+}
+
+pub fn rk4_step(x: &Vector2<f64>, tau: f64, dt: f64, p: &PendleParams) -> Vector2<f64> {
+    let k1 = dynamics(x, tau, p);
+    let k2 = dynamics(&(x + 0.5 * dt * k1), tau, p);
+    let k3 = dynamics(&(x + 0.5 * dt * k2), tau, p);
+    let k4 = dynamics(&(x + dt * k3), tau, p);
+    x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+}
+```
+
+</RustSnippet>
+
+## 2.5 Learning from noisy samples: Robbins–Monro
+
+Now the result that makes learning possible at all.
+
+Suppose you want to find the root of a function $h(\theta) = 0$, but you can never evaluate $h$ — only a noisy sample $H(\theta) = h(\theta) + \text{noise}$. This is precisely our situation: we want the *expected* return, and we only ever observe one noisy trajectory at a time.
+
+Robbins and Monro's answer, from 1951, is to take small steps in the direction each noisy sample suggests, with a step size that shrinks:
+
+$$\theta_{k+1} = \theta_k + \alpha_k\, H(\theta_k).$$
+
+<Theorem kind="Theorem" n="2.5" title="Robbins–Monro conditions">
+Under regularity conditions on $h$ and bounded noise variance, the iterates $\theta_k$ converge almost surely to the root $\theta^*$ provided the step sizes satisfy
+
+$$\sum_{k=1}^{\infty} \alpha_k = \infty \qquad \text{and} \qquad \sum_{k=1}^{\infty} \alpha_k^2 < \infty.$$
+</Theorem>
+
+The two conditions have clean interpretations, and it is worth being able to recite them:
+
+- $\sum \alpha_k = \infty$ — **the steps must be able to travel infinitely far.** If they sum to something finite, the iterate can never reach a root that lies beyond that distance, no matter how many samples arrive.
+- $\sum \alpha_k^2 < \infty$ — **the steps must shrink fast enough to average out the noise.** Otherwise the iterate rattles around the root forever without settling.
+
+The canonical choice $\alpha_k = 1/k$ satisfies both: the harmonic series diverges, and the sum of $1/k^2$ converges to $\pi^2/6$. A constant $\alpha$ satisfies the first but not the second — which is why constant learning rates track a moving target instead of converging, exactly the trade you want when the environment is non-stationary.
+
+<Callout variant="insight" title="You will see this rule everywhere">
+Every learning rule in this book has the shape
+
+$$\text{New estimate} \leftarrow \text{Old estimate} + \alpha \left(\text{Target} - \text{Old estimate}\right).$$
+
+Sample-average action values in Chapter 3, TD learning in Chapter 6, Q-learning updates, even the gradient steps of Chapter 10 — all are Robbins–Monro with different targets. When you meet a new algorithm, the first useful question is: *what is its target, and is that target biased?*
+</Callout>
+
+## 2.6 Linear algebra and gradients, in the amount we need
+
+Two more tools, stated without ceremony because they will be used constantly.
+
+**Matrices as operators.** Given a policy on a finite state space, the transition probabilities form a matrix $P_\pi$, and expected rewards a vector $r_\pi$. Chapter 4 will show the value function satisfies $v_\pi = r_\pi + \gamma P_\pi v_\pi$, whose solution is
+
+$$v_\pi = (I - \gamma P_\pi)^{-1} r_\pi.$$
+
+The inverse exists because $\gamma P_\pi$ has spectral radius at most $\gamma < 1$, so the Neumann series $\sum_k (\gamma P_\pi)^k$ converges — the same geometric argument as the Banach bound, wearing matrix clothes.
+
+**Gradients.** For $J : \mathbb{R}^n \to \mathbb{R}$, the gradient $\nabla J(\theta)$ points in the direction of steepest increase, and gradient ascent takes $\theta \leftarrow \theta + \alpha \nabla J(\theta)$. Chapter 10 spends its entire length computing one specific gradient — that of expected return with respect to policy parameters — which is hard precisely because the distribution you are averaging over depends on the parameters you are differentiating.
+
+## 2.7 Chapter bridge
+
+The debts of Chapter 1 are paid. "The world advances" is a conditional distribution. "Reward" is a random variable with an expectation. "Eventually finds the best policy" will be Banach's theorem applied to an operator we have not yet built.
+
+Chapter 3 puts the toolkit to work on the smallest problem that still contains the essential difficulty: a single decision, repeated, with no state at all. Stripping away state exposes the exploration–exploitation dilemma in its pure form, and lets us derive real regret bounds with the concentration inequalities we now have the vocabulary for. Reacher joins the cast there, choosing among grasp primitives where every attempt costs hardware wear.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Tower property by hand',
+    difficulty: 1,
+    body: 'Let X be the total reward from a two-step episode and Y the first action. Compute E[X] two ways — directly, and via E[E[X|Y]] — for a small example you construct. They must agree; make sure you see why.',
+  },
+  {
+    layer: 'F',
+    title: 'Is the operator a contraction?',
+    difficulty: 2,
+    body: 'Show that T(x) = γx + c is a γ-contraction on ℝ with the usual metric, and find its fixed point in closed form. Then show that T(x) = x + c is not a contraction for any c ≠ 0, and explain what goes wrong with Banach’s conclusion.',
+  },
+  {
+    layer: 'F',
+    title: 'Robbins–Monro schedules',
+    difficulty: 2,
+    body: 'Which of these satisfy both Robbins–Monro conditions? (a) α_k = 1/k, (b) α_k = 1/k², (c) α_k = 1/√k, (d) α_k = 0.1. For each failure, say which condition breaks and what behaviour that produces in practice.',
+  },
+  {
+    layer: 'C',
+    title: 'The γ → 1 slowdown',
+    difficulty: 1,
+    body: 'In the contraction widget, record the number of iterations needed to reach an error below 0.01 for γ = 0.5, 0.9, 0.95, 0.99. Plot iterations against 1/(1−γ). What relationship do you find, and why does the a-priori bound predict it?',
+  },
+  {
+    layer: 'C',
+    title: 'Find the stability boundary',
+    difficulty: 2,
+    body: 'In the Pendle playground with τ = 0, find the largest Δt at which explicit Euler keeps energy within 10% over ten seconds. Repeat for RK4. Express the ratio — that is the compute budget RK4 buys you per step.',
+  },
+  {
+    layer: 'P',
+    title: 'Implement Robbins–Monro',
+    difficulty: 2,
+    body: 'Write a seeded estimator that finds the mean of a noisy signal using α_k = 1/k, and a second using constant α = 0.1. Feed both a signal whose mean jumps halfway through the run. Plot both trajectories and explain which you would deploy on a robot whose payload changes.',
+  },
+  {
+    layer: 'P',
+    title: 'Verify the error orders',
+    difficulty: 3,
+    body: 'Empirically confirm that Euler’s global error is O(Δt) and RK4’s is O(Δt⁴): simulate Pendle for a fixed horizon at halving step sizes, measure error against a very-fine-step reference, and fit the slope on a log–log plot. The slopes should come out near 1 and 4.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: '§2.4 incremental implementation — the Robbins–Monro special case that opens Chapter 3; §3.1 for the Markov property.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§1.3 for the continuous state–action setting that motivates the discretization material here.',
+  },
+  {
+    key: 'robbins1951',
+    authors: 'Robbins, H. & Monro, S.',
+    year: 1951,
+    title: 'A Stochastic Approximation Method',
+    venue: 'Annals of Mathematical Statistics 22(3)',
+    note: 'The original paper. Short, readable, and the ancestor of every learning rate in this book.',
+  },
+  {
+    key: 'banach1922',
+    authors: 'Banach, S.',
+    year: 1922,
+    title: 'Sur les opérations dans les ensembles abstraits et leur application aux équations intégrales',
+    venue: 'Fundamenta Mathematicae 3',
+    note: 'The fixed-point theorem, in the original.',
+  },
+  {
+    key: 'bertsekas1996',
+    authors: 'Bertsekas, D. P. & Tsitsiklis, J. N.',
+    year: 1996,
+    title: 'Neuro-Dynamic Programming',
+    venue: 'Athena Scientific',
+    note: 'The rigorous treatment of stochastic approximation applied to dynamic programming. Where to go when this book says "the proof lives elsewhere".',
+  },
+  {
+    key: 'hairer1993',
+    authors: 'Hairer, E., Nørsett, S. P. & Wanner, G.',
+    year: 1993,
+    title: 'Solving Ordinary Differential Equations I: Nonstiff Problems',
+    venue: 'Springer',
+    note: 'The reference for integrator error orders and stability regions — including why symplectic integrators behave so much better on mechanical systems.',
+  },
+]} />

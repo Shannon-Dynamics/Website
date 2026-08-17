@@ -1,0 +1,1711 @@
+---
+title: "Decision Making II: POMDPs and Belief-Space Planning"
+description: "Planning over beliefs instead of states: the alpha-vector value function, why exact solving explodes, and how sampled lookahead makes a robot pay to find out where it is."
+chapter: 22
+part: PART VI
+partTitle: Planning and Acting under Uncertainty
+difficulty: Advanced
+readingTime: 70 min
+quote: "Thus, even though the value function is defined over a continuum, it can be represented on a digital computer—up to the accuracy of floating point numbers."
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics (1999–2000 draft), Chapter 16
+---
+
+import { TigerDoorConsole } from '@/components/ch/ch22/tiger-door-console';
+import { AlphaForge } from '@/components/ch/ch22/alpha-forge';
+import { PomcpTreePeek } from '@/components/ch/ch22/pomcp-tree-peek';
+import { CoastalNavigator } from '@/components/ch/ch22/coastal-navigator';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State the POMDP tuple and recognize its belief transition τ(b, u, z) as the Chapter 5 Bayes filter, unchanged',
+    'Convert a POMDP into an MDP over the belief simplex, and say precisely what that conversion costs',
+    'Prove that a finite-horizon POMDP value function is piecewise-linear and convex, and read the policy off the envelope’s breakpoints',
+    'Count the exact backup’s candidates, and place POMDP solving on the complexity map — approximation is structural, not laziness',
+    'Derive QMDP and prove the exact class of decisions it can never make',
+    'Implement point-based (PBVI) and online sampled (POMCP) solvers on top of the particle machinery Chapter 8 already built',
+    'Compress a pose belief to (MAP, entropy) and watch coastal navigation fall out of value iteration rather than being scripted',
+  ]}
+  prerequisites={[
+    'The Bayes filter recursion and the evidence term η⁻¹ (Chapter 5)',
+    'Entropy of a discrete distribution, and of a Gaussian (Chapter 2)',
+    'Particle sets and low-variance resampling (Chapter 8)',
+    'Monte Carlo localization and what a bimodal belief looks like (Chapter 12)',
+    'MDPs, value iteration, the γ-contraction, and Q*(x, u) (Chapter 21)',
+  ]}
+  builds="Chapter 21's value iteration, run over Chapter 5's beliefs instead of over states — which is the whole book, closing a circle."
+>
+[Chapter 21](/chapters/ch21-mdps) ended with a policy that is optimal and useless. It answers
+"what should I do in state $x$?" for every state in the map, and Rusty has never once been in a
+position to look up the answer, because Rusty does not know $x$. It knows $\bel(x)$.
+
+This chapter closes the book's central circle. The belief that Parts II through IV taught you to
+*maintain* becomes the thing you *plan over*. That single move — from planning in state space to
+planning in belief space — is what makes a robot pay for a sensor reading, hug a wall it could
+have driven past, or take a detour whose only payoff is finding out where it is. None of those
+behaviors is hand-coded here. They are what the Bellman equation returns once the state of the
+decision problem is a distribution.
+
+The price is severe and worth naming up front: exact POMDP solving is combinatorial, not merely
+expensive. Most of this chapter is therefore about the four honest ways out — collapse the
+uncertainty (QMDP), sample the belief space (PBVI), sample the future (POMCP, DESPOT), or compress
+the belief to a statistic you can plan over (AMDP). Each one is exactly one paragraph of theory and
+one page of Rust, and each one fails somewhere you can see.
+</Overview>
+
+## Two doors, and a microphone that costs a dollar
+
+Rusty is in the Hallway in front of two identical doors. Behind one is the charging dock. Behind
+the other is an open stairwell. The doors look the same, the floor looks the same, and the map is
+no help: this corridor is symmetric.
+
+There is a microphone. Pressing it costs one unit of battery and returns a direction — *left* or
+*right* — that is correct 85% of the time. Opening the right door earns $+10$; opening the wrong
+one costs $-100$ and a trip to the repair bench.
+
+That is the whole problem, and it is the oldest toy in the field: Kaelbling, Littman and
+Cassandra's **tiger problem** (1998), which we will use for every number in this chapter because
+every number in it can be checked by hand. Play it before reading further. The widget opens on the
+optimal pilot; take control with **You play** and try to beat it.
+
+<Deferred>
+  <TigerDoorConsole />
+</Deferred>
+
+Three things are worth noticing, and each is a section of this chapter.
+
+**Sensing is an action, and it has a price.** Listening does not move the robot and does not open
+anything. Its entire value is that it moves the *belief*. In [Chapter 21](/chapters/ch21-mdps)'s
+MDP there was no such action — every action was worth something because of where it took you. Here
+an action is worth something because of what it tells you, and the Bellman equation has to be able
+to say so.
+
+**The value function lives over the belief, and it is made of straight lines.** The lower panel is
+the actual object this chapter is about: $V$ plotted against $b(\text{tiger-left})$. Each faint
+gray line is one $\alpha$-vector; the bold curve is their upper envelope. The policy is not stored
+anywhere — it is *read off* the envelope, one action per linear piece.
+
+**Certainty is worth money, and the shape of $V$ says how much.** $V$ is convex. It is lowest in
+the middle, where the robot knows nothing, and highest at the ends, where it knows everything. The
+vertical gap between the chord and the curve is not a metaphor — it is the expected value of
+perfect information, in the same units as the reward. At $b = \tfrac12$ the tiger's converged
+numbers give $28.4028 - 19.3714 = 9.03$, so a free oracle would be worth just over nine points, and a
+microphone at one point per press is a bargain. That is why the optimal policy burns battery on
+presses that accomplish nothing physical.
+
+<KeyIdea title="The one sentence version">
+A POMDP is an MDP whose state is a belief. Because the belief reward and the belief transition are
+both built out of *linear* operations on $b$, the optimal finite-horizon value function is a
+maximum of finitely many linear functions — which is the only reason a problem defined over a
+continuum of distributions can be solved on a computer at all.
+</KeyIdea>
+
+## Building intuition
+
+### Averaging over worlds is not planning under uncertainty
+
+The tempting move — and the one almost every first implementation makes — is this: I do not know
+which world I am in, so let me solve each candidate world, then average the answers. Compute
+$Q^*(x, u)$ for the tiger-left world and the tiger-right world, weight by $b$, act greedily.
+
+That is a real algorithm, it is called QMDP, and we will implement it. It is also structurally
+incapable of the behavior in the widget above, for a reason the draft of *Probabilistic Robotics*
+states flatly: *"the planning problem in partially observable environment cannot be solved by
+considering all possible environments and averaging the solution."*
+
+The reason is that averaging happens *before* the max. In each individual world the robot knows
+where the tiger is, so listening is a waste of a battery unit; the microphone earns its keep only
+in the counterfactual where you might have been wrong. Average first and that counterfactual is
+gone. Switch the widget's pilot to **QMDP** and watch the envelope collapse from nine linear pieces
+to three — and look at the middle one. It is *horizontal*: QMDP assigns listening the same value
+$189$ at every belief, because under its assumption the fog lifts anyway. A flat piece is an action
+whose worth does not depend on what you know, which is precisely an action with no informational
+value.
+
+### Why $V$ is convex, in one paragraph and no algebra
+
+Suppose someone offers you a choice. Option A: you are told, honestly, which of two belief states
+$b_1$ or $b_2$ you are in — a coin decides, with probability $\lambda$ and $1-\lambda$. Option B:
+you are told nothing, and you must act on the mixture $\lambda b_1 + (1-\lambda) b_2$.
+
+Option A is worth $\lambda V(b_1) + (1-\lambda) V(b_2)$, because you get to run the best policy for
+whichever one came up. Option B is worth $V(\lambda b_1 + (1-\lambda)b_2)$, and whatever policy is
+best there was *available* under option A too. So
+
+$$
+V(\lambda b_1 + (1-\lambda) b_2) \;\le\; \lambda V(b_1) + (1-\lambda) V(b_2).
+$$
+
+That is convexity, and it is the formal statement of *information has non-negative value*. The
+gap between the two sides at any belief is what the robot should be willing to pay to have its
+uncertainty resolved. Read the widget's envelope again with that in mind: the deeper the sag in the
+middle, the more the microphone is worth.
+
+## The mathematics
+
+### Notation
+
+<NotationTable
+  rows={[
+    { sym: '\\mathcal{X},\\ \\mathcal{U},\\ \\mathcal{Z}', meaning: 'Finite state, action and observation sets. Sizes |X|, |U|, |Z|.' },
+    { sym: 'b,\\ b(x)', meaning: 'The belief — exactly bel(x) from Chapter 5, now serving as the state of a planning problem.' },
+    { sym: '\\Delta^{|\\mathcal{X}|-1}', meaning: 'The belief simplex. A segment for two states, a triangle for three.' },
+    { sym: '\\tau(b, u, z)', meaning: 'The belief transition: one Bayes-filter predict-and-correct, written as a function.' },
+    { sym: 'p(z \\mid b, u)', meaning: 'Evidence under a belief — the branching probability of the belief MDP. Chapter 5’s η⁻¹.' },
+    { sym: '\\rho(b, u) = \\sum_x b(x) r(x,u)', meaning: 'Belief reward. Linear in b, which is where the whole theory comes from.' },
+    { sym: '\\alpha^{(k)}', meaning: 'An α-vector: one linear piece of V, tagged with the action it commits to.' },
+    { sym: '\\Gamma_T = \\{\\alpha^{(k)}\\}', meaning: 'The α-vector set at horizon T. V_T(b) = max_k ⟨α^(k), b⟩.' },
+    { sym: 'g^{u,z}_k', meaning: 'Backprojection of α^(k) through (u, z): what that piece is worth seen from x, before observing.' },
+    { sym: '\\bar b = (\\arg\\max_x b(x),\\ H[b])', meaning: 'The AMDP compression: most likely state plus one number of uncertainty.' },
+  ]}
+/>
+
+<Callout type="warn">
+**Notation collision.** $\alpha$-vectors are standard POMDP vocabulary and have nothing whatever to
+do with the motion-noise parameters $\alpha_1 \dots \alpha_6$ of
+[Chapter 9](/chapters/ch09-motion-models). We write value vectors with a superscript,
+$\alpha^{(k)}$, noise parameters with a subscript, $\alpha_1$, and never both in one equation.
+</Callout>
+
+### The POMDP tuple
+
+A **partially observable Markov decision process** is [Chapter 21](/chapters/ch21-mdps)'s MDP with
+one thing added and one thing taken away:
+
+<LinkedMath>
+$$
+\big(\, \mathcal{X},\; \mathcal{U},\; \mathcal{Z},\;
+\htmlClass{term-prediction}{p(x' \mid x, u)},\;
+\htmlClass{term-measurement}{p(z \mid x', u)},\;
+r(x, u),\; \gamma,\; b_0 \,\big)
+$$
+</LinkedMath>
+
+Added: the observation set $\mathcal{Z}$ and the measurement model
+$p(z \mid x', u)$ — which is [Chapter 10](/chapters/ch10-sensor-models)'s object, now allowed to
+depend on which action you took, because "take a photograph" and "drive forward" do not return the
+same kind of reading. Taken away: the assumption that the agent is ever told $x$. It sees only
+$u_{1:t}$ and $z_{1:t}$, and starts from a prior $b_0$.
+
+Everything else is inherited. In particular $r(x,u)$ is still Chapter 21's payoff, collected on
+taking $u$ in $x$, and $\gamma \in (0,1)$ still buys convergence.
+
+The tiger, completely specified, is the instance every number below refers to:
+
+| | |
+|---|---|
+| $\mathcal{X}$ | $\{x_L, x_R\}$ — the tiger is behind the left or the right door |
+| $\mathcal{U}$ | $\{\text{listen}, \text{open}_L, \text{open}_R\}$ |
+| $\mathcal{Z}$ | $\{z_L, z_R\}$ — the growl came from the left or the right |
+| $p(z_L \mid x_L, \text{listen})$ | $0.85$ (the hearing-accuracy slider) |
+| $r(\cdot, \text{listen})$ | $-1$ |
+| correct door / tiger door | $+10$ / $-100$ |
+| after opening | the tiger is re-placed uniformly and the next growl is pure noise, so the belief resets to $(\tfrac12, \tfrac12)$ |
+| $\gamma$ | $0.95$ |
+
+### The belief transition is the Bayes filter, wearing a new hat
+
+Nothing new happens here at all, and that is the point worth making loudly. Given a belief, an
+action and an observation, the next belief is
+
+<LinkedMath>
+$$
+b'(x') \;=\; \tau(b,u,z)(x') \;=\;
+\eta \; \htmlClass{term-measurement}{p(z \mid x', u)}
+\sum_{x} \htmlClass{term-prediction}{p(x' \mid x, u)}\, \htmlClass{term-prior}{b(x)}
+$$
+</LinkedMath>
+
+which is [Chapter 5](/chapters/ch05-bayes-filter)'s two lines — predict, then correct — with the
+integral become a sum. The normalizer is the **evidence**, and here it stops being housekeeping
+and becomes load-bearing, because it is the *transition probability of the belief MDP*:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(z \mid b, u)} \;=\; \eta^{-1} \;=\;
+\sum_{x'} \htmlClass{term-measurement}{p(z \mid x', u)} \sum_x
+\htmlClass{term-prediction}{p(x' \mid x, u)}\, \htmlClass{term-prior}{b(x)}
+$$
+</LinkedMath>
+
+Two consequences that shape everything downstream. First, the belief dynamics are *deterministic*
+given $(u, z)$: all the stochasticity of a POMDP sits in which observation arrives. Second, the
+belief MDP's branching factor is $|\mathcal{Z}|$, not $|\mathcal{X}|$ — a tree over
+action–observation histories, which is exactly the object POMCP builds later in this chapter.
+
+Run the tiger numbers by hand. From $b(x_L) = \tfrac12$, hearing $z_L$:
+
+$$
+b'(x_L) = \frac{0.85 \times 0.5}{0.85 \times 0.5 + 0.15 \times 0.5} = 0.85,
+\qquad p(z_L \mid b, \text{listen}) = 0.5
+$$
+
+A second, consistent $z_L$:
+
+$$
+b'(x_L) = \frac{0.85 \times 0.85}{0.85 \times 0.85 + 0.15 \times 0.15}
+= \frac{0.7225}{0.745} = 0.969799,
+\qquad p(z_L \mid b, \text{listen}) = 0.745
+$$
+
+and one contradicting $z_R$ from there takes it straight back down. From $0.85$, a single $z_R$
+returns the belief to exactly $\tfrac12$ — the two growls cancel, because the likelihood ratio is
+the reciprocal. **That is the ladder the marker climbs in the widget above**, and the whole optimal
+policy is a statement about where on that ladder you may stop.
+
+### The belief MDP
+
+<Derivation title="A POMDP is an MDP over the belief simplex" result="V^*(b) = \max_u \Big[\rho(b,u) + \gamma \sum_z p(z \mid b,u)\, V^*(\tau(b,u,z))\Big]">
+**Statement.** Define the belief MDP $\big(\Delta^{|\mathcal{X}|-1}, \mathcal{U}, \tilde p, \rho,
+\gamma\big)$ with
+
+$$
+\tilde p(b' \mid b, u) = \sum_{z} p(z \mid b,u)\,\mathbf 1\!\left[b' = \tau(b,u,z)\right],
+\qquad
+\rho(b,u) = \sum_x b(x)\, r(x,u).
+$$
+
+Then an optimal policy of this MDP, composed with the Bayes filter, is an optimal policy of the
+POMDP.
+
+**Step 1 — the belief is a sufficient statistic of the history.** This is
+[Chapter 5](/chapters/ch05-bayes-filter)'s completeness argument, not a new one: under the Markov
+assumption, $\bel(x_t) = p(x_t \mid z_{1:t}, u_{1:t})$ is all of $z_{1:t}, u_{1:t}$ that matters
+for predicting $x_{t+1}$ and $z_{t+1}$. The filter is a *lossless* compressor of history with
+respect to the future.
+
+**Step 2 — write the objective in terms of histories.** A policy for a POMDP is by definition a map
+from histories $h_t = (u_{1:t}, z_{1:t})$ to actions, and its expected return is
+$\E\!\left[\sum_t \gamma^t r(x_t, u_t)\right]$ with the expectation over states *and* observations.
+Condition the inner expectation on $h_t$: since $r$ depends on $x_t$ only through its expectation
+under $p(x_t \mid h_t)$, the $t$-th term is $\gamma^t\, \rho(\bel_t, u_t)$.
+
+**Step 3 — collapse histories to beliefs.** By Step 1, two histories with the same belief have the
+same distribution over every future quantity, so no optimal policy can benefit from distinguishing
+them. The policy may therefore be taken to be a function of $\bel_t$ alone.
+
+**Step 4 — read off the induced process.** Given $b$ and $u$, the next belief is determined by
+which $z$ arrives, and $z$ arrives with probability $p(z \mid b, u)$. That is a bona fide MDP over
+the simplex, with reward $\rho$. Chapter 21's Bellman equation applies verbatim, giving the result
+above. $\blacksquare$
+
+**What it costs.** The state space is now a continuum — for $|\mathcal{X}|$ states, a
+$(|\mathcal{X}|-1)$-dimensional simplex — so "for all $x$" in Chapter 21's value-iteration sweep is
+now "for all points of a continuum". Every technique in this chapter is a way of coping with that
+one sentence.
+</Derivation>
+
+### The value function is piecewise-linear and convex
+
+This is the theorem that makes the chapter possible — Sondik's, published with Smallwood in 1973.
+Every exact POMDP algorithm since is a way of maintaining the object it describes.
+
+<Derivation title="V_T is a maximum of finitely many linear functions" result="V_T(b) = \max_{\alpha \in \Gamma_T} \langle \alpha, b \rangle, \qquad |\Gamma_T| \le |\mathcal{U}|\,|\Gamma_{T-1}|^{|\mathcal{Z}|}">
+**Statement.** For every finite horizon $T$ there is a finite set of vectors
+$\Gamma_T \subset \R^{|\mathcal{X}|}$ with $V_T(b) = \max_{\alpha \in \Gamma_T} \langle \alpha, b
+\rangle$. Consequently $V_T$ is convex and piecewise linear.
+
+**Step 1 — the base case is the immediate reward.** With one step to go there is nothing to
+anticipate: $V_1(b) = \max_u \sum_x b(x) r(x,u) = \max_u \langle r(\cdot,u), b\rangle$. So
+$\Gamma_1 = \{\, r(\cdot,u) : u \in \mathcal{U} \,\}$, of size $|\mathcal{U}|$. For the tiger these
+are three vectors you can write down without a computer:
+
+$$
+\alpha^{\text{listen}} = (-1,\, -1), \qquad
+\alpha^{\text{open}_L} = (-100,\, 10), \qquad
+\alpha^{\text{open}_R} = (10,\, -100).
+$$
+
+**Step 2 — substitute the inductive hypothesis into the Bellman backup.**
+
+<LinkedMath>
+$$
+V_T(b) = \max_u \Big[\ \langle r(\cdot,u), b\rangle + \gamma \sum_z
+\htmlClass{term-posterior}{p(z \mid b,u)}\;
+\max_k \big\langle \alpha^{(k)},\, \htmlClass{term-posterior}{\tau(b,u,z)} \big\rangle \Big]
+$$
+</LinkedMath>
+
+**Step 3 — the normalizer cancels. This is the trick.** Write the inner product out and notice
+that $\tau$'s normalizer is precisely the factor sitting in front of it:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(z \mid b,u)} \cdot \big\langle \alpha^{(k)}, \tau(b,u,z) \big\rangle
+= \sum_{x'} \alpha^{(k)}(x')\;
+\htmlClass{term-measurement}{p(z \mid x', u)} \sum_x
+\htmlClass{term-prediction}{p(x' \mid x, u)}\, \htmlClass{term-prior}{b(x)}
+$$
+</LinkedMath>
+
+A quantity that looked like *(probability) × (value of a normalized posterior)* is in fact
+**linear in $b$**. Name that linear functional's coefficient vector the **backprojection**:
+
+<LinkedMath>
+$$
+\boxed{\;
+g^{u,z}_k(x) \;=\; \sum_{x'}
+\htmlClass{term-measurement}{p(z \mid x', u)}\,
+\htmlClass{term-prediction}{p(x' \mid x, u)}\, \alpha^{(k)}(x')
+\;}
+$$
+</LinkedMath>
+
+so that $p(z\mid b,u)\, \langle \alpha^{(k)}, \tau(b,u,z)\rangle = \langle g^{u,z}_k, b\rangle$
+exactly. Read $g^{u,z}_k$ as: *what $\alpha^{(k)}$ is worth, seen from state $x$, through the pair
+$(u,z)$* — the value discounted by how likely that observation was.
+
+**Step 4 — a sum of maxima is a max over tuples.** Now
+
+$$
+V_T(b) = \max_u \Big[\ \langle r(\cdot,u), b\rangle + \gamma \sum_z \max_k \langle g^{u,z}_k, b\rangle \Big]
+$$
+
+and since the $z$-terms are independent, choosing the best $k$ for each $z$ separately is the same
+as choosing the best *assignment* $k(\cdot) : \mathcal{Z} \to \{1,\dots,|\Gamma_{T-1}|\}$ jointly:
+
+$$
+V_T(b) = \max_u \ \max_{k(\cdot)} \ \Big\langle\; r(\cdot,u) + \gamma \sum_z g^{u,z}_{k(z)}\;,\; b \Big\rangle
+$$
+
+**Step 5 — read off $\Gamma_T$ and count it.** Each pair (action, assignment) contributes one
+vector, so
+
+$$
+\Gamma_T = \Big\{\, r(\cdot,u) + \gamma \textstyle\sum_z g^{u,z}_{k(z)}
+\;:\; u \in \mathcal{U},\ k : \mathcal{Z} \to \{1,\dots,|\Gamma_{T-1}|\} \Big\},
+\qquad |\Gamma_T| \le |\mathcal{U}| \cdot |\Gamma_{T-1}|^{|\mathcal{Z}|}.
+$$
+
+**Step 6 — convexity is free.** $V_T$ is a pointwise maximum of linear functions, and a pointwise
+maximum of convex functions is convex. $\blacksquare$
+
+**The interpretive payoff.** An $\alpha$-vector is not "a value". It is a whole *conditional plan*:
+take action $u$ now, and if you then see $z$, continue with the plan that $\alpha^{(k(z))}$
+represents. $\langle \alpha, b \rangle$ is that plan's expected return under $b$, and $V(b)$ picks
+the best plan for the belief you are actually in. That is why the envelope's breakpoints are the
+policy's decision thresholds: they are where one conditional plan overtakes another.
+</Derivation>
+
+### The explosion, watched live
+
+The count in Step 5 is the whole story. For the tiger, $|\Gamma_1| = 3$, and then
+
+$$
+3 \;\longrightarrow\; 3 \cdot 3^2 = 27 \;\longrightarrow\; 3 \cdot 27^2 = 2\,187
+\;\longrightarrow\; 3 \cdot 2187^2 = 14\,348\,907 \;\longrightarrow\; 6.2 \times 10^{14}
+$$
+
+This is doubly exponential in the horizon, on a problem with **two states**. It is not a scaling
+problem to be solved with a bigger machine; it is a combinatorial one, and every practical method
+in this chapter exists because of this line.
+
+Pruning rescues it, and by an enormous margin — but only because most of those vectors are never
+the maximum anywhere on the simplex. Turn the toggle off in the widget below and watch the counter
+run away while the picture stops being drawable.
+
+<Deferred>
+  <AlphaForge />
+</Deferred>
+
+For the record, here is what our solver actually produces on the tiger at $\gamma = 0.95$,
+accuracy $0.85$ — candidates generated versus vectors that survive:
+
+| horizon $T$ | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| cross-sum candidates | 3 | 27 | 75 | 243 | 147 | 507 | 1 083 | 2 187 | 4 107 |
+| kept after pruning | 3 | 5 | 9 | 7 | 13 | 15 | 25 | 27 | 35 |
+
+Two honest observations. The candidate counts stay small only because each row is computed from
+the *pruned* previous row — that is the feedback loop that keeps exact value iteration alive at
+all. And the kept counts are not monotone: at $T = 4$ the minimal set is *smaller* than at $T = 3$.
+Nothing is wrong. The minimal representation of a value function has no obligation to grow, and a
+solver that assumes it does will over-prune or under-prune.
+
+<Callout type="info">
+**Where this sits on the complexity map.** Deciding whether a finite-horizon POMDP has a policy
+achieving a given value is **PSPACE-complete** (Papadimitriou and Tsitsiklis, 1987) — harder than
+NP-complete under the usual assumptions, and — unless $\mathrm{P} = \mathrm{PSPACE}$ — strictly
+harder than the fully observable case of [Chapter 21](/chapters/ch21-mdps), which the same paper
+places in P. Approximation in this chapter
+is therefore *structural*, not laziness: there is no machine and no clever data structure that
+makes the exact problem go away.
+</Callout>
+
+### Pruning, and what our pruning misses
+
+Given a candidate set $\Gamma$, the minimal set is $\{\alpha \in \Gamma : \exists b \in \Delta,\
+\langle \alpha, b\rangle > \langle \alpha', b \rangle\ \forall \alpha' \ne \alpha\}$ — the vectors
+that own at least one witness point. Three tests, in increasing cost:
+
+1. **Duplicate merge.** As value iteration converges the backup keeps re-deriving the *same* linear
+   piece through different observation branches. Without a merge, $|\Gamma|$ grows without bound
+   while $V$ stands still. Sort lexicographically and sweep: $O(n \log n)$.
+2. **Pointwise dominance.** If $\alpha'(x) \ge \alpha(x)$ for every $x$, then $\alpha$ can be
+   deleted. Free, exact, and it never removes a vector it should keep — but it misses vectors that
+   are dominated only by *combinations* of others.
+3. **Witness test.** $\alpha$ survives iff the linear program
+   $\max_{b,\,\delta} \delta$ subject to $\langle \alpha - \alpha', b\rangle \ge \delta$ for all
+   $\alpha' \ne \alpha$, $b \in \Delta$, has $\delta > 0$. This is exact, and it is one LP per
+   candidate.
+
+We implement 1 and 2 always. For **two states** we then do something better than an LP: with
+$b = (t, 1-t)$ every $\alpha$-vector is the *line* $\langle \alpha, b \rangle = \alpha(x_R) +
+(\alpha(x_L) - \alpha(x_R))\, t$, and the minimal set is exactly the upper envelope of a set of
+lines — a convex hull, computable exactly in $O(n \log n)$ with no numerical tolerance games. That
+is what draws the bold curve in both widgets, and it is why the thresholds quoted in this chapter
+are exact rather than sampled. For three or more states we fall back to a witness *search*: test
+the simplex corners, then a few thousand Dirichlet-sampled interior points.
+
+<Callout type="warn">
+Be clear about what the witness search misses. It can only ever keep too *few* vectors: a piece
+whose ownership region is smaller than the sampling density is silently dropped, and the value
+function loses a sliver it should have had. It never keeps too many. In exchange we avoid a
+dependency on an LP solver, which for the problem sizes in this book is the right trade — but a
+production solver should use the LP, and Thrun et al. §16.2.4 writes it out.
+</Callout>
+
+### QMDP, and exactly what it cannot see
+
+The cheapest approximation is to keep only the first backup and stop. Assume that after one action
+the fog lifts entirely and the state becomes observable. Then the value of doing $u$ in belief $b$
+is just the average, over states, of Chapter 21's $Q^*$:
+
+<LinkedMath>
+$$
+Q_{\text{MDP}}(b, u) \;=\; \sum_x \htmlClass{term-prior}{b(x)}\, Q^*(x, u),
+\qquad
+\Gamma_{\text{QMDP}} = \big\{\, Q^*(\cdot, u) \;:\; u \in \mathcal{U} \,\big\}
+$$
+</LinkedMath>
+
+This is an $\alpha$-vector set with exactly $|\mathcal{U}|$ members, for any horizon, and it costs
+one Chapter 21 solve. It is also an **upper bound**: $V_{\text{QMDP}}(b) \ge V^*(b)$, because it
+prices a relaxed problem in which someone tells you the state after one step, and more information
+cannot hurt. On the tiger the bound is spectacularly loose — $V_{\text{QMDP}}(\tfrac12) = 189$
+against $V^*(\tfrac12) = 19.37$, a factor of ten — but it is *sound everywhere and free*, which is
+why it is the standard upper bound in DESPOT's and SARSOP's branch-and-bound. A bad estimator can
+still be a useful certificate.
+
+Now the sharp statement of what QMDP gives up.
+
+<Derivation title="QMDP is blind to the sensor" result="p(\cdot\mid x,u) = p(\cdot\mid x,u') \text{ and } r(\cdot,u) = r(\cdot,u') \implies Q_{\mathrm{MDP}}(b,u) = Q_{\mathrm{MDP}}(b,u')\ \ \forall b">
+**Statement.** Let $u$ and $u'$ be two actions with identical transition models and identical
+rewards, differing *only* in their observation models. Then $Q_{\text{MDP}}(b,u) =
+Q_{\text{MDP}}(b,u')$ for every belief $b$ — QMDP is exactly indifferent between them, no matter
+how much better one sensor is than the other.
+
+**Step 1.** $V^*$ here is the value function of the *underlying, fully observable* MDP. Its
+defining equation, $V^*(x) = \max_u [\,r(x,u) + \gamma \sum_{x'} p(x'\mid x,u) V^*(x')\,]$,
+contains no term involving $p(z \mid x', u)$. The observation model is not an input.
+
+**Step 2.** Hence $Q^*(x,u) = r(x,u) + \gamma\sum_{x'}p(x'\mid x,u)V^*(x')$ depends on $u$ only
+through $r(\cdot,u)$ and $p(\cdot\mid\cdot,u)$, which by hypothesis agree for $u$ and $u'$. So
+$Q^*(\cdot, u) = Q^*(\cdot, u')$ componentwise.
+
+**Step 3.** $Q_{\text{MDP}}(b,u) = \langle b, Q^*(\cdot,u)\rangle = \langle b, Q^*(\cdot,u')\rangle
+= Q_{\text{MDP}}(b,u')$. $\blacksquare$
+
+**Corollary — the failure, stated exactly.** Give the tiger agent two microphones at the same
+price: a sharp one ($0.95$ accurate) and a dull one ($0.55$). QMDP's $\alpha$-vectors for the two
+actions are *bit-identical* — both $(189, 189)$ — and it picks between them by tie-break. The exact
+solver picks the sharp microphone at every belief. This is the precise sense in which QMDP "never
+values information": it cannot distinguish actions that differ only in what they reveal. The Rust
+test suite below pins it as an equality assertion, which is the most honest possible way to
+document a limitation.
+</Derivation>
+
+There is a subtler failure that the widget above is built to expose, and it matters more in
+practice. QMDP is *not* incapable of choosing the microphone in the tiger problem — listening also
+happens to be a cheap way of not dying, so it gets chosen for the wrong reason. What QMDP gets
+wrong is *when to stop*: it opens a door as soon as $b(x_L) \ge 0.9$, where the optimal policy waits
+for $0.9603$.
+
+Work out where $0.9$ comes from, because it is a two-line calculation. Under full observability
+the optimal policy is "open the correct door", worth $V^* = 10 + \gamma V^*$, so $V^* = 200$ at
+$\gamma = 0.95$. Then $Q^*(x, \text{listen}) = -1 + 0.95(200) = 189$ for both states, while
+$Q^*(\cdot, \text{open}_R) = (10 + 190,\ -100 + 190) = (200, 90)$. Opening beats listening when
+$90 + 110\,t \ge 189$, i.e. $t \ge 0.9$ — and notice that **the number $0.9$ contains no reference
+to the hearing accuracy at all**. Drag the accuracy slider in the widget from $0.55$ to $0.99$ and
+QMDP's threshold does not move by one digit. That is Step 1 of the derivation, made visible.
+
+<Callout type="info">
+**A cautionary note about benchmarks.** At the default accuracy $0.85$ the two pilots score
+identically, because the reachable belief ladder from $\tfrac12$ is $0.85 \to 0.969799$ and steps
+clean over the gap between $0.9$ and $0.9603$: both thresholds say "listen once more, then open".
+A tournament run at $0.85$ would certify QMDP as optimal.
+
+Move the slider in either direction and the agreement dissolves. Over 20 000 paired rounds — same
+tiger placement, same growl stream, every pilot:
+
+| hearing accuracy | listens per round, optimal / QMDP | mauled, optimal / QMDP | score per round |
+|---|---|---|---|
+| $0.70$ | $9.2$ / $6.4$ | $3.2\%$ / $7.2\%$ | $-2.88$ / $-4.32$ |
+| $0.80$ | $4.8$ / $2.9$ | $1.6\%$ / $5.5\%$ | $3.47$ / $1.04$ |
+| $0.85$ | $2.7$ / $2.7$ | $2.9\%$ / $2.9\%$ | $4.19$ / $4.19$ |
+| $0.95$ | $2.2$ / $1.0$ | $0.3\%$ / $4.8\%$ | $7.52$ / $3.77$ |
+
+The last row is the one to remember. With a $95\%$-accurate microphone a single growl already puts
+the belief at $0.95$, which clears QMDP's fixed $0.9$ — so QMDP opens after one listen and is eaten
+roughly eighteen times as often as the optimal pilot, which pays one more unit for a second
+opinion. **A better sensor made the approximation worse.** An approximation that looks perfect on
+your benchmark may be one parameter away from being dangerous, in either direction.
+</Callout>
+
+### PBVI: keep the value function only where the robot can get to
+
+The exact backup maintains $V$ everywhere on the simplex. Point-based value iteration (Pineau,
+Gordon and Thrun, 2003) keeps it only at a finite set $B$ of belief points, and — this is the whole
+idea — keeps *exactly one* $\alpha$-vector per point:
+
+$$
+\alpha_b \;=\; \arg\max_{\alpha \in \text{backup}(\Gamma)} \langle \alpha, b\rangle,
+\qquad \Gamma' = \{\alpha_b : b \in B\}
+$$
+
+Crucially you never *build* the cross-sum. For a fixed $b$, the best assignment $k(\cdot)$ is found
+one observation at a time — $k(z) = \arg\max_k \langle g^{u,z}_k, b\rangle$ — because the $z$-terms
+are independent. The backup therefore costs
+$O(|B|\,|\mathcal{U}|\,|\mathcal{Z}|\,|\Gamma|\,|\mathcal{X}|)$ and returns at most $|B|$ vectors.
+Doubly exponential becomes polynomial, and the price is that $\Gamma'$ is a *lower* bound on $V^*$:
+every $\alpha_b$ is the value of a real conditional plan, just not necessarily the best one
+somewhere else on the simplex.
+
+The error bound is
+$\|V^B - V^*\|_\infty \le \dfrac{(r_{\max} - r_{\min})\,\epsilon_B}{(1-\gamma)^2}$,
+with $\epsilon_B = \max_{b' \in \Delta} \min_{b \in B} \|b - b'\|_1$ the density of $B$ in the
+simplex. Be honest about it: on the tiger with $r_{\max} - r_{\min} = 110$ and $\gamma = 0.95$ the
+prefactor is $44\,000$, so with our five belief points ($\epsilon_B \approx 0.35$) the bound reads
+"the error is at most $15\,400$", while the actual error at $b = \tfrac12$ is $2.62$. The bound
+proves convergence as $B$ densifies. It certifies nothing at any $|B|$ you would actually run.
+
+What *does* matter is which points you pick, and that is PBVI's real contribution: expand $B$ along
+**reachable** beliefs, $B \leftarrow B \cup \{\tau(b,u,z)\}$, rather than gridding the simplex.
+Switch the Alpha Forge to PBVI mode and take the belief count down to three. With
+$B = \{(\tfrac12,\tfrac12), (1,0), (0,1)\}$ the envelope collapses onto QMDP's answer — threshold
+exactly $0.900$ — because the corners of the simplex cannot see that listening is worth anything at
+$0.9$. Add the reachable point $0.85$ and the threshold jumps to $0.960$; add its mirror $0.15$ and
+it settles at $0.958$, within $0.003$ of the exact $0.9603$. Five well-chosen points buy most of
+what the exact solver spends millions of vectors on. SARSOP (Kurniawati, Hsu and Lee, 2008)
+industrialized precisely this observation, by targeting beliefs reachable *under near-optimal
+policies*.
+
+### Online planning: POMCP searches histories, not states
+
+Everything so far computes a policy for *all* beliefs, offline. The modern robotics answer is to
+give that up. At each timestep, plan only from the belief you are actually in, spend a fixed
+compute budget, act, and re-plan.
+
+**POMCP** (Silver and Veness, 2010) is Monte-Carlo tree search over action–observation histories,
+and it fits this book unreasonably well because it needs two things you already built:
+
+- A **generative model** $G$: a black box that, given $(x, u)$, samples $(x', z, r)$. That is the
+  [Chapter 4](/chapters/ch04-rusty-and-sensors) simulator, verbatim. POMCP never sees a transition
+  matrix, which is why it scales to state spaces you could not write one for.
+- A **particle set** for the root belief. That is [Chapter 8](/chapters/ch08-nonparametric-filters)'s
+  object, and [Chapter 12](/chapters/ch12-localization-global)'s MCL produces one every frame.
+
+The mechanism: each simulation samples a state from the root particles, then walks down the tree
+picking actions by UCB1 — $\arg\max_u\, Q(h,u) + c\sqrt{\log N(h) / N(h,u)}$ — stepping the
+generative model at each node, and appending the sampled state to whichever child node the
+generated observation leads to. When it falls off the tree it runs a rollout policy to the horizon
+and backs the return up along the path.
+
+The beautiful part is the belief representation. Nobody runs a Bayes filter inside the tree. The
+particles that *happen to reach* node $huz$ are, by construction, distributed according to
+$\tau(\dots\tau(b_0,u,z)\dots)$: the observation branching does the conditioning, and the surviving
+particles are the posterior. Sampling *is* the filter.
+
+<Deferred>
+  <PomcpTreePeek />
+</Deferred>
+
+Two caveats, both inherited from [Chapter 8](/chapters/ch08-nonparametric-filters) and both real.
+**Particle deprivation gets worse with depth**: a node three observations down may hold four
+particles, and its value estimate is noise. **Particle deprivation gets worse on re-rooting**: when
+you execute $u$ and observe $z$, the new root is node $huz$, whose particles are all you have —
+which is why practical implementations reinvigorate with noise, exactly as Augmented MCL does. And
+the UCB1 constant is not a tuning afterthought: set it too small in the widget above and both
+opening arms get exactly one pull, the unlucky one draws the tiger, and neither is ever tried
+again. The planner then listens forever on the strength of a single rollout.
+
+### DESPOT, in one page
+
+POMCP's weakness is that the tree branches on every observation that happens to be sampled, so with
+many observations it becomes a bush of singleton nodes. **DESPOT** (Ye et al., 2017) fixes this with
+one idea: fix $K$ **scenarios** in advance.
+
+A scenario $\phi = (x_0, \phi_1, \phi_2, \dots)$ is a start state plus a stream of random numbers.
+Determinize the generative model so that $(x', z, r) = G(x, u, \phi_t)$ is a *function*. Now a
+policy's outcome under scenario $\phi$ is deterministic, and the sparse tree contains only the
+$\le K$ observation branches that actually occur under the $K$ scenarios — the branching factor
+becomes $K$ instead of $|\mathcal{Z}|$, and the whole tree evaluates all $K$ scenarios at once.
+
+Two consequences worth remembering. First, the value estimated on $K$ scenarios *overfits*, exactly
+as empirical risk does: a policy can be tailored to the sampled futures. DESPOT's regularized
+objective, $\max_\pi\, [\hat V_\phi(\pi) - \lambda |\pi|]$, penalizes policy size and comes with a
+regret bound in terms of the *representation size* of the optimal policy — the analogue of a
+generalization bound, and the reason the regularization is not an optional extra. Second, it is
+anytime and bounded: the search is guided by an upper bound (QMDP serves) and a lower bound (any
+default policy), and the gap between them at the root is a certificate you can stop on. It is a
+genuinely small amount of code once POMCP exists — which is why it is this chapter's stretch
+exercise rather than its main listing.
+
+### AMDP: compress the belief, then use Chapter 21 unchanged
+
+For Rusty in the Apartment, none of the above applies directly: $\bel(x)$ over $\SEtwo$ is an
+infinite-dimensional object and $\mathcal{Z}$ is a LiDAR scan. The oldest robotics answer is also
+still one of the best: throw almost all of the belief away and keep two numbers.
+
+$$
+\bar b \;=\; \big(\, \arg\max_x b(x),\; H[b] \,\big),
+\qquad H[b] = -\sum_x b(x) \log_2 b(x)
+$$
+
+*Where I probably am*, and *how sure I am*. Plan in that augmented space with
+[Chapter 21](/chapters/ch21-mdps)'s value iteration — nothing else changes — and you get the
+**augmented MDP** (Roy and Thrun, 1999; Thrun et al. §16.5). For a 2-D isotropic Gaussian belief
+the entropy coordinate collapses to a single position standard deviation: the *differential*
+entropy — the continuous analogue of the sum above, which may be negative, and only its differences
+matter here — is
+
+$$
+H[b] = \tfrac12 \log_2 \big((2\pi e)^2 \det \Sigma\big) = \log_2\!\big(2\pi e\,\sigma^2\big)
+\ \text{bits}, \qquad \Sigma = \sigma^2 I_2,
+$$
+
+so "minimize entropy" and "minimize $\sigma$" are the same instruction, and $\sigma$ has the
+advantage of being drawable as the width of a ribbon.
+
+The transitions in the augmented space need $\sigma' = f(\sigma, x, u)$, and here
+[Chapter 6](/chapters/ch06-kalman-filters) hands us the answer in one line of information form:
+
+<LinkedMath>
+$$
+\frac{1}{\sigma'^2} \;=\;
+\frac{1}{\htmlClass{term-prediction}{\sigma^2 + \sigma_m^2}}
+\;+\; \htmlClass{term-measurement}{\nu(x')}
+$$
+</LinkedMath>
+
+Prediction adds variance; correction adds information. The only genuinely new modelling object is
+$\nu(x)$, the **localizability** of a place: how much information one scan taken there delivers. We
+model it as $\nu(x) = \nu_{\max}\exp\!\big(-(d(x)/R)^2\big)$, where $d(x)$ is the distance to the
+nearest wall the robot can actually localize against and $R$ is the LiDAR range. A scan is
+informative when there is geometry inside it — and note that *occupancy* and *information* are two
+different maps, because a long featureless wall constrains distance-to-wall and nothing else, which
+is exactly the degeneracy [Chapter 16](/chapters/ch16-scan-matching)'s scan matcher suffers from.
+
+<Callout type="warn">
+**The compression lies, and here is where.** $\bar b$ is only a legitimate state if it is a
+sufficient statistic for value — $V(b) = V(\bar b)$ for every $b$ the robot may encounter. The
+draft says it plainly: *"In practice, this assumption will rarely hold true."* The clean
+counterexample is the one [Chapter 12](/chapters/ch12-localization-global) already showed you. A
+belief split evenly between two symmetric corridors and a belief smeared uniformly over one large
+room can have the *same* entropy and the *same* MAP cell, and they demand opposite actions: the
+first needs a disambiguating detour, the second needs patience. $H$ cannot tell them apart.
+[Chapter 24](/chapters/ch24-exploration) builds a widget whose entire job is to exploit this.
+</Callout>
+
+## The algorithms
+
+<Algorithm
+  name="finite_world_POMDP(T)"
+  inputs="a finite POMDP and a horizon T"
+  outputs="Γ_1 … Γ_T, with pre- and post-prune counts"
+  complexity="|U|·|Γ|^|Z| candidates per backup, each O(|X|²) to form; then pruning"
+>
+1. $\Gamma_1 = \{\, r(\cdot, u) \;:\; u \in \mathcal{U} \,\}$
+2. for $t = 2$ to $T$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;for all $u, z, k$ do $g^{u,z}_k(x) = \sum_{x'} p(z \mid x',u)\, p(x' \mid x,u)\, \alpha^{(k)}(x')$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$\Gamma_t = \emptyset$
+5. &nbsp;&nbsp;&nbsp;&nbsp;for all $u \in \mathcal{U}$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for all assignments $k : \mathcal{Z} \to \{1,\dots,|\Gamma_{t-1}|\}$ do
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\Gamma_t \leftarrow \Gamma_t \cup \big\{\, \langle u,\; r(\cdot,u) + \gamma \sum_z g^{u,z}_{k(z)} \rangle \,\big\}$
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\Gamma_t \leftarrow \texttt{prune}(\Gamma_t)$
+9. return $\Gamma_1, \dots, \Gamma_T$
+</Algorithm>
+
+This is Thrun et al.'s Table 16.1 with the pruning step promoted from a remark to line 8, and with
+the action tag kept on each vector so that a policy can be read off without a second pass.
+
+<Algorithm
+  name="prune(Γ)"
+  inputs="a candidate α-vector set"
+  outputs="the minimal subset with the same upper envelope"
+  complexity="O(n log n) for |X| = 2; O(n²|X|) + witness search otherwise"
+>
+1. $\Gamma \leftarrow$ merge vectors agreeing componentwise to tolerance
+2. if $|\mathcal{X}| = 2$ then return the upper envelope of the lines $\alpha(x_R) + (\alpha(x_L) - \alpha(x_R))\,t$
+3. $\Gamma \leftarrow \{\alpha \in \Gamma : \nexists\, \alpha' \text{ with } \alpha'(x) \ge \alpha(x)\ \forall x\}$
+4. $W \leftarrow$ the $|\mathcal{X}|$ simplex corners $\cup$ $n$ Dirichlet samples
+5. return $\{\, \arg\max_{\alpha \in \Gamma} \langle \alpha, b\rangle \;:\; b \in W \,\}$
+</Algorithm>
+
+<Algorithm
+  name="QMDP(pomdp)"
+  inputs="a POMDP — its observation model is not read"
+  outputs="Γ_QMDP, an upper bound on V*"
+  complexity="one Chapter 21 value iteration"
+>
+1. $V^*, Q^* \leftarrow \texttt{MDP\_value\_iteration}$ on $(\mathcal{X}, \mathcal{U}, p(x'\mid x,u), r, \gamma)$
+2. return $\{\, \langle u,\ Q^*(\cdot, u)\rangle \;:\; u \in \mathcal{U} \,\}$
+</Algorithm>
+
+<Algorithm
+  name="PBVI(pomdp, B, n)"
+  inputs="a POMDP, a belief set B, an iteration count"
+  outputs="Γ with |Γ| ≤ |B|, a lower bound on V*"
+  complexity="O(|B|·|U|·|Z|·|Γ|·|X|) per iteration"
+>
+1. $\Gamma \leftarrow \{\, r(\cdot,u) \,\}_{u}$
+2. repeat $n$ times
+3. &nbsp;&nbsp;&nbsp;&nbsp;compute all $g^{u,z}_k$ from $\Gamma$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for all $b \in B$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for all $u$ do $\alpha_{b,u} = r(\cdot,u) + \gamma \sum_z g^{u,z}_{k^*(z)}$ with $k^*(z) = \arg\max_k \langle g^{u,z}_k, b\rangle$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\alpha_b = \arg\max_u \langle \alpha_{b,u}, b\rangle$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\Gamma \leftarrow \{\alpha_b : b \in B\}$, deduplicated
+8. return $\Gamma$
+</Algorithm>
+
+<Algorithm
+  name="POMCP_search(b, n_sims, c)"
+  inputs="root particle set, simulation budget, exploration constant"
+  outputs="an action; anytime — stop whenever the budget runs out"
+  complexity="O(n_sims · d_max) generative-model calls"
+>
+1. repeat $n_{\text{sims}}$ times: sample $x \sim b$; $\texttt{simulate}(x, h_{\text{root}}, 0)$
+2. return $\arg\max_u N(h_{\text{root}}, u)$  *(most-visited, not highest-valued)*
+3. **simulate**$(x, h, d)$:
+4. &nbsp;&nbsp;&nbsp;&nbsp;if $d \ge d_{\max}$ then return $0$
+5. &nbsp;&nbsp;&nbsp;&nbsp;if $h$ is a leaf then expand $h$; $N(h) \mathrel{+}= 1$; return $\texttt{rollout}(x, d)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;$u = \arg\max_{u} \big[\, Q(h,u) + c\sqrt{\log N(h) / N(h,u)} \,\big]$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$(x', z, r) \sim G(x, u)$; append $x'$ to the particle set of $huz$
+8. &nbsp;&nbsp;&nbsp;&nbsp;$R = r + \gamma\, \texttt{simulate}(x', huz, d+1)$
+9. &nbsp;&nbsp;&nbsp;&nbsp;$N(h) \mathrel{+}= 1$; $N(h,u) \mathrel{+}= 1$; $Q(h,u) \mathrel{+}= \frac{R - Q(h,u)}{N(h,u)}$
+10. &nbsp;&nbsp;&nbsp;&nbsp;return $R$
+</Algorithm>
+
+<Algorithm
+  name="Augmented_MDP_value_iteration(sim, grid)"
+  inputs="a simulator, a (cell, σ-bin) grid"
+  outputs="V and π over the augmented space"
+  complexity="Chapter 21 value iteration over |cells|·|bins| states"
+>
+1. for all $(x, \sigma)$ and $u$: estimate $p(x' \mid x, u)$ from the motion model
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\sigma' = \big[\,(\sigma^2 + \sigma_m^2)^{-1} + \nu(x')\,\big]^{-1/2}$, binned
+3. &nbsp;&nbsp;&nbsp;&nbsp;$r\big((x,\sigma), u\big) = -\,\text{step cost} \;-\; w\,\Pr[\text{collision} \mid \sigma'] \;+\; \text{goal terms}$
+4. run $\texttt{MDP\_value\_iteration}$ on the resulting finite MDP
+5. return $V, \pi$
+</Algorithm>
+
+Line 3 is the only place uncertainty enters the reward, and it is worth pausing on: the collision
+term is $\Pr[\|e\| > d]$ for a 2-D isotropic Gaussian error, which is a Rayleigh tail,
+$\exp(-d^2/2\sigma^2)$, with $d$ the clearance to the nearest wall. A robot that is uncertain is
+charged for being uncertain *in proportion to how tight the space is* — which is why the emergent
+behavior is not "always hug walls" but "hug walls where it pays".
+
+## A worked example you can check by hand
+
+Everything in this section is doable on paper in about fifteen minutes, and every number is pinned
+by a test in the next section.
+
+### $\Gamma_1$ and $\Gamma_2$ for the tiger
+
+$\Gamma_1$ is the immediate-reward set, written above: $(-1,-1)$, $(-100,10)$, $(10,-100)$.
+
+For $\Gamma_2$ we need the backprojections. Under **listen** the transition is the identity, so
+$g^{\text{listen},z}_k(x) = p(z \mid x)\,\alpha^{(k)}(x)$ — no sum survives. Take the assignment
+"if I hear left, follow $\alpha^{\text{open}_R}$; if I hear right, follow $\alpha^{\text{listen}}$":
+
+$$
+\begin{aligned}
+\alpha'(x_L) &= -1 + 0.95\big[\, 0.85 \times 10 \;+\; 0.15 \times (-1) \,\big] = -1 + 0.95(8.35) = 6.9325\\
+\alpha'(x_R) &= -1 + 0.95\big[\, 0.15 \times (-100) \;+\; 0.85 \times (-1) \,\big] = -1 + 0.95(-15.85) = -16.0575
+\end{aligned}
+$$
+
+Under **open$_R$** the transition resets to $(\tfrac12,\tfrac12)$ and the growl carries nothing, so
+every backprojection is $\tfrac14\big(\alpha^{(k)}(x_L) + \alpha^{(k)}(x_R)\big)$ regardless of
+$z$. With both branches following $\alpha^{\text{listen}} = (-1,-1)$, each backprojection is
+$\tfrac14(-2) = -\tfrac12$, and there are two observations to sum over:
+
+$$
+\alpha'(x_L) = 10 + 0.95\big[{-\tfrac12} - \tfrac12\big] = 9.05,
+\qquad
+\alpha'(x_R) = -100 + 0.95\big[{-\tfrac12} - \tfrac12\big] = -100.95
+$$
+
+Note what just happened: because opening resets the world, *every* assignment $k(\cdot)$ with the
+same total $\sum_z\big(\alpha^{(k(z))}(x_L)+\alpha^{(k(z))}(x_R)\big)$ gives the same vector. Nine
+assignments collapse to three distinct candidates before pruning even starts.
+
+Grind through all $3 \cdot 3^2 = 27$ assignments and exactly **five** vectors survive pruning:
+
+| $\alpha$ | action | the plan it encodes |
+|---|---|---|
+| $(-100.95,\ 9.05)$ | open$_L$ | open the left door now |
+| $(-16.0575,\ 6.9325)$ | listen | listen; open left on $z_R$, listen again on $z_L$ |
+| $(-1.95,\ -1.95)$ | listen | listen twice, commit to nothing |
+| $(6.9325,\ -16.0575)$ | listen | listen; open right on $z_L$, listen again on $z_R$ |
+| $(9.05,\ -100.95)$ | open$_R$ | open the right door now |
+
+Their upper envelope has four breakpoints, and each is a two-line calculation. Where does
+"open right now" overtake "listen, then open right"?
+
+$$
+110\,t - 100.95 \;=\; 22.99\,t - 16.0575
+\quad\Longrightarrow\quad
+t = \frac{84.8925}{87.01} = 0.975664
+$$
+
+and where does the do-nothing plan give way to it?
+
+$$
+-1.95 = 22.99\,t - 16.0575 \quad\Longrightarrow\quad t = \frac{8.8825}{22.99} = 0.613636
+$$
+
+So the two-step policy is: open right above $0.975664$, listen below it, and by symmetry open left
+below $0.024336$.
+
+### The converged answer, and a chain that closes
+
+Run the backup to convergence and the tiger's minimal set has $|\Gamma^*| = 9$ vectors and exactly
+three policy regions:
+
+$$
+\pi^*(b) = \begin{cases}
+\text{open}_L & b(x_L) \le 0.039654\\
+\text{listen} & 0.039654 < b(x_L) < 0.960346\\
+\text{open}_R & b(x_L) \ge 0.960346
+\end{cases}
+$$
+
+with values $V^*(\tfrac12) = 19.3714$, $V^*(0.85) = 21.4435$, $V^*(0.969799) = 25.0807$ and
+$V^*(1) = 28.4028$. Those four numbers are not independent, and checking that they close is the
+best possible test that the solver is right:
+
+$$
+\begin{aligned}
+V^*(1) &= 10 + \gamma V^*(\tfrac12) = 10 + 0.95(19.3714) = 28.4028 \quad\checkmark\\
+V^*(\tfrac12) &= -1 + \gamma V^*(0.85) = -1 + 0.95(21.4435) = 19.3713 \quad\checkmark\\
+V^*(0.85) &= -1 + \gamma\big[\,0.745\, V^*(0.969799) + 0.255\, V^*(\tfrac12)\,\big]\\
+&= -1 + 0.95\big[\,0.745(25.0807) + 0.255(19.3714)\,\big] = 21.4436 \quad\checkmark
+\end{aligned}
+$$
+
+(The residual digit in the last two lines is rounding, not error: run the solver at full precision
+and the three identities close to six decimals. The book's test asserts them to $10^{-3}$. If you
+read $0.9611$ rather than $0.9603$ in the widget above, that is not a discrepancy either — it
+solves to horizon $20$ so that the accuracy slider stays interactive, and the last $0.0008$ of the
+threshold is carried by the discounted tail beyond step twenty.)
+
+Read the second and third lines as sentences. *From complete ignorance, the optimal thing to do is
+pay one unit, and you will find yourself at $0.85$.* *From $0.85$, pay one more unit; with
+probability $0.745$ the growl agrees and you land at $0.969799$, which is past the threshold, so
+you open; with probability $0.255$ it disagrees and you are back where you started.* Listen,
+listen, open — and the number $0.960346$ is the entire reason it is two listens and not one or
+three.
+
+## Implementation in Rust
+
+The crate is `crates/ch22_pomdp`. It depends on `ch21_mdp` (for QMDP's inner solve and for the
+augmented-MDP lab), on `ch08_particles` (for POMCP's root beliefs), and on nothing else that is not
+in the book's stack.
+
+### The model: dimensions as types
+
+```rust title="crates/ch22_pomdp/src/model.rs"
+use nalgebra::{SMatrix, SVector};
+
+/// A finite POMDP with `S` states, `A` actions and `Z` observations.
+///
+/// The dimensions are const generics because they are genuinely fixed by the
+/// problem, and because it makes the compiler check the one thing that is easy
+/// to get wrong: whether a matrix is indexed [x][x'] or [x'][x].
+pub struct FinitePomdp<const S: usize, const A: usize, const Z: usize> {
+    /// `t[u]` is row-stochastic: row `x`, column `x'` holds p(x' | x, u).
+    pub t: [SMatrix<f64, S, S>; A],
+    /// `o[u]` is row-stochastic: row `x'`, column `z` holds p(z | x', u).
+    /// Note the *next* state: the observation follows the transition.
+    pub o: [SMatrix<f64, S, Z>; A],
+    /// r(x, u), with Chapter 21's convention — collected on taking u in x.
+    pub r: SMatrix<f64, S, A>,
+    pub gamma: f64,
+}
+
+pub type Belief<const S: usize> = SVector<f64, S>;
+
+impl<const S: usize, const A: usize, const Z: usize> FinitePomdp<S, A, Z> {
+    /// b̄(x') = Σ_x p(x' | x, u) b(x). Prediction: the step that loses information.
+    ///
+    /// The transpose is the whole content of "rows are `x`, columns are `x'`".
+    pub fn predict(&self, b: &Belief<S>, u: usize) -> Belief<S> {
+        self.t[u].transpose() * b
+    }
+
+    /// τ(b, u, z), together with the evidence p(z | b, u).
+    ///
+    /// The evidence is returned rather than discarded because in a POMDP it is
+    /// not a diagnostic — it is the branching probability of the belief MDP,
+    /// and the PWLC derivation turns on it cancelling against this normalizer.
+    pub fn update(&self, b: &Belief<S>, u: usize, z: usize) -> (Belief<S>, f64) {
+        let bar = self.predict(b, u);
+        let mut un = bar.component_mul(&self.o[u].column(z).into_owned());
+        let evidence = un.sum();
+        if evidence > 0.0 {
+            un /= evidence;
+        }
+        (un, evidence)
+    }
+
+    /// ρ(b, u) = Σ_x b(x) r(x, u). Linear in b — the load-bearing fact.
+    pub fn reward(&self, b: &Belief<S>, u: usize) -> f64 {
+        self.r.column(u).dot(b)
+    }
+
+    /// The underlying MDP, with the observation model **dropped on the floor**.
+    ///
+    /// This method is the QMDP indifference theorem, expressed as code: nothing
+    /// downstream of here can possibly depend on how good the sensor is.
+    pub fn underlying_mdp(&self) -> ch21_mdp::Mdp<A> { /* … */ }
+}
+
+pub const LISTEN: usize = 0;
+pub const OPEN_LEFT: usize = 1;
+pub const OPEN_RIGHT: usize = 2;
+
+/// Kaelbling, Littman & Cassandra (1998), with this book's discount.
+pub fn tiger(accuracy: f64, gamma: f64) -> FinitePomdp<2, 3, 2> {
+    let a = accuracy;
+    let stay = SMatrix::<f64, 2, 2>::identity();
+    // Opening a door ends the round: the tiger is re-placed uniformly and the
+    // growl that follows carries no information at all.
+    let reset = SMatrix::<f64, 2, 2>::repeat(0.5);
+    FinitePomdp {
+        t: [stay, reset, reset],
+        o: [SMatrix::<f64, 2, 2>::new(a, 1.0 - a, 1.0 - a, a), reset, reset],
+        r: SMatrix::<f64, 2, 3>::new(
+            -1.0, -100.0, 10.0, //  tiger-left:  listen, open-left, open-right
+            -1.0, 10.0, -100.0, //  tiger-right: …
+        ),
+        gamma,
+    }
+}
+```
+
+### The exact backup, and the pruning that saves it
+
+```rust title="crates/ch22_pomdp/src/exact.rs" {27-41,54-62}
+use nalgebra::SVector;
+use crate::model::{Belief, FinitePomdp};
+
+/// One linear piece of V, tagged with the action it commits to at step one.
+///
+/// The tag is not decoration. Without it you would have to re-derive the
+/// policy from the value function, which for a PWLC function means recomputing
+/// the argmax of the backup — the expensive half of value iteration.
+#[derive(Clone, Debug)]
+pub struct AlphaVec<const S: usize> {
+    pub v: SVector<f64, S>,
+    pub action: usize,
+}
+
+impl<const S: usize> AlphaVec<S> {
+    #[inline]
+    pub fn value_at(&self, b: &Belief<S>) -> f64 {
+        self.v.dot(b)
+    }
+}
+
+/// g^{u,z}_k(x) = Σ_{x'} p(z | x', u) p(x' | x, u) α^(k)(x'), indexed [u][z][k].
+///
+/// In matrix form this is one scaled matrix–vector product: componentwise-scale
+/// α by the observation column, then push it back through the transition. That
+/// is the whole "backprojection" — value seen from x, through (u, z).
+pub(crate) fn backprojections<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    set: &[AlphaVec<S>],
+) -> Vec<Vec<Vec<SVector<f64, S>>>> {
+    (0..A)
+        .map(|u| {
+            (0..Z)
+                .map(|z| {
+                    let col = m.o[u].column(z).into_owned();
+                    set.iter().map(|a| m.t[u] * a.v.component_mul(&col)).collect()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The exact backup: one α-vector per (action, assignment of one surviving
+/// vector to each observation). Returns |U|·|Γ|^|Z| candidates — the
+/// combinatorial explosion, un-hidden.
+pub fn backup<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    set: &[AlphaVec<S>],
+) -> Vec<AlphaVec<S>> {
+    let g = backprojections(m, set);
+    let k = set.len();
+    let mut out = Vec::with_capacity(A * k.pow(Z as u32));
+
+    for u in 0..A {
+        let mut pick = [0usize; Z];
+        loop {
+            let mut v = m.r.column(u).into_owned();
+            for z in 0..Z {
+                v += m.gamma * g[u][z][pick[z]];
+            }
+            out.push(AlphaVec { v, action: u });
+
+            // Odometer over Γ^{|Z|}: one α index per observation.
+            let mut z = Z;
+            let carried = loop {
+                if z == 0 {
+                    break true;
+                }
+                z -= 1;
+                pick[z] += 1;
+                if pick[z] < k {
+                    break false;
+                }
+                pick[z] = 0;
+            };
+            if carried {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Merge vectors that agree componentwise to `tol`.
+///
+/// Not cosmetic. As value iteration converges the backup keeps re-deriving the
+/// *same* linear piece through different observation branches, and without this
+/// merge |Γ| grows without bound while V stands still.
+pub(crate) fn dedupe<const S: usize>(set: &[AlphaVec<S>], tol: f64) -> Vec<AlphaVec<S>> { /* … */ }
+
+/// Prune to the minimal set.
+///
+/// For two states this is exact and cheap: every α is a *line* over
+/// b = (t, 1−t), so the minimal set is the upper envelope of a set of lines,
+/// which a monotone-chain hull gives in O(n log n) with no tolerance games —
+/// and the breakpoints it returns are the policy's decision thresholds.
+pub fn prune<const S: usize>(set: &[AlphaVec<S>]) -> Vec<AlphaVec<S>> {
+    let merged = dedupe(set, 1e-6);
+    if S == 2 {
+        return upper_envelope(&merged).into_iter().map(|(i, _)| merged[i].clone()).collect();
+    }
+    // Otherwise: free pointwise dominance, then a witness *search*. This can
+    // only ever keep too few vectors, never too many — see the chapter text.
+    let survivors = drop_dominated(&merged, 1e-9);
+    witness_survivors(&survivors, 4096, 0xC0FFEE)
+}
+
+/// V(b) = max_k ⟨α^(k), b⟩, together with the action the winning piece commands.
+pub fn value_at<const S: usize>(set: &[AlphaVec<S>], b: &Belief<S>) -> (f64, usize) { /* … */ }
+
+/// The upper envelope's decision thresholds. Only meaningful for |X| = 2, where
+/// the envelope is a chain of line segments and its breakpoints *are* the policy.
+pub struct Breakpoints {
+    pub open_left: f64,
+    pub open_right: f64,
+}
+
+pub fn policy_breakpoints<const S: usize>(set: &[AlphaVec<S>]) -> Breakpoints { /* … */ }
+
+/// Back up until a dense sweep of the simplex stops moving. The Bellman backup
+/// is a γ-contraction (Chapter 21's proof, unchanged), so this terminates.
+pub fn solve_to_convergence<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    tol: f64,
+) -> Vec<AlphaVec<S>> { /* … */ }
+
+pub struct Stage<const S: usize> {
+    pub horizon: usize,
+    /// |U|·|Γ_{t−1}|^{|Z|} — the analytic count, reported even when we refuse
+    /// to materialize it. The widget's runaway counter is this field.
+    pub raw: u128,
+    pub gamma: Vec<AlphaVec<S>>,
+}
+
+/// Thrun et al., Table 16.1 — `finite_world_POMDP`.
+pub fn finite_world_pomdp<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    horizon: usize,
+) -> Vec<Stage<S>> {
+    let mut set: Vec<AlphaVec<S>> =
+        (0..A).map(|u| AlphaVec { v: m.r.column(u).into_owned(), action: u }).collect();
+    set = prune(&set);
+
+    let mut stages = vec![Stage { horizon: 1, raw: A as u128, gamma: set.clone() }];
+    for t in 2..=horizon {
+        let raw = (A as u128) * (set.len() as u128).pow(Z as u32);
+        set = prune(&backup(m, &set));
+        stages.push(Stage { horizon: t, raw, gamma: set.clone() });
+    }
+    stages
+}
+```
+
+### QMDP and PBVI: the upper bound and the lower one
+
+```rust title="crates/ch22_pomdp/src/qmdp.rs"
+use nalgebra::SVector;
+use crate::exact::AlphaVec;
+use crate::model::FinitePomdp;
+
+/// Γ_QMDP = { Q*(·, u) }_u — one vector per action, for every horizon.
+///
+/// Note what is *not* passed to `value_iteration`: `m.o`. That omission is the
+/// theorem. An action's QMDP value cannot depend on what it reveals, because
+/// the function that computes it never receives the observation model.
+pub fn qmdp<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+) -> Vec<AlphaVec<S>> {
+    let mdp = m.underlying_mdp();
+    let sol = ch21_mdp::value_iteration(&mdp, 1e-10, 100_000);
+    (0..A)
+        .map(|u| AlphaVec {
+            v: SVector::from_fn(|x, _| mdp.q(sol.v.as_slice(), x, u)),
+            action: u,
+        })
+        .collect()
+}
+```
+
+```rust title="crates/ch22_pomdp/src/pbvi.rs"
+use crate::exact::{backprojections, dedupe, AlphaVec};
+use crate::model::{Belief, FinitePomdp};
+
+/// Pineau, Gordon & Thrun (2003): back up at `B` only, one vector per point.
+///
+/// The cross-sum is never built. For a fixed b the best assignment factorizes
+/// over observations, so the inner argmax is |Z| independent scans instead of
+/// one search over |Γ|^|Z| tuples — which is the entire complexity win.
+pub fn point_backup<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    set: &[AlphaVec<S>],
+    beliefs: &[Belief<S>],
+) -> Vec<AlphaVec<S>> {
+    let g = backprojections(m, set);
+    let mut out = Vec::with_capacity(beliefs.len());
+
+    for b in beliefs {
+        let mut best: Option<AlphaVec<S>> = None;
+        for u in 0..A {
+            let mut v = m.r.column(u).into_owned();
+            for z in 0..Z {
+                let k = (0..set.len())
+                    .max_by(|&i, &j| g[u][z][i].dot(b).total_cmp(&g[u][z][j].dot(b)))
+                    .unwrap_or(0);
+                v += m.gamma * g[u][z][k];
+            }
+            if best.as_ref().is_none_or(|c| v.dot(b) > c.v.dot(b)) {
+                best = Some(AlphaVec { v, action: u });
+            }
+        }
+        out.extend(best);
+    }
+    dedupe(&out, 1e-9)
+}
+
+/// PBVI's belief-set expansion: B ← B ∪ { τ(b,u,z) }.
+///
+/// Reachability is the point. Gridding the simplex wastes points on beliefs no
+/// filter will ever produce; this walks the same tree the robot will walk.
+pub fn expand<const S: usize, const A: usize, const Z: usize>(
+    m: &FinitePomdp<S, A, Z>,
+    beliefs: &[Belief<S>],
+    tol: f64,
+) -> Vec<Belief<S>> {
+    let mut out = beliefs.to_vec();
+    for b in beliefs {
+        for u in 0..A {
+            for z in 0..Z {
+                let (bp, evidence) = m.update(b, u, z);
+                if evidence > 1e-9 && !out.iter().any(|q| (q - bp).amax() < tol) {
+                    out.push(bp);
+                }
+            }
+        }
+    }
+    out
+}
+```
+
+### POMCP: planning with the simulator you already have
+
+```rust title="crates/ch22_pomdp/src/pomcp.rs" {6-26,69-87}
+use rand::rngs::SmallRng;
+use rand::Rng;
+
+/// The black box POMCP plans with. For the labs in this chapter it is
+/// literally the Chapter 4 simulator: no transition matrix exists anywhere.
+pub trait Generative {
+    type State: Clone;
+    const N_ACTIONS: usize;
+
+    /// (x, u) ↦ (x', z, r). Observations are interned to `u32` so that a laser
+    /// scan can be hashed into a discrete branch without changing this trait.
+    fn step(&self, x: &Self::State, u: usize, rng: &mut SmallRng) -> (Self::State, u32, f64);
+
+    fn terminal(&self, _x: &Self::State) -> bool {
+        false
+    }
+
+    /// The default policy a leaf is evaluated with, and the thing to tune first
+    /// when the budget is small. On the tiger, "listen twice then guess" is
+    /// worth 23 points of root value over uniform-random at 16 simulations, 2
+    /// points at 256, and nothing at all by 1024: a good rollout buys you the
+    /// early part of the anytime curve, which is the part a control loop gets.
+    fn rollout(&self, _x: &Self::State, _depth: usize, rng: &mut SmallRng) -> usize {
+        rng.random_range(0..Self::N_ACTIONS)
+    }
+}
+
+/// A history node. `particles` is the belief — Chapter 8's object, arriving by
+/// natural selection rather than by a filter update.
+struct BeliefNode<X> {
+    n: u32,
+    particles: Vec<X>,
+    arms: Vec<u32>,
+    obs: Option<u32>,
+}
+
+/// A bandit arm: N(h, u) and the running mean Q(h, u).
+struct ActionNode {
+    action: usize,
+    n: u32,
+    q: f64,
+    children: Vec<(u32, u32)>, // (observation, belief-node id)
+}
+
+pub struct Pomcp<G: Generative> {
+    model: G,
+    beliefs: Vec<BeliefNode<G::State>>,
+    actions: Vec<ActionNode>,
+    root: usize,
+    /// UCB1 exploration weight. Scale it to the *spread of returns*, not to 1:
+    /// on the tiger the returns span 110, and c = 1 explores nothing.
+    pub c: f64,
+    pub max_depth: usize,
+    pub gamma: f64,
+    pub simulations: u64,
+}
+
+impl<G: Generative> Pomcp<G> {
+    /// Run `n` more simulations. Anytime: stop whenever the control loop says so.
+    pub fn search(&mut self, n: u64, rng: &mut SmallRng) {
+        for _ in 0..n {
+            let i = rng.random_range(0..self.beliefs[self.root].particles.len());
+            let x = self.beliefs[self.root].particles[i].clone();
+            self.simulate(x, self.root, 0, rng);
+            self.simulations += 1;
+        }
+    }
+
+    fn simulate(&mut self, x: G::State, node: usize, depth: usize, rng: &mut SmallRng) -> f64 {
+        if depth >= self.max_depth {
+            return 0.0;
+        }
+        if self.beliefs[node].arms.is_empty() {
+            self.expand(node);
+            self.beliefs[node].n += 1;
+            // A leaf's value is a rollout, not zero. Returning zero here is the
+            // single most common way to make MCTS pathologically pessimistic.
+            return self.rollout_value(x, depth, rng);
+        }
+
+        let arm = self.select_ucb1(node);
+        let u = self.actions[arm].action;
+        let (xp, z, r) = self.model.step(&x, u, rng);
+        let child = self.child_for(arm, z);
+        // The child's belief is *built* from the particles that reach it: an
+        // unweighted particle filter, running inside the search tree.
+        self.beliefs[child].particles.push(xp.clone());
+
+        let future = if self.model.terminal(&xp) {
+            0.0
+        } else {
+            self.simulate(xp, child, depth + 1, rng)
+        };
+        let ret = r + self.gamma * future;
+
+        self.beliefs[node].n += 1;
+        let a = &mut self.actions[arm];
+        a.n += 1;
+        a.q += (ret - a.q) / f64::from(a.n);
+        ret
+    }
+
+    /// UCB1: exploit Q, but keep an eye on arms you have barely tried.
+    fn select_ucb1(&self, node: usize) -> usize {
+        let n = f64::from(self.beliefs[node].n + 1);
+        let mut best = (f64::NEG_INFINITY, self.beliefs[node].arms[0] as usize);
+        for &arm in &self.beliefs[node].arms {
+            let a = &self.actions[arm as usize];
+            if a.n == 0 {
+                return arm as usize; // every arm gets one free pull
+            }
+            let score = a.q + self.c * (n.ln() / f64::from(a.n)).sqrt();
+            if score > best.0 {
+                best = (score, arm as usize);
+            }
+        }
+        best.1
+    }
+
+    /// Pure bookkeeping: create one action node per arm, find-or-create the
+    /// belief node for an observation, and roll a default policy to the horizon.
+    fn expand(&mut self, node: usize) { /* … */ }
+    fn child_for(&mut self, arm: usize, z: u32) -> usize { /* … */ }
+    fn rollout_value(&self, x: G::State, depth: usize, rng: &mut SmallRng) -> f64 { /* … */ }
+
+    /// The recommendation: the *most visited* arm, not the highest-valued one.
+    /// A high Q on two pulls is a rumour; a high visit count is a decision.
+    pub fn best_action(&self) -> usize { /* … */ }
+
+    /// Execute u, observe z: re-root at `huz` and keep its particles as the new
+    /// belief. Reinvigorate them — depth-three nodes are exactly where Chapter
+    /// 8's particle deprivation reappears.
+    pub fn advance(&mut self, u: usize, z: u32, rng: &mut SmallRng) { /* … */ }
+}
+```
+
+### The worked example, as tests
+
+```rust title="crates/ch22_pomdp/tests/tiger.rs"
+use approx::assert_relative_eq;
+use ch22_pomdp::{exact::*, model::*, qmdp::qmdp};
+use nalgebra::SVector;
+
+/// A tiger with two microphones at the same price, listed sharp-first. The
+/// dynamics and the rewards of actions 0 and 1 are identical by construction;
+/// only `o[0]` and `o[1]` differ.
+const SHARP: usize = 0;
+const DULL: usize = 1;
+
+/// Complete ignorance: the belief every round of the tiger starts from.
+fn half() -> Belief<2> {
+    SVector::new(0.5, 0.5)
+}
+
+#[test]
+fn belief_ladder_matches_the_text() {
+    let m = tiger(0.85, 0.95);
+    let (b1, ev1) = m.update(&half(), LISTEN, 0);
+    assert_relative_eq!(b1[0], 0.85, epsilon = 1e-12);
+    assert_relative_eq!(ev1, 0.5, epsilon = 1e-12); // a first growl is a coin flip
+
+    let (b2, ev2) = m.update(&b1, LISTEN, 0);
+    assert_relative_eq!(b2[0], 0.7225 / 0.745, epsilon = 1e-12); // 0.969799…
+    assert_relative_eq!(ev2, 0.745, epsilon = 1e-12);
+
+    // A contradicting growl undoes exactly one consistent one.
+    let (b3, _) = m.update(&b1, LISTEN, 1);
+    assert_relative_eq!(b3[0], 0.5, epsilon = 1e-12);
+}
+
+#[test]
+fn gamma_two_has_five_survivors_and_the_right_threshold() {
+    let m = tiger(0.85, 0.95);
+    let stages = finite_world_pomdp(&m, 2);
+    assert_eq!(stages[1].raw, 27); // |U| · |Γ₁|^|Z| = 3 · 3²
+    assert_eq!(stages[1].gamma.len(), 5);
+
+    let listen_then_open = stages[1]
+        .gamma
+        .iter()
+        .find(|a| a.action == LISTEN && a.v[0] > 0.0)
+        .expect("the plan that listens, then opens right on z_L");
+    assert_relative_eq!(listen_then_open.v[0], 6.9325, epsilon = 1e-9);
+    assert_relative_eq!(listen_then_open.v[1], -16.0575, epsilon = 1e-9);
+
+    let thresholds = policy_breakpoints(&stages[1].gamma);
+    assert_relative_eq!(thresholds.open_right, 84.8925 / 87.01, epsilon = 1e-9);
+}
+
+#[test]
+fn converged_policy_and_the_value_chain() {
+    let m = tiger(0.85, 0.95);
+    let g = solve_to_convergence(&m, 1e-9);
+    assert_eq!(g.len(), 9);
+
+    let t = policy_breakpoints(&g);
+    assert_relative_eq!(t.open_right, 0.960346, epsilon = 1e-4);
+    assert_relative_eq!(t.open_left, 1.0 - t.open_right, epsilon = 1e-9); // symmetry
+
+    let v = |p: f64| value_at(&g, &SVector::new(p, 1.0 - p)).0;
+    // The three identities from the text — the chain has to close.
+    assert_relative_eq!(v(1.0), 10.0 + 0.95 * v(0.5), epsilon = 1e-3);
+    assert_relative_eq!(v(0.5), -1.0 + 0.95 * v(0.85), epsilon = 1e-3);
+    assert_relative_eq!(
+        v(0.85),
+        -1.0 + 0.95 * (0.745 * v(0.969799) + 0.255 * v(0.5)),
+        epsilon = 1e-3
+    );
+}
+
+#[test]
+fn qmdp_cannot_tell_a_good_microphone_from_a_bad_one() {
+    // Two listening actions: identical cost, identical (identity) dynamics,
+    // wildly different sensors. The exact solver always picks the sharp one.
+    let m = tiger_with_two_microphones(0.95, 0.55);
+    let g = qmdp(&m);
+    assert_relative_eq!(g[SHARP].v, g[DULL].v, epsilon = 1e-12); // the theorem
+
+    let exact = solve_to_convergence(&m, 1e-9);
+    assert_eq!(value_at(&exact, &half()).1, SHARP);
+}
+
+#[test]
+fn qmdp_threshold_ignores_the_sensor_entirely() {
+    for accuracy in [0.55, 0.7, 0.85, 0.99] {
+        let t = policy_breakpoints(&qmdp(&tiger(accuracy, 0.95)));
+        assert_relative_eq!(t.open_right, 0.9, epsilon = 1e-9);
+    }
+}
+```
+
+<Callout type="info">
+The widgets in this chapter run the TypeScript twin of every listing above — `lib/pomdp/finite.ts`,
+`lib/pomdp/pomcp.ts`, `lib/pomdp/amdp.ts`. The thresholds printed on screen, the vector counts, and
+the tournament returns all come out of those functions, so if you redo the algebra by hand you get
+the number on the screen.
+</Callout>
+
+## Putting it together: why robots hug walls
+
+The tiger is a two-state cartoon. Rusty's belief lives over $\SEtwo$, and its observation is a
+LiDAR scan — a POMDP with a continuum of states and effectively a continuum of observations. Exact
+solving is not merely intractable here; the objects do not exist.
+
+So we do the compression. The state becomes (cell, $\sigma$-bin): $610$ free cells $\times\ 12$
+uncertainty bins plus one absorbing terminal, $7\,321$ states, solved by
+[Chapter 21](/chapters/ch21-mdps)'s value iteration in about forty Gauss–Seidel sweeps. Two policies
+come out of the same code. One is told to pretend $\sigma$ is always at its floor — the
+**certainty-equivalent** planner, which is what "plan a path on the MAP estimate, then track it"
+amounts to. The other is given the honest $\sigma$ dynamics.
+
+<Deferred>
+  <CoastalNavigator />
+</Deferred>
+
+Nothing in the map says "prefer walls". The reward function contains a step cost, a collision
+hazard, and a doorway bonus; the word "wall" appears only inside $\nu(x)$, as the distance to
+something a scan can lock onto. Yet the purple pilot leaves the straight line, spends about $1.6$
+extra steps in the neighbourhood of the textured south wall, pinches its uncertainty ribbon back
+down, and only then turns for the door — arriving through the gap $65\%$ of the time against the
+straight pilot's $27\%$ over 400 seeded runs.
+
+Then push the LiDAR range slider past $5$ m. The information field floods the room, both pilots
+reach $96\%$, and the coastal behavior evaporates. This is not a disappointment; it is the honest
+boundary of the phenomenon, and it reproduces Figure 16.6 of the Thrun draft, where entropy at the
+goal is plotted against sensor range and the two curves meet. **Coastal navigation is a statement
+about when sensing is informative, not a law of robotics.** A robot with GPS should drive straight.
+
+<KeyIdea title="What actually generalizes">
+Three things transfer from this chapter to every belief-space problem you will meet, and none of
+them requires an exact solver.
+
+1. **Put the uncertainty in the state.** The moment $\sigma$ (or $H$, or a covariance trace) is a
+   coordinate the planner optimizes over, information-gathering behavior stops being a heuristic
+   you bolt on and starts being a consequence.
+2. **Price the failure, not the uncertainty.** The AMDP does not penalize $\sigma$ directly. It
+   penalizes $\Pr[\text{collision} \mid \sigma]$ and $\Pr[\text{miss the door} \mid \sigma]$, which
+   is why the detour appears in a tight corridor and disappears in an open field.
+3. **Budget, then re-plan.** Online solvers beat offline ones in robotics not because the trees are
+   better but because a fixed compute budget spent on the belief you are actually in is worth more
+   than an optimal policy for beliefs you will never hold.
+</KeyIdea>
+
+### What this chapter is not
+
+**Continuous observations.** POMCP branches on observations, so a continuous observation space
+gives every node exactly one child and the tree degenerates into a set of independent rollouts. The
+fixes — progressive widening, observation clustering, adaptive discretization — are a live research
+area; Hoerger et al. (2024) is a good entry point, and Lauri et al. (2023) surveys the landscape.
+
+**Belief-space trajectory optimization.** For unimodal Gaussian beliefs you can skip trees
+entirely and run a continuous optimizer over a trajectory of $(\mu, \Sigma)$ pairs, with the
+covariance propagated by an EKF inside the cost. It is fast and it is what most manipulation
+systems do; it also cannot represent the tiger, because a Gaussian cannot be bimodal.
+[Chapter 23](/chapters/ch23-mppi) takes the continuous-control ground with sampling instead.
+
+**Learning the policy.** Everything here assumes a model. Deep RL over histories learns the same
+object without one, and pays in sample complexity and in the loss of every guarantee in this
+chapter. [Chapter 25](/chapters/ch25-learning) makes the case for keeping learning *inside* the
+Bayesian frame rather than replacing it.
+
+Where this goes next: [Chapter 23](/chapters/ch23-mppi) is a receding-horizon POMDP solver in
+disguise — sampled futures, reweighted, re-planned every frame.
+[Chapter 24](/chapters/ch24-exploration) formulates active SLAM as a POMDP and then approximates it
+exactly the way this chapter licenses, with the AMDP's failure mode as the thing to watch. And
+[Chapter 26](/chapters/ch26-capstone) wires the decision layer to everything else.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Compute Γ₂ by hand, all 27 of it">
+    Enumerate the $|\mathcal{U}| \cdot |\Gamma_1|^{|\mathcal{Z}|} = 27$ candidate vectors for the
+    tiger at $\gamma = 0.95$, accuracy $0.85$. The text asserts that the nine $\text{open}_L$
+    assignments collapse to three distinct vectors while the nine $\text{listen}$ ones do not.
+    Verify it, and identify the **two** separate reasons — one is a property of the transition and
+    observation matrices after opening, the other is an accident of the particular numbers in
+    $\Gamma_1$. Then prune to the five survivors in the table above, and verify the breakpoint
+    $0.975664$ from the two lines that cross there.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Convexity without α-vectors">
+    Prove directly from the definition of $V^*$ as a supremum over policies that $V^*$ is convex in
+    $b$, without using the piecewise-linear representation. (Hint: a policy's expected return is
+    linear in the initial belief; $V^*$ is a pointwise supremum of such functions.) Then explain in
+    one paragraph why convexity is the formal statement of "certainty is worth money", and say what
+    the sag below the chord at $b = \tfrac12$ equals in dollars.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict the divergence, then verify">
+    In the Tiger Door Console, the optimal threshold at accuracy $0.85$ is $0.9611$ and QMDP's is
+    $0.9000$, yet the two pilots make identical decisions. The belief after $n$ consistent growls
+    from $\tfrac12$ is $a^n / (a^n + (1-a)^n)$, and the two policies differ exactly when a rung of
+    that ladder lands in the gap between the thresholds. Using only that formula and a calculator,
+    predict the set of accuracies at which they diverge — it is a union of *bands*, not an interval,
+    and $0.85$ happens to fall in a gap between two of them. Verify with the slider, then explain
+    why raising the sensor accuracy from $0.85$ to $0.95$ makes QMDP *worse*. Finally: which of the
+    two thresholds moves when you change $\gamma$, and which cannot?
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find where the coast stops paying">
+    In the Coastal Navigator, find the LiDAR range at which the two pilots' arrival rates come
+    within one standard error of each other, using enough seeded runs that the answer means
+    something. Then relate what you see to $\nu(x) = \nu_{\max}\exp(-(d/R)^2)$: at that range, what
+    fraction of the room is informative? Finally, describe a concrete belief in the Apartment for
+    which the AMDP compression $(\arg\max_x b(x), H[b])$ would give the planner *actively
+    misleading* advice, and say which action it would wrongly recommend.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Implement QMDP on Chapter 21's solver">
+    `qmdp.rs` ships as a stub. Implement it on top of `ch21_mdp::value_iteration` — the only work is
+    building `underlying_mdp()`, and the only thing to get right is that the observation model must
+    not appear anywhere in the conversion. Then reproduce the chapter's paired tournament: 20 000
+    rounds at accuracies $0.70$, $0.85$ and $0.95$, with the optimal, QMDP and impatient (open the
+    more likely door immediately) pilots sharing one seeded growl stream per round. Your maul rates at $0.70$ should land near $3.2\%$
+    and $7.2\%$.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="POMCP over an MCL belief">
+    Wire `Pomcp` to the Chapter 12 MCL filter and the Chapter 4 simulator, on a T-junction with two
+    mirror-image corridors and a bimodal particle belief. The generative model is the simulator; the
+    root particle set is MCL's output, resampled to 300. Report how often the planner drives *past*
+    the disambiguating doorway before committing to a corridor, as a function of the simulation
+    budget — and find the budget below which it commits blind. Then break it deliberately: shrink
+    the UCB1 constant until a single unlucky rollout retires the correct arm.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="DESPOT's determinized scenarios (stretch)">
+    Add a `search_despot` to `pomcp.rs`: draw $K$ scenarios (a start state plus a seeded random
+    stream each), share them across the whole tree so that every node evaluates all $K$ at once, and
+    branch only on the observations those scenarios actually produce. Use QMDP as the upper bound
+    and "listen twice then guess" as the lower one. Compare regret against simulation count with
+    POMCP on the tiger and on your T-junction world, and report where the regularization term
+    $\lambda|\pi|$ starts to matter.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Smallwood, R. D. and Sondik, E. J."
+    year={1973}
+    title="The Optimal Control of Partially Observable Markov Processes over a Finite Horizon"
+    venue="Operations Research 21(5), 1071–1088"
+    doi="10.1287/opre.21.5.1071"
+    note="Where piecewise-linear convexity comes from. This chapter's centerpiece derivation is their theorem, restated in modern α-vector notation; the paper is also the origin of the exact backup our exact.rs implements."
+  />
+  <Reference
+    authors="Papadimitriou, C. H. and Tsitsiklis, J. N."
+    year={1987}
+    title="The Complexity of Markov Decision Processes"
+    venue="Mathematics of Operations Research 12(3), 441–450"
+    doi="10.1287/moor.12.3.441"
+    note="The PSPACE-completeness result quoted in the complexity box. The same paper shows the fully observable case is only P-complete, which is exactly the gap Chapter 21 was living in."
+  />
+  <Reference
+    authors="Kaelbling, L. P., Littman, M. L., and Cassandra, A. R."
+    year={1998}
+    title="Planning and Acting in Partially Observable Stochastic Domains"
+    venue="Artificial Intelligence 101(1–2), 99–134"
+    doi="10.1016/S0004-3702(98)00023-X"
+    note="The paper that made POMDPs legible to a generation, and the source of the tiger problem this chapter runs every number on. Read §3–5 alongside the mathematics section here."
+  />
+  <Reference
+    authors="Roy, N. and Thrun, S."
+    year={1999}
+    title="Coastal Navigation with Mobile Robots"
+    venue="Advances in Neural Information Processing Systems 12 (NIPS 1999)"
+    url="https://papers.nips.cc/paper/1763-coastal-navigation-with-mobile-robots"
+    note="The augmented-MDP compression and the wall-hugging behavior the Coastal Navigator reproduces. Their Figure comparing entropy at the goal against sensor range is the experiment the widget's slider runs live."
+  />
+  <Reference
+    authors="Pineau, J., Gordon, G., and Thrun, S."
+    year={2003}
+    title="Point-based value iteration: An anytime algorithm for POMDPs"
+    venue="IJCAI 2003, 1025–1032"
+    url="https://www.ijcai.org/Proceedings/03/Papers/147.pdf"
+    note="PBVI, its reachable-belief expansion, and the error bound quoted (and criticized) above. The algorithm is thirty lines; the insight — approximate the belief set, not the value function — is the one that stuck."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 16 is this chapter's baseline: the finite-world exact solver of Table 16.1, the LP pruning we replace with an envelope, and §16.5's augmented MDP. The epigraph is from §16.2 of the 1999–2000 draft, which differs from the published edition."
+  />
+  <Reference
+    authors="Kurniawati, H., Hsu, D., and Lee, W. S."
+    year={2008}
+    title="SARSOP: Efficient Point-Based POMDP Planning by Approximating Optimally Reachable Belief Spaces"
+    venue="Robotics: Science and Systems IV"
+    url="https://www.roboticsproceedings.org/rss04/p9.pdf"
+    note="PBVI industrialized: sample beliefs reachable under near-optimal policies rather than under any policy. Still the offline solver to reach for when your state space is small enough to have one."
+  />
+  <Reference
+    authors="Silver, D. and Veness, J."
+    year={2010}
+    title="Monte-Carlo Planning in Large POMDPs"
+    venue="Advances in Neural Information Processing Systems 23 (NIPS 2010)"
+    url="https://papers.nips.cc/paper/4031-monte-carlo-planning-in-large-pomdps"
+    note="POMCP: the algorithm in this chapter's fifth box, and the reason a robot with a simulator and a particle filter already owns most of a POMDP solver."
+  />
+  <Reference
+    authors="Ye, N., Somani, A., Hsu, D., and Lee, W. S."
+    year={2017}
+    title="DESPOT: Online POMDP Planning with Regularization"
+    venue="Journal of Artificial Intelligence Research 58, 231–266"
+    doi="10.1613/jair.5328"
+    note="The journal version of the 2013 NIPS paper: determinized scenarios, the regret bound in terms of policy representation size, and the regularization that stops a K-scenario tree from overfitting its own futures."
+  />
+  <Reference
+    authors="Lauri, M., Hsu, D., and Pajarinen, J."
+    year={2023}
+    title="Partially Observable Markov Decision Processes in Robotics: A Survey"
+    venue="IEEE Transactions on Robotics 39(1), 21–40"
+    doi="10.1109/TRO.2022.3200138"
+    note="The current map of the field, written for roboticists. The best single answer to 'which solver should I actually use for my problem', and the place to go for continuous-space and multi-robot variants this chapter skips."
+  />
+  <Reference
+    authors="Hoerger, M., Kurniawati, H., Kroese, D., and Ye, N."
+    year={2024}
+    title="Adaptive Discretization using Voronoi Trees for Continuous POMDPs"
+    venue="The International Journal of Robotics Research 43(9), 1283–1298"
+    doi="10.1177/02783649231188984"
+    note="A recent answer to the continuous-action problem POMCP degenerates on: refine the action space where the value function says it matters. Read it after building the tree widget's model and asking what happens when u is a real number."
+  />
+</References>

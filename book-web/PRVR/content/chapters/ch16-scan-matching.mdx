@@ -1,0 +1,1231 @@
+---
+title: Scan Matching and Pose-Graph SLAM
+description: Where SLAM constraints actually come from — registration as maximum likelihood, ICP and NDT as two answers to the same question, loop closure as a hypothesis test, and the front-end/back-end architecture that every deployed 2D system is built from.
+chapter: 16
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Advanced
+readingTime: 60 min
+quote: In cyclic environments the robot has to establish correspondence to previously gathered data with potentially unbounded odometric error, and has to revise pose estimates backwards in time.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics (1999–2000 draft), Chapter 14
+---
+
+import { IcpStepper } from '@/components/ch/ch16/icp-stepper';
+import { LoopSnap } from '@/components/ch/ch16/loop-snap';
+import { ScoreTerrain } from '@/components/ch/ch16/score-terrain';
+import { RustSlamControlRoom } from '@/components/ch/ch16/rustslam-control-room';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Derive point registration as maximum likelihood, and the closed-form rigid alignment that solves it once correspondences are fixed',
+    'Explain why ICP converges, why only to a local minimum, and how to recognize the two geometries that break it',
+    'Contrast the point-to-point, point-to-plane, and NDT objectives by the shape of their cost surfaces',
+    'Write the SE(2) pose-graph residual and its Jacobians, and hand them to Chapter 15’s optimizer unchanged',
+    'Gate a loop-closure candidate with a χ² test, and say precisely what a false positive costs',
+    'Assemble a front end and a back end into RustSLAM-2D and measure what each half actually buys',
+  ]}
+  prerequisites={[
+    'SE(2), exp/log, ⊞/⊟ and the adjoint (Chapter 3)',
+    'The simulated LiDAR and the Apartment world (Chapter 4)',
+    'Odometry as a noisy prior (Chapter 9) and likelihood fields (Chapter 10)',
+    'Sparse Gauss–Newton on a factor graph, and robust kernels (Chapter 15)',
+  ]}
+>
+[Chapter 15](/chapters/ch15-factor-graphs) built a back end: a factor graph and a sparse
+Gauss–Newton solver that swallows constraints and returns a maximum-a-posteriori trajectory. It
+never said where the constraints come from. Odometry factors are easy — the wheels report
+something. Loop-closure factors are the hard ones, and they are the only reason the back end is
+worth having.
+
+This chapter builds the **front end**: the machinery that turns raw LiDAR sweeps into relative-pose
+measurements, and then decides which of those measurements are safe to believe. The punchline is
+architectural rather than algorithmic. SLAM in practice is not one method; it is a fast, greedy,
+local matcher feeding a slow, global, honest optimizer, with a hypothesis test standing between
+them. Every piece of it — ICP as maximum likelihood, NDT as a Gaussian mixture, loop verification
+as a χ² gate — is probability theory you have used since [Chapter 5](/chapters/ch05-bayes-filter),
+wearing a geometer's coat.
+
+At the end the two halves are wired together into **RustSLAM-2D**, the book's first complete SLAM
+system, and run on a full lap of the Apartment. We will measure exactly what it fixes, and — the
+part that most treatments skip — exactly what it cannot.
+</Overview>
+
+## The problem: constraints have to come from somewhere
+
+Rusty drives down the Apartment's corridor and back. His wheels report how far he went. They are
+wrong, in the specific way wheels are always wrong: slightly, consistently, and without any signal
+that anything has gone amiss. Over one eighteen-metre lap the raw odometry ends up **2.4 metres**
+from the truth, and a map assembled from it would not be a map of the Apartment at all — it would
+be two overlapping maps, drawn metres apart.
+
+<Deferred>
+  <LoopSnap />
+</Deferred>
+
+Watch a full lap before reading on. There are three separate things happening and it is worth
+naming them now, because the rest of the chapter is those three things in order.
+
+**The scan is a far better odometer than the wheels.** The orange path leaves the building; the
+purple one stays within a metre. Nothing about the robot changed — the same wheels, the same
+noise. What changed is that consecutive LiDAR sweeps overlap, and two overlapping views of the
+same wall constrain the motion between them. The next section turns that constraint into a
+likelihood.
+
+**Better is not good.** The purple path still drifts, because every registration is slightly wrong
+and the errors compound exactly as [Chapter 9](/chapters/ch09-motion-models)'s do. Look at the
+blue map dots on the return leg: they land beside the outbound ones, not on them. A map that
+disagrees with itself is the most useful error signal a robot ever gets, because it needs no
+ground truth to notice.
+
+**The correction runs backwards.** When a green loop factor lands and the optimizer runs, the pose
+that moves is not the robot's current one. It is a pose from thirty seconds ago, and the ones
+either side of it, and the map they wrote. Loop closure is not a localization update. It is a
+retroactive edit of history.
+
+<KeyIdea title="The one sentence version">
+A scan matcher turns two overlapping sweeps into a relative-pose measurement with an information
+matrix; a loop detector proposes which distant pairs of sweeps might overlap; a χ² gate decides
+which proposals to believe; and a pose graph reconciles all of them at once.
+</KeyIdea>
+
+## Building intuition: two scans that want to snap together
+
+Take two sweeps of the same room from positions half a metre apart. Overlay them at the wrong
+offset and they look like a double exposure. Slide one until the walls coincide and the double
+exposure resolves — and the transform you applied to make that happen *is* the motion between the
+two viewpoints. That is the entire idea. Everything else is deciding which point corresponds to
+which, and what to do when you are wrong about it.
+
+<Deferred>
+  <IcpStepper />
+</Deferred>
+
+Two observations from that widget drive the mathematics.
+
+**Correspondence and alignment are separate problems, and each is easy given the other.** If you
+knew which target point each source point came from, the best rigid transform has a closed form —
+derived below in four lines of algebra. If you knew the transform, the correspondences are a nearest-neighbour lookup. You
+know neither, so you alternate — and that alternation is the algorithm, with all its virtues and
+its one fatal flaw.
+
+**ICP does not find *the* alignment. It finds the nearest one.** Room A of the Apartment is
+4.0 m × 3.8 m. Rotate the initial guess past about 40° and ICP settles, in a dozen iterations,
+onto the room turned a quarter turn: 0.95 m and 90° from the truth, with a residual of 0.13 m that
+looks perfectly respectable. Nothing in the algorithm can tell the difference. This is why
+`verify_loop` exists, and why a scan matcher is never allowed to add a factor to a pose graph
+unsupervised.
+
+## The mathematics
+
+### Notation
+
+<NotationTable
+  rows={[
+    { sym: '\\mathcal{P},\\; \\mathcal{Q}', meaning: 'Source (new) and target (reference) point sets, each in its own sensor frame.' },
+    { sym: 'T = (\\mathbf{R}, \\mathbf{t}) \\in \\SEtwo', meaning: 'The registration transform, acting on a point by rotating it and then translating it.' },
+    { sym: 'c(k)', meaning: 'Correspondence: which target point the k-th source point is matched to. Chapter 10’s correspondence variable, reborn geometrically.' },
+    { sym: '\\tau', meaning: 'Correspondence rejection radius. Pairs longer than this are discarded — the truncation that makes ICP robust and its cost piecewise.' },
+    { sym: '\\mathbf{n}_k', meaning: 'Unit surface normal at the matched target point, estimated by local PCA over its neighbours.' },
+    { sym: '\\boldsymbol{\\mu}_i,\\; \\boldsymbol{\\Sigma}_i', meaning: 'Mean and covariance of the Gaussian fitted to NDT cell i.' },
+    { sym: 'Z_{ij},\\; \\mathbf{\\Omega}_{ij}', meaning: 'Relative-pose measurement between poses i and j, and its information matrix.' },
+    { sym: '\\mathbf{e}_{ij}', meaning: 'The pose-graph residual: a 3-vector in the tangent space of SE(2), zero when the measurement and the two poses agree.' },
+    { sym: '\\chi^2_{3,\\,0.95} = 7.815', meaning: 'The 95% quantile of the chi-squared distribution with three degrees of freedom — the loop-closure acceptance threshold.' },
+  ]}
+/>
+
+### Registration is maximum likelihood
+
+Assume — and it is an assumption, whose bill arrives when we ask a match how confident it is —
+that each matched target point is a noisy observation of the transformed source point:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{\mathbf{q}_{c(k)}} = T\,\htmlClass{term-prediction}{\mathbf{p}_k} + \boldsymbol{\epsilon}_k,
+\qquad \boldsymbol{\epsilon}_k \sim \Normal(\mathbf{0}, \sigma^2 \mathbf{I}).
+$$
+</LinkedMath>
+
+The beams are taken to be conditionally independent given the pose, exactly as in
+[Chapter 10](/chapters/ch10-sensor-models)'s beam model and with exactly the same caveat. Then the
+likelihood factorizes, the log turns the product into a sum, and the Gaussian turns the sum into
+squares:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{T^\star} = \arg\max_T \prod_k p(\mathbf{q}_{c(k)} \mid T, \mathbf{p}_k)
+= \arg\min_{T \in \SEtwo} \sum_k \norm{T\mathbf{p}_k - \mathbf{q}_{c(k)}}^2 .
+$$
+</LinkedMath>
+
+Least squares *is* maximum likelihood here. That one line is the bridge to
+[Chapter 15](/chapters/ch15-factor-graphs): a scan match is a factor, its cost is a negative
+log-likelihood, and when the Gaussian assumption fails — which is precisely when a correspondence
+is wrong — you are licensed to wrap the residual in a robust kernel $\rho(\cdot)$ rather than
+invent a new algorithm.
+
+### Rigid alignment in closed form
+
+<Derivation title="The minimizer over SE(2) with correspondences fixed" result="\theta^\star = \operatorname{atan2}(W_{21} - W_{12},\, W_{11} + W_{22})">
+**Statement.** With correspondences fixed, the minimizer of $\sum_k \norm{\mathbf{R}\mathbf{p}_k + \mathbf{t} - \mathbf{q}_k}^2$
+over $\mathrm{SE}(d)$ is
+
+$$
+\mathbf{R}^\star = \mathbf{U}\,\diag\!\big(1, \ldots, 1, \det(\mathbf{U}\mathbf{V}\T)\big)\,\mathbf{V}\T,
+\qquad
+\mathbf{t}^\star = \bar{\mathbf{q}} - \mathbf{R}^\star \bar{\mathbf{p}},
+$$
+
+where $\mathbf{W} = \sum_k (\mathbf{q}_k - \bar{\mathbf{q}})(\mathbf{p}_k - \bar{\mathbf{p}})\T = \mathbf{U}\mathbf{S}\mathbf{V}\T$
+(Arun, Huang and Blostein, 1987).
+
+**Step 1 — eliminate the translation.** For fixed $\mathbf{R}$ the cost is quadratic in $\mathbf{t}$;
+setting the gradient to zero gives $\mathbf{t} = \bar{\mathbf{q}} - \mathbf{R}\bar{\mathbf{p}}$.
+Substituting it back centers both clouds: write $\mathbf{a}_k = \mathbf{p}_k - \bar{\mathbf{p}}$ and
+$\mathbf{b}_k = \mathbf{q}_k - \bar{\mathbf{q}}$, and the problem becomes
+$\min_{\mathbf{R}} \sum_k \norm{\mathbf{R}\mathbf{a}_k - \mathbf{b}_k}^2$.
+
+**Step 2 — expand.** Since $\mathbf{R}$ is orthogonal, $\norm{\mathbf{R}\mathbf{a}_k}^2 = \norm{\mathbf{a}_k}^2$,
+so
+
+$$
+\sum_k \norm{\mathbf{R}\mathbf{a}_k - \mathbf{b}_k}^2
+= \sum_k \norm{\mathbf{a}_k}^2 + \sum_k \norm{\mathbf{b}_k}^2 - 2\sum_k \mathbf{b}_k\T \mathbf{R}\mathbf{a}_k .
+$$
+
+Only the last term depends on $\mathbf{R}$, and $\sum_k \mathbf{b}_k\T \mathbf{R}\mathbf{a}_k = \tr(\mathbf{R}\T\mathbf{W})$.
+Minimizing the cost is maximizing that trace.
+
+**Step 3 — orthogonal Procrustes.** With $\mathbf{W} = \mathbf{U}\mathbf{S}\mathbf{V}\T$ and
+$\mathbf{M} = \mathbf{V}\T\mathbf{R}\T\mathbf{U}$ orthogonal,
+
+$$
+\tr(\mathbf{R}\T\mathbf{W}) = \tr(\mathbf{R}\T\mathbf{U}\mathbf{S}\mathbf{V}\T) = \tr(\mathbf{M}\mathbf{S}) = \sum_i m_{ii} s_i \le \sum_i s_i ,
+$$
+
+because every entry of an orthogonal matrix satisfies $\abs{m_{ii}} \le 1$ and the singular values
+$s_i$ are non-negative. Equality needs $m_{ii} = 1$ for all $i$, i.e. $\mathbf{M} = \mathbf{I}$,
+i.e. $\mathbf{R} = \mathbf{U}\mathbf{V}\T$.
+
+**Step 4 — exclude reflections.** $\mathbf{U}\mathbf{V}\T$ is orthogonal but need not have
+determinant $+1$; when the data are degenerate (all points collinear, or noise dominating) it can
+come back as a reflection, which is not a rigid motion. Replacing the last diagonal entry with
+$\det(\mathbf{U}\mathbf{V}\T)$ gives the best *rotation*, at the cost of $s_{\min}$ in the trace.
+
+**Step 5 — the planar case.** In 2-D none of this needs an SVD. Writing
+$\mathbf{R} = \begin{pmatrix}\cos\theta & -\sin\theta\\ \sin\theta & \cos\theta\end{pmatrix}$,
+
+$$
+\tr(\mathbf{R}\T\mathbf{W}) = \cos\theta\,(W_{11} + W_{22}) + \sin\theta\,(W_{21} - W_{12}),
+$$
+
+a single sinusoid in $\theta$, maximized at
+$\theta^\star = \operatorname{atan2}(W_{21} - W_{12},\, W_{11} + W_{22})$. Note
+$W_{11} + W_{22} = \sum_k \mathbf{a}_k \cdot \mathbf{b}_k$ and
+$W_{21} - W_{12} = \sum_k \mathbf{a}_k \times \mathbf{b}_k$: a dot product and a cross product, and
+nothing else. Because `atan2` returns an angle, the result is a rotation by construction — the
+determinant correction of Step 4 comes for free. $\blacksquare$
+</Derivation>
+
+### Why the iteration converges, and only locally
+
+<Derivation title="ICP as alternating minimization — the EM echo" result="J(T_{i+1}, c_{i+1}) \le J(T_{i+1}, c_i) \le J(T_i, c_i)">
+**Statement.** Alternating (a) $c(k) \leftarrow \arg\min_j \norm{T\mathbf{p}_k - \mathbf{q}_j}$ and
+(b) the closed-form alignment of the previous derivation monotonically decreases the joint
+objective and converges.
+
+**Proof.** Define the joint cost over both arguments,
+
+$$
+J(T, c) = \sum_k \min\!\big(\norm{T\mathbf{p}_k - \mathbf{q}_{c(k)}}^2,\; \tau^2\big).
+$$
+
+Step (a) minimizes $J(T_i, \cdot)$ exactly: for each $k$ independently it selects the nearest
+target, and the truncation at $\tau^2$ is applied pointwise, so no other assignment can do better.
+Step (b) minimizes $J(\cdot, c_i)$ exactly over the pairs that survived truncation. Hence
+$J$ is non-increasing along the iteration. It is bounded below by zero. A monotone bounded sequence
+converges. $\blacksquare$
+
+**The EM echo.** Step (a) assigns latent variables given parameters; step (b) re-estimates
+parameters given assignments. That is expectation–maximization with hard assignments — the same
+structure as [Chapter 10](/chapters/ch10-sensor-models)'s EM for the beam-model intrinsics, and it
+inherits EM's guarantee and EM's weakness in equal measure.
+
+**What convergence does *not* mean.** $J$ converges; $T_i$ converges to a stationary point of $J$;
+nothing says that point is the global minimum. Two geometries produce spurious minima reliably:
+
+- **Rotational near-symmetry.** A room whose walls nearly map onto themselves under a quarter turn
+  has a second, deep basin. Room A is 4.0 m × 3.8 m, and <a href="#w16.1">w16.1</a> falls into that
+  basin from any initial heading error beyond roughly 40°.
+- **Picket-fence aliasing.** A row of equally spaced features (railings, radiator fins, chair legs)
+  produces a minimum at every multiple of the spacing, and the correct one is not distinguished by
+  the cost.
+
+Both are failures of the *objective*, not of the solver. No amount of iterating fixes them, which
+is why the answer is a better initial guess (the motion prior) and a verification step.
+</Derivation>
+
+### Point-to-plane: stop fighting the wall
+
+Point-to-point penalizes the whole displacement between a matched pair. But if both points lie on
+the same flat wall, sliding one along the wall changes nothing physical — the penalty is measuring
+an artefact of which point happened to be nearest, not a real disagreement. Point-to-plane
+penalizes only the component along the surface normal (Chen and Medioni, 1992):
+
+<LinkedMath>
+$$
+T^\star = \arg\min_{T} \sum_k \Big( \mathbf{n}_k\T \big( \mathbf{R}\mathbf{p}_k + \mathbf{t} - \htmlClass{term-measurement}{\mathbf{q}_{c(k)}} \big) \Big)^2 .
+$$
+</LinkedMath>
+
+<Derivation title="The 3×3 normal equations for point-to-plane in SE(2)" result="\mathbf{a}_k^\mathsf{T} = (\tilde{\mathbf{p}}_k \times \mathbf{n}_k,\; n_x,\; n_y)">
+There is no closed form: the residual is linear in $\mathbf{t}$ but trigonometric in $\theta$.
+Linearize the rotation about the current estimate with
+$\mathbf{R} \approx \mathbf{I} + \theta \mathbf{J}$, $\mathbf{J} = \begin{pmatrix}0 & -1\\ 1 & 0\end{pmatrix}$,
+and every residual becomes affine in $\boldsymbol{\xi} = (\theta, t_x, t_y)$:
+
+$$
+r_k = \mathbf{n}_k\T(\mathbf{p}_k - \mathbf{q}_{c(k)}) + \theta\, \mathbf{n}_k\T \mathbf{J}\mathbf{p}_k + \mathbf{n}_k\T\mathbf{t}
+= \mathbf{a}_k\T \boldsymbol{\xi} - b_k ,
+$$
+
+with
+
+$$
+\mathbf{a}_k\T = \big(\, \mathbf{n}_k\T\mathbf{J}\tilde{\mathbf{p}}_k,\;\; n_{k,x},\;\; n_{k,y} \,\big)
+= \big(\, \tilde{p}_{k,x} n_{k,y} - \tilde{p}_{k,y} n_{k,x},\;\; n_{k,x},\;\; n_{k,y} \,\big),
+\qquad
+b_k = -\mathbf{n}_k\T(\mathbf{p}_k - \mathbf{q}_{c(k)}).
+$$
+
+**The tilde matters.** $\tilde{\mathbf{p}}_k = \mathbf{p}_k - \bar{\mathbf{p}}$ measures the source
+point from the cloud's centroid, so the linearized rotation happens about the centroid rather than
+the world origin. Rotating about an origin ten metres away couples $\theta$ to $\mathbf{t}$ so
+strongly that the $3\times3$ normal matrix loses six digits of conditioning for no reason.
+
+Minimizing $\sum_k (\mathbf{a}_k\T\boldsymbol{\xi} - b_k)^2$ gives the normal equations
+$\big(\sum_k \mathbf{a}_k \mathbf{a}_k\T\big) \boldsymbol{\xi} = \sum_k b_k \mathbf{a}_k$ —
+one Gauss–Newton step of [Chapter 15](/chapters/ch15-factor-graphs), specialized. Re-associate and
+repeat.
+
+**Rank.** $\mathbf{H} = \sum_k \mathbf{a}_k\mathbf{a}_k\T$ is singular exactly when the $\mathbf{a}_k$
+span fewer than three dimensions. The canonical case is an infinite corridor: every normal is
+$\pm(0,1)$, so every row is $(\,\tilde{p}_{k,x},\, 0,\, \pm 1)$ and the matrix has rank 2. The null
+vector is "translate along the corridor" — the motion the sensor genuinely cannot see.
+
+**Why this must be damped, not merely nudged.** In that null direction the gradient is zero too,
+so the solve is $0/0$. An absolute ridge of $10^{-9}$ divides the numerical dust in $\mathbf{g}$ by
+the numerical dust in $\mathbf{H}$ and can slide the scan a metre down the hallway. A ridge
+proportional to $\tr(\mathbf{H})$ resolves the unconstrained direction to *zero motion* instead,
+which is the honest answer: the scan says nothing here, so keep the prediction. The library uses
+$\lambda = 10^{-4}\,\tr(\mathbf{H})/3$.
+</Derivation>
+
+Empirically the payoff is convergence rate, not accuracy. On the w16.1 scene both variants reach
+the same answer, but point-to-plane needs 5–9 iterations where point-to-point needs 10–30, because
+the cost is flat *along* surfaces and the solver stops spending iterations crabbing sideways.
+
+### NDT: remove correspondences entirely
+
+ICP's cost is piecewise. Nudge the pose and a correspondence flips, and the objective takes a step;
+between flips it is a smooth quadratic; across them it is not even differentiable. The Normal
+Distributions Transform (Biber and Straßer, 2003) removes the discrete variable altogether.
+Partition the target into cells, fit one Gaussian per occupied cell, and score a candidate
+transform by how likely the source points are under that mixture:
+
+<LinkedMath>
+$$
+s(T) = \sum_k \sum_{i \in \mathcal{N}(k)} \exp\!\Big( -\tfrac{1}{2}\, \mathbf{d}_{ik}\T \boldsymbol{\Sigma}_i^{-1} \mathbf{d}_{ik} \Big),
+\qquad \mathbf{d}_{ik} = T\mathbf{p}_k - \htmlClass{term-prior}{\boldsymbol{\mu}_i}.
+$$
+</LinkedMath>
+
+Up to mixture weights this is the log-likelihood of the sweep under a Gaussian-mixture map. Read
+the other way it is [Chapter 10](/chapters/ch10-sensor-models)'s likelihood field with an
+anisotropic kernel *fitted per cell* rather than one isotropic $\sigma$ everywhere — which is
+exactly what lets it represent "this cell is a wall running north-east" instead of merely "this
+cell is occupied".
+
+<Derivation title="Newton's method on the NDT score" result="\mathbf{H}_{ij} \approx \sum_k s_k \,(\partial_i \mathbf{d})^\mathsf{T} \boldsymbol{\Sigma}^{-1} (\partial_j \mathbf{d})">
+Write $\mathbf{C} = \boldsymbol{\Sigma}_i^{-1}$, $s_k = \exp(-\tfrac12 \mathbf{d}\T\mathbf{C}\mathbf{d})$,
+and $\boldsymbol{\xi} = (t_x, t_y, \theta)$. The point derivatives are immediate:
+
+$$
+\frac{\partial \mathbf{d}}{\partial t_x} = \begin{pmatrix}1\\0\end{pmatrix}, \quad
+\frac{\partial \mathbf{d}}{\partial t_y} = \begin{pmatrix}0\\1\end{pmatrix}, \quad
+\frac{\partial \mathbf{d}}{\partial \theta} = \mathbf{J}\mathbf{R}\mathbf{p} = \begin{pmatrix}-r_y\\ r_x\end{pmatrix},
+$$
+
+with $\mathbf{r} = \mathbf{R}\mathbf{p}$. Differentiating $s_k$ once,
+
+$$
+\frac{\partial s_k}{\partial \xi_i} = -s_k\, \mathbf{d}\T\mathbf{C}\,\frac{\partial \mathbf{d}}{\partial \xi_i},
+$$
+
+so minimizing $f = -s$ has gradient $g_i = \sum_k s_k\, \mathbf{d}\T\mathbf{C}\,\partial_i\mathbf{d}$.
+The exact Hessian carries three terms; keeping only the positive semi-definite one,
+
+$$
+H_{ij} \;\approx\; \sum_k s_k \,(\partial_i \mathbf{d})\T \mathbf{C} \,(\partial_j \mathbf{d}),
+$$
+
+is the same Gauss–Newton bargain Chapter 15 strikes: give up quadratic convergence, keep a descent
+direction unconditionally. It matters here because the exact Hessian is indefinite away from the
+optimum — and, in a corridor, at it.
+
+**Two implementation notes that are not optional.** First, a cell straddling a flat wall has a
+covariance whose smaller eigenvalue is the range noise squared, often numerically zero, and
+$\boldsymbol{\Sigma}^{-1}$ then claims infinite confidence across the wall; clamp
+$\lambda_{\min} \ge 0.01\,\lambda_{\max}$. Second, snapping each point to its containing cell puts a
+discontinuity on every cell boundary, undoing the smoothness the method was chosen for; summing
+over the $3\times3$ neighbourhood (Biber and Straßer use four overlapping grids) removes it.
+</Derivation>
+
+### The shape of the cost
+
+<Deferred>
+  <ScoreTerrain />
+</Deferred>
+
+That widget is the argument of the last three sections, drawn. Two things are worth reading off it
+numerically, because they are the two reasons a scan matcher fails.
+
+**The terraces are real.** ICP's surface is built of flat plateaus separated by ridges. A plateau is
+a region where no correspondence changes, so the cost is a fixed quadratic; the ridge is where the
+assignment flips. A gradient method dropped onto a plateau far from the answer has nothing to
+descend. This is why ICP is not run as a gradient method: the closed-form alignment jumps across
+plateaus in one step.
+
+**Degeneracy is a property of the room, not the algorithm.** In room A, translating the sweep 0.6 m
+along $x$ costs 0.189 m² of mean squared residual, and 0.6 m along $y$ costs 0.160 m² — the same, to
+within the noise. In the corridor the same two numbers are **0.053 m² and 0.347 m²**, a factor of
+6.5. NDT's smoother surface does not help: its score at $\Delta x = 0.6$ m is still 74% of the peak,
+while at $\Delta y = 0.6$ m it has collapsed to zero. Neither objective can recover information the
+geometry does not contain. What a good implementation can do is *notice* — which is what the
+information matrix in the next section is for.
+
+### The pose-graph residual on SE(2)
+
+A relative-pose measurement $Z_{ij}$ between poses $T_i$ and $T_j$ is a factor whose residual lives
+in the tangent space of the group:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{\mathbf{e}_{ij}} = \log\!\big( Z_{ij}^{-1}\, T_i^{-1} T_j \big)^{\vee} \in \R^3,
+\qquad
+\text{cost} = \sum_{(i,j)} \rho\!\big( \mathbf{e}_{ij}\T \mathbf{\Omega}_{ij}\, \mathbf{e}_{ij} \big).
+$$
+</LinkedMath>
+
+Equivalently, in the book's manifold operators, $\mathbf{e}_{ij} = T_j \bminus (T_i \circ Z_{ij})$:
+"where $j$ actually is, minus where the measurement says it should be", measured in the tangent
+space at the predicted pose. A **pose graph** is a factor graph containing only pose variables —
+the landmarks of [Chapter 14](/chapters/ch14-ekf-slam) have been marginalized into the relative
+measurements and never appear.
+
+<Derivation title="Jacobians of the pose-graph residual" result="\partial\mathbf{e}/\partial\delta_i = -\Ad_{Z^{-1}}, \quad \partial\mathbf{e}/\partial\delta_j = \mathbf{I}">
+Perturb on the right, $T \leftarrow T \bplus \boldsymbol{\delta} = T \exp(\boldsymbol{\delta})$, as
+[Chapter 3](/chapters/ch03-geometry-of-motion) does everywhere.
+
+**With respect to $T_i$.**
+
+$$
+\mathbf{e}(\boldsymbol{\delta}_i) = \log\!\big( (T_i \exp(\boldsymbol{\delta}_i) Z)^{-1} T_j \big)
+= \log\!\big( Z^{-1} \exp(-\boldsymbol{\delta}_i)\, T_i^{-1} T_j \big).
+$$
+
+Slide $\exp(-\boldsymbol{\delta}_i)$ past $Z^{-1}$ using the defining property of the adjoint,
+$Z^{-1}\exp(\boldsymbol{\tau})Z = \exp(\Ad_{Z^{-1}}\boldsymbol{\tau})$:
+
+$$
+\mathbf{e}(\boldsymbol{\delta}_i) = \log\!\big( \exp(-\Ad_{Z^{-1}}\boldsymbol{\delta}_i)\, \exp(\mathbf{e}) \big)
+\;\approx\; \mathbf{e} - \mathbf{J}_l^{-1}(\mathbf{e})\, \Ad_{Z^{-1}} \boldsymbol{\delta}_i .
+$$
+
+**With respect to $T_j$.** The perturbation lands on the right of the error directly:
+
+$$
+\mathbf{e}(\boldsymbol{\delta}_j) = \log\!\big( \exp(\mathbf{e}) \exp(\boldsymbol{\delta}_j) \big)
+\;\approx\; \mathbf{e} + \mathbf{J}_r^{-1}(\mathbf{e})\, \boldsymbol{\delta}_j .
+$$
+
+**The approximation everybody makes.** $\mathbf{J}_r^{-1}(\mathbf{e}) = \mathbf{I} + O(\norm{\mathbf{e}})$,
+and both this implementation and g2o's SE(2) drop it, taking
+
+$$
+\mathbf{A}_i = -\Ad_{Z_{ij}^{-1}}, \qquad \mathbf{A}_j = \mathbf{I}.
+$$
+
+This is legitimate for a reason worth internalizing: Gauss–Newton needs the Jacobian only to choose
+a *direction*, while the fixed point is determined by the **residual**, which is computed exactly.
+A slightly wrong Jacobian costs iterations, not correctness. (Get the residual wrong and you
+converge, confidently, to the wrong trajectory.) The exact SE(2) right-Jacobian is in Appendix C.
+
+With translation-first tangent ordering $\boldsymbol{\tau} = (v_x, v_y, \omega)$, the adjoint of
+$T = (\mathbf{R}(\theta), \mathbf{t})$ is
+
+$$
+\Ad_T = \begin{pmatrix} \cos\theta & -\sin\theta & t_y \\ \sin\theta & \cos\theta & -t_x \\ 0 & 0 & 1 \end{pmatrix},
+$$
+
+so both Jacobians are three lines of code. Assemble
+$\mathbf{H} = \sum \mathbf{A}\T\mathbf{\Omega}\mathbf{A}$ and
+$\mathbf{b} = \sum \mathbf{A}\T\mathbf{\Omega}\mathbf{e}$, solve
+$\mathbf{H}\boldsymbol{\delta} = -\mathbf{b}$, retract with $\bplus$, repeat. That is Chapter 15's
+optimizer with no modifications whatever.
+</Derivation>
+
+<Callout type="warn">
+**The gauge.** $\mathbf{H}$ is singular by construction: rigidly transforming *every* pose leaves
+every relative measurement unchanged, so the cost has a three-dimensional flat direction. Fix one
+node — zero its rows and columns and put a 1 on the diagonal — and the flat direction disappears.
+Adding a huge prior instead works too, and quietly costs you conditioning.
+</Callout>
+
+### A worked example you can check by hand
+
+Two of them, one per half of the chapter.
+
+**Closed-form alignment.** Take four source points on the unit circle,
+$\mathcal{P} = \{(1,0), (0,1), (-1,0), (0,-1)\}$, with centroid at the origin. Apply the rotation
+with $\cos\theta = 0.8$, $\sin\theta = 0.6$ (that is $\theta = 36.8699°$) and the translation
+$(2, 1)$:
+
+$$
+\mathcal{Q} = \{(2.8,\,1.6),\; (1.4,\,1.8),\; (1.2,\,0.4),\; (2.6,\,0.2)\}, \qquad \bar{\mathbf{q}} = (2,\,1).
+$$
+
+Centering $\mathcal{Q}$ gives $(0.8, 0.6), (-0.6, 0.8), (-0.8, -0.6), (0.6, -0.8)$. Now the two sums
+from Step 5:
+
+$$
+\sum_k \mathbf{a}_k \cdot \mathbf{b}_k = 0.8 + 0.8 + 0.8 + 0.8 = 3.2, \qquad
+\sum_k \mathbf{a}_k \times \mathbf{b}_k = 0.6 \times 4 = 2.4 .
+$$
+
+Hence $\theta^\star = \operatorname{atan2}(2.4,\, 3.2) = 36.8699°$ — note $3.2/4 = 0.8$ and
+$2.4/4 = 0.6$, so the recovered cosine and sine are exact — and
+$\mathbf{t}^\star = \bar{\mathbf{q}} - \mathbf{R}^\star \bar{\mathbf{p}} = (2, 1)$. The trace bound of
+Step 3 is $s_1 + s_2 = 4$, attained.
+
+**A loop closure, distributed.** Three poses on a line. Node 0 is fixed at the origin. Odometry says
+each step is exactly 1 m forward: $Z_{01} = Z_{12} = (1, 0, 0)$. A loop factor then claims
+$Z_{02} = (2.6, 0, 0)$. All three information matrices are $\mathbf{I}$. Initialized from odometry,
+$T_1 = 1.0$ and $T_2 = 2.0$, only the loop factor has a residual, $-0.6$, so
+$\chi^2 = 0.36$.
+
+The optimum minimizes $(t_1 - 1)^2 + (t_2 - t_1 - 1)^2 + (t_2 - 2.6)^2$. Setting both partials to
+zero gives $t_1 = 1.2$, $t_2 = 2.4$, at which **all three residuals equal $0.2$** and
+$\chi^2 = 3 \times 0.04 = 0.12$. The 0.6 m of loop error did not land on the last pose; it was
+spread evenly over the three edges of the cycle, one fifth of a metre each. Every pose in the
+graph moved except the one that was pinned. That is loop closure in miniature, and it is why the
+purple trajectory in <a href="#w16.2">w16.2</a> shifts along its whole length rather than at its tip.
+
+## The algorithms
+
+<Algorithm
+  name="icp(P, map, T₀, τ, variant)"
+  inputs="source point cloud P, voxel-hashed target map, initial guess T₀, rejection radius τ"
+  outputs="T̂, rmse, inlier count, the full pose trace"
+  complexity="O(I · N) with a voxel hash; O(I · N log M) with a k-d tree"
+>
+1. $T \leftarrow T_0$
+2. for $i = 1$ to $I_{\max}$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{C} \leftarrow \emptyset$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for all $\mathbf{p}_k \in \mathcal{P}$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mathbf{q} \leftarrow$ nearest map point to $T\mathbf{p}_k$ within $\tau$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $\mathbf{q}$ exists then $\mathcal{C} \leftarrow \mathcal{C} \cup \{(T\mathbf{p}_k, \mathbf{q}, \mathbf{n}_\mathbf{q})\}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+8. &nbsp;&nbsp;&nbsp;&nbsp;if $\abs{\mathcal{C}} < c_{\min}$ then break
+9. &nbsp;&nbsp;&nbsp;&nbsp;$\Delta T \leftarrow$ `svd_align`$(\mathcal{C})$ &nbsp; or &nbsp; `point_to_plane_step`$(\mathcal{C})$
+10. &nbsp;&nbsp;&nbsp;&nbsp;$T \leftarrow \Delta T \circ T$ &nbsp;&nbsp; ▸ the increment lives in the target frame
+11. &nbsp;&nbsp;&nbsp;&nbsp;if $\norm{\log \Delta T} < \varepsilon$ then break
+12. endfor
+13. return $T$, rmse$(\mathcal{C})$, $\abs{\mathcal{C}}$
+</Algorithm>
+
+Line 5 is the only line whose cost depends on the map size, and the only one worth engineering. A
+voxel hash answers it in expected constant time by examining the $\lceil \tau / \text{cell} \rceil$-ring
+of cells around the query — and unlike a k-d tree it does not need rebuilding when the map grows,
+which for a map that grows every frame is the trade that matters.
+
+Line 9's choice of $\tau$ is where KISS-ICP (Vizzo et al., 2023) earns its name. Rather than tuning
+$\tau$ per dataset, track how wrong the constant-velocity prediction has been and set
+$\tau_t = 3\sigma_t$ from the running deviation
+$\delta = \norm{\Delta \mathbf{t}} + 2 r_{\max} \sin(\Delta\theta / 2)$ — the worst displacement the
+missed rotation could have caused at the far end of the sweep. The demo's front end does exactly
+this.
+
+<Algorithm
+  name="verify_loop(P_t, submap_j, T₀, gap)"
+  inputs="the current keyframe's cloud, a submap around candidate j, the graph's current relative pose, and how many edges separate them"
+  outputs="Some((Z_tj, Ω_tj)) if the match is believable, else None"
+  complexity="one ICP run, O(I · N)"
+>
+1. $\hat T \leftarrow$ `icp`$(\mathcal{P}_t, \text{submap}_j, T_0, \tau_{\text{loop}})$
+2. if rmse$(\hat T) > \rho_{\max}$ or inliers$(\hat T) < c_{\min}$ then return None &nbsp;&nbsp; ▸ geometric fitness
+3. $\mathbf{\Omega} \leftarrow$ `icp_information`$(\hat T)$, ridged and capped
+4. $\boldsymbol{\nu} \leftarrow \log(T_0^{-1} \hat T)^{\vee}$ &nbsp;&nbsp; ▸ innovation: how far the match moved the graph's belief
+5. $\mathbf{\Omega}_{\text{gate}} \leftarrow$ compound one edge's covariance over `gap` edges, invert
+6. if $\boldsymbol{\nu}\T \mathbf{\Omega}_{\text{gate}} \boldsymbol{\nu} > \chi^2_{3, 0.95} = 7.815$ then return None
+7. return Some$(\hat T, \mathbf{\Omega})$
+</Algorithm>
+
+Line 2 asks a geometric question — did the match converge to something tight and well supported?
+Line 6 asks a statistical one — is the answer consistent with what the graph already believed,
+given how uncertain it had a right to be? Both are needed, and they fail differently. A picket
+fence passes line 2 with a beautiful residual and fails line 6 by landing a whole spacing away. A
+genuine loop after a long unobserved drive fails line 2 if $\tau_{\text{loop}}$ is too small, and
+sails through line 6 because the gate has grown so wide it accepts anything.
+
+That growing gate is the point of line 5. The exact quantity is the graph's marginal covariance
+over the relative pose $T_i^{-1}T_j$, which [Chapter 15](/chapters/ch15-factor-graphs) recovers by
+sparse back-substitution. Compounding a single edge's covariance along the path is the cheap
+approximation, and it preserves the property that matters: a candidate forty nodes back must clear
+a much wider bar than one four nodes back, because forty nodes of odometry could have put the robot
+anywhere.
+
+<Algorithm
+  name="pose_graph_slam(scan stream)"
+  inputs="a stream of LiDAR sweeps and odometry"
+  outputs="a trajectory and a map, both revised whenever a loop is verified"
+  complexity="front end O(I·N) per sweep; back end O(|E| · fill) per optimization via sparse Cholesky"
+>
+1. $G \leftarrow$ graph with one **fixed** node at the origin
+2. loop
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\bar T_t \leftarrow T_{t-1} \circ u_t$ &nbsp;&nbsp; ▸ odometry prediction: the initial guess, nothing more
+4. &nbsp;&nbsp;&nbsp;&nbsp;$T_t \leftarrow$ `icp`$(\mathcal{P}_t, \text{local map}, \bar T_t, \tau_t)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;insert $T_t \mathcal{P}_t$ into the local map; evict the oldest sweep
+6. &nbsp;&nbsp;&nbsp;&nbsp;if $\norm{T_{\text{kf}}^{-1} T_t}$ exceeds the keyframe threshold then
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;add node $j$; add odometry factor $(T_{\text{kf}}^{-1}T_t,\, \mathbf{\Omega}_{\text{icp}})$
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{K} \leftarrow$ `detect_loop_candidates`$(G, j)$
+9. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;for the best $k \in \mathcal{K}$: if `verify_loop` returns Some then
+10. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;add loop factor; `optimize`$(G)$ &nbsp;&nbsp; ▸ Chapter 15, unchanged
+11. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;push the correction into the front end and rebuild the map
+12. &nbsp;&nbsp;&nbsp;&nbsp;endif
+13. endloop
+</Algorithm>
+
+Line 11 is the one people forget. The front end lives in the world frame; the back end has just
+moved the world frame under it. Fail to tell it and the next sweep is registered against a local
+map that no longer agrees with the graph, and the system tears itself apart over the following
+second.
+
+<Callout type="info">
+**The ancestor.** Thrun, Burgard and Fox's 1999–2000 draft already contains this chapter in
+embryo. Its `incremental_ML_mapping` (Table 14.1) hill-climbs
+$p(z_t \mid s_t)\,p(s_t \mid u_t, \hat s_{t-1})$ in pose space — scan-to-map matching with a
+likelihood-field cost and a motion prior, which is line 4 above with gradient ascent in place of
+ICP. Its `incremental_ML_mapping_for_cycles` (Table 14.5) detects cycles with a second, posterior
+estimator over poses and then "corrects poses backwards in time" — which is line 10 without the
+graph, and without the sparsity that makes it tractable. The draft names the two limitations of the
+basic method honestly:
+*"1. It is unable to cope with large odometry error. 2. It is unable to correct poses backwards in
+time."* Twenty-five years later the answer to both is one sparse linear solve.
+</Callout>
+
+## Implementation in Rust
+
+The crate is `ch16_slam2d`, and it reuses rather than reinvents: `SE2` comes from
+[Chapter 3](/chapters/ch03-geometry-of-motion), the simulated LiDAR and the Apartment from
+[Chapter 4](/chapters/ch04-rusty-and-sensors), the occupancy grid from
+[Chapter 13](/chapters/ch13-occupancy-grids), and the optimizer from
+[Chapter 15](/chapters/ch15-factor-graphs).
+
+### The local map
+
+```rust title="crates/ch16_slam2d/src/cloud.rs" {28-38}
+use nalgebra::{Point2, Vector2};
+use rustc_hash::FxHashMap;
+use smallvec::SmallVec;
+
+/// A sweep projected into sensor-frame points.
+///
+/// Max-range returns are *dropped*, not clamped. A beam that reports its
+/// maximum hit nothing; keeping it plants a phantom point on the horizon, and
+/// ICP will cheerfully match a phantom to a real wall. This is the single most
+/// common bug in a first scan matcher.
+pub struct PointCloud {
+    pub points: Vec<Point2<f64>>,
+    pub stamp: f64,
+}
+
+/// KISS-ICP's local map: a voxel hash with a bounded population per cell.
+///
+/// `max_per_cell` bounds memory *and* filters: a cell that has met its quota
+/// ignores further evidence, so a passing pedestrian cannot stuff the map with
+/// a wall that is not there.
+pub struct VoxelMap {
+    cell: f64,
+    max_per_cell: usize,
+    cells: FxHashMap<(i32, i32), SmallVec<[u32; 4]>>,
+    pts: Vec<Point2<f64>>,
+    normals: Vec<Option<Vector2<f64>>>,
+}
+
+impl VoxelMap {
+    #[inline]
+    fn key(&self, p: &Point2<f64>) -> (i32, i32) {
+        ((p.x / self.cell).floor() as i32, (p.y / self.cell).floor() as i32)
+    }
+
+    /// Expected O(1): only the ⌈τ/cell⌉-ring of cells can hold the answer, and
+    /// each cell holds at most `max_per_cell` points. A k-d tree answers the
+    /// same query in O(log M) but must be rebuilt as the map grows — which,
+    /// for a map that grows every frame, is the wrong trade.
+    pub fn nearest(&self, p: &Point2<f64>, tau: f64) -> Option<u32> {
+        let ring = (tau / self.cell).ceil().max(1.0) as i32;
+        let (ci, cj) = self.key(p);
+        let mut best: Option<u32> = None;
+        let mut best_d2 = tau * tau;
+        for di in -ring..=ring {
+            for dj in -ring..=ring {
+                let Some(bucket) = self.cells.get(&(ci + di, cj + dj)) else { continue };
+                for &idx in bucket {
+                    let d2 = (self.pts[idx as usize] - p).norm_squared();
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        best = Some(idx);
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    pub fn insert(&mut self, pts: &[Point2<f64>], normals: &[Option<Vector2<f64>>]) {
+        for (k, p) in pts.iter().enumerate() {
+            let bucket = self.cells.entry(self.key(p)).or_default();
+            if bucket.len() >= self.max_per_cell {
+                continue;
+            }
+            bucket.push(self.pts.len() as u32);
+            self.pts.push(*p);
+            self.normals.push(normals.get(k).copied().flatten());
+        }
+    }
+}
+```
+
+### The matcher
+
+```rust title="crates/ch16_slam2d/src/icp.rs" {17-31,58-72}
+use nalgebra::{Matrix3, Point2, Rotation2, Vector2, Vector3};
+use pr_geom::SE2; // Chapter 3
+
+#[derive(Clone, Copy)]
+pub enum IcpVariant {
+    PointToPoint,
+    PointToPlane,
+}
+
+pub struct IcpResult {
+    pub pose: SE2,
+    pub rmse: f64,
+    pub inliers: usize,
+    /// Pose after every iteration. The interesting part of ICP is never the
+    /// answer; it is the path it took to get there — and w16.1 draws it.
+    pub trace: Vec<SE2>,
+}
+
+/// `svd_align` — Arun et al. (1987), specialized to the plane.
+///
+/// tr(RᵀW) = cos θ (W₁₁ + W₂₂) + sin θ (W₂₁ − W₁₂) is one sinusoid, so the
+/// SVD collapses to a single `atan2` over a dot product and a cross product.
+/// Because `atan2` returns an *angle*, the det-correction that keeps the 3-D
+/// version from returning a reflection is free here.
+pub fn svd_align(src: &[Point2<f64>], dst: &[Point2<f64>]) -> SE2 {
+    let n = src.len().min(dst.len());
+    assert!(n >= 2, "a rigid alignment needs at least two correspondences");
+    let p_bar = centroid(&src[..n]);
+    let q_bar = centroid(&dst[..n]);
+    let (mut s_dot, mut s_cross) = (0.0, 0.0);
+    for k in 0..n {
+        let (a, b) = (src[k] - p_bar, dst[k] - q_bar);
+        s_dot += a.dot(&b);
+        s_cross += a.x * b.y - a.y * b.x;
+    }
+    let theta = s_cross.atan2(s_dot);
+    SE2::new(q_bar.coords - Rotation2::new(theta) * p_bar.coords, theta)
+}
+
+/// One Gauss–Newton step of the point-to-plane cost.
+///
+/// Rows are aᵀ = (p̃ × n, nₓ, n_y) with p̃ measured from the cloud centroid, so
+/// the linearized rotation happens about the centroid rather than the world
+/// origin — the difference between a well-conditioned 3×3 and a hopeless one.
+pub fn point_to_plane_step(pairs: &[Correspondence]) -> SE2 {
+    let c = centroid_of_sources(pairs);
+    let mut h = Matrix3::zeros();
+    let mut g = Vector3::zeros();
+    for pr in pairs {
+        let Some(n) = pr.normal else { continue };
+        let r = pr.src - c;
+        let a = Vector3::new(r.x * n.y - r.y * n.x, n.x, n.y);
+        let b = -n.dot(&(pr.src - pr.dst));
+        h += a * a.transpose();
+        g += a * b;
+    }
+    // Damping *relative to the trace*, not an absolute 1e-9 ridge. Along a
+    // corridor both H and g vanish in the along-wall direction; an absolute
+    // ridge divides the numerical dust in one by the dust in the other and
+    // slides the scan a metre down the hallway. This resolves the
+    // unconstrained direction to zero motion: "the scan says nothing here,
+    // keep the prediction".
+    let ridge = 1e-4 * h.trace() / 3.0 + 1e-12;
+    h += Matrix3::identity() * ridge;
+
+    let x = h.lu().solve(&g).expect("3x3 normal equations are damped, so never singular");
+    let (theta, t) = (x[0], Vector2::new(x[1], x[2]));
+    let rot = Rotation2::new(theta);
+    SE2::new(c.coords - rot * c.coords + t, theta)
+}
+
+pub fn icp(src: &PointCloud, map: &VoxelMap, init: SE2, cfg: &IcpConfig) -> IcpResult {
+    let mut pose = init;
+    let mut trace = vec![pose];
+    let mut pairs = associate(src, map, pose, cfg.tau);
+
+    for _ in 0..cfg.max_iters {
+        if pairs.len() < cfg.min_pairs {
+            break;
+        }
+        let delta = match cfg.variant {
+            IcpVariant::PointToPoint => svd_align(&sources(&pairs), &targets(&pairs)),
+            IcpVariant::PointToPlane => point_to_plane_step(&pairs),
+        };
+        // The increment is expressed in the *target* frame, so it composes on
+        // the left. Composing on the right is a bug that still converges, just
+        // to the wrong place, which is the worst kind.
+        pose = delta * pose;
+        pairs = associate(src, map, pose, cfg.tau);
+        trace.push(pose);
+        if delta.log().norm() < cfg.tolerance {
+            break;
+        }
+    }
+    IcpResult { rmse: rmse(&pairs, cfg.variant), inliers: pairs.len(), pose, trace }
+}
+```
+
+### The back end
+
+```rust title="crates/ch16_slam2d/src/graph.rs" {30-45}
+use faer::sparse::{SparseColMat, linalg::solvers::Llt};
+use nalgebra::{Matrix3, Vector3};
+use petgraph::graph::{NodeIndex, UnGraph};
+use pr_geom::SE2;
+
+pub struct PoseEdge {
+    pub z: SE2,
+    pub omega: Matrix3<f64>,
+    pub kind: EdgeKind,
+}
+
+pub struct PoseGraph {
+    /// petgraph owns the topology; the poses are the node weights. Candidate
+    /// search and connectivity queries then come for free.
+    graph: UnGraph<SE2, PoseEdge>,
+    fixed: NodeIndex,
+}
+
+impl PoseGraph {
+    /// e_ij = log(Z⁻¹ Tᵢ⁻¹ Tⱼ)^∨ — computed exactly, always.
+    pub fn residual(&self, i: NodeIndex, j: NodeIndex, e: &PoseEdge) -> Vector3<f64> {
+        let (ti, tj) = (self.graph[i], self.graph[j]);
+        ((ti * e.z).inverse() * tj).log()
+    }
+
+    /// One Gauss–Newton iteration. Returns the largest per-node correction,
+    /// which is the number the dashboard reports as "history moved by".
+    pub fn optimize_once(&mut self, huber: f64) -> f64 {
+        let n = self.graph.node_count();
+        let mut triplets = Vec::with_capacity(36 * self.graph.edge_count());
+        let mut b = vec![0.0; 3 * n];
+
+        for edge in self.graph.edge_references() {
+            let (i, j) = (edge.source(), edge.target());
+            let e = self.residual(i, j, edge.weight());
+            // ∂e/∂δᵢ = −Ad_{Z⁻¹},  ∂e/∂δⱼ = I. Both to first order in ‖e‖:
+            // the right-Jacobian factor is I + O(‖e‖) and Gauss–Newton only
+            // needs a direction. The residual above is exact, and the residual
+            // is what fixes the answer.
+            let a_i = -edge.weight().z.inverse().adjoint();
+            let a_j = Matrix3::identity();
+            let omega = robust_weight(&e, &edge.weight().omega, huber);
+
+            for (node, a) in [(i, a_i), (j, a_j)] {
+                let at_omega = a.transpose() * omega;
+                accumulate(&mut b, node, &(at_omega * e));
+                for (other, a_other) in [(i, a_i), (j, a_j)] {
+                    push_block(&mut triplets, node, other, &(at_omega * a_other));
+                }
+            }
+        }
+
+        // Gauge: the cost is invariant under a rigid transform of the whole
+        // trajectory, so H is singular by construction. Pin one node.
+        clamp_fixed(&mut triplets, &mut b, self.fixed);
+
+        let h = SparseColMat::try_new_from_triplets(3 * n, 3 * n, &triplets).unwrap();
+        let delta = Llt::new(h.as_ref(), faer::Side::Lower)
+            .expect("H is PSD once the gauge is fixed and Ω are PSD")
+            .solve(&nalgebra_to_faer(&b).neg());
+
+        let mut max_step = 0.0_f64;
+        for (k, node) in self.graph.node_indices().enumerate() {
+            if node == self.fixed {
+                continue;
+            }
+            let d = Vector3::new(delta[3 * k], delta[3 * k + 1], delta[3 * k + 2]);
+            max_step = max_step.max(d.norm());
+            self.graph[node] = self.graph[node].boxplus(&d); // ⊞, never +
+        }
+        max_step
+    }
+}
+```
+
+The one line worth staring at is `a_i = -edge.weight().z.inverse().adjoint()`. That is the whole
+manifold apparatus of [Chapter 3](/chapters/ch03-geometry-of-motion) earning its keep: the
+derivative of a group-valued residual with respect to a group-valued variable, in three
+characters of algebra and one function call.
+
+### Information, honestly
+
+```rust title="crates/ch16_slam2d/src/icp.rs (continued)"
+/// The information matrix ICP *would* report for its own answer: Ω = JᵀJ / σ².
+///
+/// This is the Gauss–Newton Hessian at the solution — the curvature of the
+/// cost, which is exactly what an information matrix is. Take it at face value
+/// and the pose graph will believe a corridor match far more than it should,
+/// because the derivation assumes every beam is an independent observation and
+/// consecutive LiDAR beams are anything but. `inflate` divides the effective
+/// sample size by a constant; it is the same "inflate and admit it" fudge
+/// Chapter 10 applies to the beam model, and it is not more principled here.
+pub fn icp_information(pairs: &[Correspondence], sigma: f64, inflate: f64) -> Matrix3<f64> {
+    let c = centroid_of_sources(pairs);
+    let w = 1.0 / (sigma * sigma * inflate);
+    let mut omega = Matrix3::zeros();
+    for pr in pairs {
+        let r = pr.src - c;
+        for n in pr.constrained_directions() {
+            let a = Vector3::new(n.x, n.y, r.x * n.y - r.y * n.x);
+            omega += w * a * a.transpose();
+        }
+    }
+    omega
+}
+
+/// Keep Ω usable *without* breaking it.
+///
+/// The fix for a rank-deficient Ω is a ridge, Ω + λI, not a clamp on the
+/// diagonal: clamping entries one at a time can leave a matrix that is no
+/// longer positive semi-definite, and a pose graph fed an indefinite Ω does
+/// not converge slowly — it explodes. Ask the demo: before this was a ridge,
+/// one corridor loop closure sent the trajectory 200 m into the car park.
+pub fn regularize(mut omega: Matrix3<f64>, ridge: f64, cap: f64) -> Matrix3<f64> {
+    omega += Matrix3::identity() * ridge;
+    let peak = omega.diagonal().max();
+    if peak > cap {
+        omega *= cap / peak;
+    }
+    omega
+}
+```
+
+### The tests that pin the worked examples
+
+```rust title="crates/ch16_slam2d/tests/worked_examples.rs"
+use approx::assert_relative_eq;
+use nalgebra::Point2;
+
+#[test]
+fn svd_align_recovers_a_known_rigid_motion() {
+    // Four points on the unit circle; cos θ = 0.8, sin θ = 0.6, t = (2, 1).
+    let src = [Point2::new(1.0, 0.0), Point2::new(0.0, 1.0),
+               Point2::new(-1.0, 0.0), Point2::new(0.0, -1.0)];
+    let dst = [Point2::new(2.8, 1.6), Point2::new(1.4, 1.8),
+               Point2::new(1.2, 0.4), Point2::new(2.6, 0.2)];
+
+    let t = svd_align(&src, &dst);
+
+    assert_relative_eq!(t.theta().cos(), 0.8, epsilon = 1e-12);
+    assert_relative_eq!(t.theta().sin(), 0.6, epsilon = 1e-12);
+    assert_relative_eq!(t.translation().x, 2.0, epsilon = 1e-12);
+    assert_relative_eq!(t.translation().y, 1.0, epsilon = 1e-12);
+}
+
+#[test]
+fn a_loop_error_spreads_evenly_around_the_cycle() {
+    // Three collinear poses, unit information everywhere. Odometry says 1 m
+    // per step; the loop factor says the two-step displacement is 2.6 m.
+    let mut g = PoseGraph::new();
+    let n0 = g.add_fixed_node(SE2::identity());
+    let n1 = g.add_node(SE2::translation(1.0, 0.0));
+    let n2 = g.add_node(SE2::translation(2.0, 0.0));
+    g.add_edge(n0, n1, SE2::translation(1.0, 0.0), Matrix3::identity(), EdgeKind::Odometry);
+    g.add_edge(n1, n2, SE2::translation(1.0, 0.0), Matrix3::identity(), EdgeKind::Odometry);
+    g.add_edge(n0, n2, SE2::translation(2.6, 0.0), Matrix3::identity(), EdgeKind::Loop);
+
+    assert_relative_eq!(g.chi2(), 0.36, epsilon = 1e-12); // (−0.6)²
+
+    g.optimize(20, 1e-12);
+
+    // 0.6 m of loop error, three edges, 0.2 m each. The *fixed* node did not
+    // move; everything else did.
+    assert_relative_eq!(g.pose(n1).translation().x, 1.2, epsilon = 1e-9);
+    assert_relative_eq!(g.pose(n2).translation().x, 2.4, epsilon = 1e-9);
+    assert_relative_eq!(g.chi2(), 0.12, epsilon = 1e-9);
+}
+```
+
+<Callout type="info">
+Both tests pass in the TypeScript port too — `lib/slam/icp.ts` and `lib/slam/posegraph.ts` are
+line-for-line translations of the Rust above, and they are what every widget on this page runs.
+The alignment example returns $(2.0000, 1.0000, 36.8699°)$ and the graph example returns
+$\chi^2: 0.36 \to 0.12$ with poses $0,\, 1.2,\, 2.4$ in both implementations.
+</Callout>
+
+## Putting it together: RustSLAM-2D
+
+Front end, back end, gate, map. One lap of the Apartment's corridor, east and back.
+
+<Deferred>
+  <RustSlamControlRoom />
+</Deferred>
+
+### What the system actually buys
+
+Here are the numbers for the canonical run — seed `0xC0FFEE`, 129 ticks, 41 keyframes, a 120-beam
+sweep at 6 m with 5 cm range noise:
+
+| Quantity | Odometry only | Front end only | Front end + 3 loop factors |
+|---|---|---|---|
+| Position error at the end of the lap | 2.41 m | 0.73 m | 0.24 m |
+| RMS position error over the lap | 1.18 m | 0.64 m | 0.59 m |
+| Return-leg keyframe error | — | 0.54 – 0.75 m | 0.17 – 0.34 m |
+| Map self-disagreement | — | 0.238 m | 0.082 m |
+
+(The odometry row is averaged over every tick; the graph rows over keyframes, which is what the
+graph actually holds. The difference is immaterial at this sample size.)
+
+The first column is the reason scan matching exists: two and a half metres of error over eighteen
+metres of driving, from wheels that were not even badly calibrated. The second column is the front
+end doing its job — a threefold reduction, bought with one nearest-neighbour query per beam and no
+new sensors.
+
+The third column is where it gets interesting, and where most treatments of loop closure stop
+being honest.
+
+### What loop closure fixed, and what it could not
+
+Three candidates were proposed and all three passed the gate, with $\chi^2$ of 4.24, 0.42 and 1.13
+against a threshold of 7.815. The largest single correction moved a past pose by 0.24 m. And the
+RMS error over the whole lap barely moved: 0.64 m to 0.59 m, an 8% cut.
+
+Look at the other rows and the picture resolves. The **return-leg error fell by a factor of
+three**, and the **map's disagreement with itself fell by a factor of three**. The doubled walls
+collapsed. What did *not* improve is the error at the far end of the corridor, around the
+turnaround: 0.85 m before the closures and 0.89 m after.
+
+That is not a bug, and it is not tuning. The Apartment's free space is a **tree**: every room is a
+dead end off one corridor, so there is no cycle to close. What Rusty gets is a *revisit* — the
+return leg passes places the outbound leg saw. A revisit ties the two legs to each other and, via
+the fixed node, to the origin. It says nothing whatsoever about the turnaround, which was seen
+once, from one direction, and never re-measured. Error at a place you visit exactly once is
+**unobservable**, and no optimizer invents information.
+
+<KeyIdea title="What a loop closure is, precisely">
+A loop closure is a measurement of the *relative* pose between two moments in time. It makes the
+trajectory self-consistent and the map single-layered. It reduces absolute error only where the
+constraint graph actually reaches — which is why exploration planners
+([Chapter 24](/chapters/ch24-exploration)) deliberately route the robot back through unvisited
+junctions, and why every SLAM benchmark drives real cycles.
+</KeyIdea>
+
+This is also why the map-disagreement number is the one to watch on a real robot. ATE needs ground
+truth, which a deployed system never has. Map self-disagreement needs nothing but the map, and it
+is the quantity that actually determines whether the navigation stack downstream can plan through
+a doorway.
+
+### The production recipe, stated honestly
+
+RustSLAM-2D is the architecture of every deployed 2D system, with the corners rounded off:
+
+- **Cartographer** (Hess et al., 2016) replaces the sliding local map with explicit *submaps* and
+  the radius search with a branch-and-bound multi-resolution correlative matcher that is *exact* —
+  it returns the global optimum of the score within a search window, which removes the basin
+  problem of <a href="#w16.1">w16.1</a> at the cost of a much larger constant. We teach the
+  covariance-gated candidate search instead because it fits on a page; if you deploy, read their
+  §IV.
+- **SLAM Toolbox** (Macenski and Jambrecic, 2021) is the ROS 2 default and adds the operational
+  parts this chapter ignores entirely: serialization, lifelong map updates, and localization
+  against a map built in an earlier session.
+- **Place recognition at scale** replaces the radius search with a descriptor — Scan Context,
+  DBoW — because a radius search over past poses depends on a pose estimate that, by the time you
+  need a loop closure, is exactly the thing that is wrong. Exercise 6 builds the smallest possible
+  version of this.
+- **3-D and inertial.** LOAM's feature-based lineage (LIO-SAM, FAST-LIO2) dominates 3-D LiDAR
+  odometry; FAST-LIO2's iterated error-state Kalman filter is filtering's revenge, and connects
+  straight back to [Chapter 7](/chapters/ch07-ekf-ukf-manifolds). The 2024 LiDAR odometry survey is
+  the map of that territory. We follow KISS-ICP instead — small, nearly parameter-free, and
+  implementable in a weekend — precisely because it shows that the classic objective, done
+  carefully, is still competitive.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Finish the Procrustes bound">
+    Complete Step 3 of the alignment derivation: prove $\tr(\mathbf{R}\T\mathbf{W}) \le \sum_i s_i$
+    for every rotation $\mathbf{R}$, with equality at $\mathbf{R} = \mathbf{U}\mathbf{V}\T$. (Hint:
+    show every diagonal entry of an orthogonal matrix has absolute value at most 1, using the fact
+    that its rows are unit vectors.) Then construct a two-point planar correspondence set for which
+    $\mathbf{U}\mathbf{V}\T$ has determinant $-1$, and say what the reflection it returns would do
+    to a map.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The corridor's null vector">
+    Derive the point-to-plane rows $\mathbf{a}_k$ and scalars $b_k$ from the derivation, then take
+    an infinite corridor: all target points lie on $y = 0$ or $y = w$, so every normal is
+    $\pm(0,1)$. Show that $\mathbf{H} = \sum_k \mathbf{a}_k\mathbf{a}_k\T$ has rank 2 and compute
+    its null vector explicitly. Interpret it physically. Finally, explain why adding the odometry
+    prior as one extra row $\mathbf{a}_0 = (0, 1, 0)$ with weight $1/\sigma_v^2$ restores rank 3,
+    and what that says about the relationship between this section and
+    [Chapter 9](/chapters/ch09-motion-models).
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Why the residual must be exact">
+    The pose-graph implementation drops the right-Jacobian factor $\mathbf{J}_r^{-1}(\mathbf{e})$
+    but computes $\mathbf{e}$ exactly. Show that at any fixed point of the iteration,
+    $\sum_{(i,j)} \mathbf{A}\T \mathbf{\Omega} \mathbf{e}_{ij} = \mathbf{0}$ holds regardless of
+    which invertible approximation of $\mathbf{J}_r^{-1}$ was used, so the *converged* solution is
+    unaffected. Then construct a residual formula that is wrong by a first-order term and show that
+    its fixed point is a different trajectory. This is the formal version of "a wrong Jacobian
+    costs iterations; a wrong residual costs correctness".
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the basin edge">
+    In <a href="#w16.1">w16.1</a>, predict the largest pure-rotation initial offset from which
+    point-to-point ICP still converges to the true alignment on the room scene. Then measure it by
+    sweeping the heading slider. Repeat for point-to-plane. The two thresholds differ; explain the
+    difference using the terraces in <a href="#w16.3">w16.3</a>, and predict what happens to both
+    thresholds when you double $\tau$.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Gate the loop before you watch it">
+    In <a href="#w16.2">w16.2</a>, set the odometry-noise multiplier to its maximum and predict,
+    before pressing play, (a) whether the front end still tracks, (b) whether the χ² gate will
+    accept the first loop candidate, and (c) which of ATE and map disagreement will improve more.
+    Run it, then explain your errors in terms of the gate's covariance: `pathUncertainty` widens
+    with the number of edges between the two nodes, so a noisier run has a *more* permissive gate
+    at the same node separation. Is that the right behaviour? Argue both sides.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Trimmed ICP">
+    Add `trim: f64` to `IcpConfig`: after association, sort correspondences by residual and keep
+    only the best `1 − trim` fraction before solving. Then contaminate the source cloud with 20%
+    of points drawn from a moving obstacle (a 0.4 m box translating between the two sweeps) and
+    compare vanilla ICP, trimmed ICP at 25%, and a Huber-kernelled variant. Report the bias in the
+    recovered translation for each. Which of the three degrades most gracefully as the
+    contamination fraction rises past 40%, and why?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A descriptor-based loop detector">
+    Replace `detect_loop_candidates`' radius search with a descriptor: for each keyframe compute a
+    64-bin histogram of ranges, normalized to sum to one, and match by χ² distance with
+    brute-force search over all past keyframes. Measure precision and recall against the
+    covariance-gated search on the Apartment lap, over twenty seeds. You will find the descriptor
+    fires in places the radius search never looks — and also in places it should not, because a
+    corridor's range histogram is nearly position-invariant. Explain how Scan Context's
+    rotation-invariant polar encoding addresses exactly this, and what it would cost you here.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    id="besl1992"
+    authors="Besl, P. J. and McKay, N. D."
+    year={1992}
+    title="A Method for Registration of 3-D Shapes"
+    venue="IEEE Transactions on Pattern Analysis and Machine Intelligence 14(2), 239–256"
+    doi="10.1109/34.121791"
+    note="The paper that named ICP and proved the monotone-convergence property re-derived in this chapter's second derivation. Its honesty about convergence being local only is still the correct warning."
+  />
+  <Reference
+    id="arun1987"
+    authors="Arun, K. S., Huang, T. S. and Blostein, S. D."
+    year={1987}
+    title="Least-Squares Fitting of Two 3-D Point Sets"
+    venue="IEEE Transactions on Pattern Analysis and Machine Intelligence PAMI-9(5), 698–700"
+    doi="10.1109/TPAMI.1987.4767965"
+    note="The closed-form SVD alignment of Derivation 1, including the determinant correction that excludes reflections. Two pages, and it has held up for forty years."
+  />
+  <Reference
+    id="chen1992"
+    authors="Chen, Y. and Medioni, G."
+    year={1992}
+    title="Object Modelling by Registration of Multiple Range Images"
+    venue="Image and Vision Computing 10(3), 145–155"
+    doi="10.1016/0262-8856(92)90066-C"
+    note="The point-to-plane objective, and the observation that penalizing motion along a surface is penalizing an artefact of the correspondence rather than a disagreement. Derivation 3 is this cost, linearized on SE(2)."
+  />
+  <Reference
+    id="lu1997"
+    authors="Lu, F. and Milios, E."
+    year={1997}
+    title="Globally Consistent Range Scan Alignment for Environment Mapping"
+    venue="Autonomous Robots 4(4), 333–349"
+    doi="10.1023/A:1008854305733"
+    note="The origin of pose-graph SLAM: relative scan-alignment constraints, a maximum-likelihood objective over all poses at once, and the observation that this is a sparse linear system. Everything in Section 3.6 is here first."
+  />
+  <Reference
+    id="biber2003"
+    authors="Biber, P. and Straßer, W."
+    year={2003}
+    title="The Normal Distributions Transform: A New Approach to Laser Scan Matching"
+    venue="Proc. IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2743–2748"
+    doi="10.1109/IROS.2003.1249285"
+    note="NDT as this chapter presents it, including the covariance regularization and the overlapping-grid fix for cell-boundary discontinuities."
+  />
+  <Reference
+    id="hess2016"
+    authors="Hess, W., Kohler, D., Rapp, H. and Andor, D."
+    year={2016}
+    title="Real-Time Loop Closure in 2D LIDAR SLAM"
+    venue="Proc. IEEE International Conference on Robotics and Automation (ICRA), 1271–1278"
+    doi="10.1109/ICRA.2016.7487258"
+    note="Cartographer. The submap formulation and the branch-and-bound correlative matcher that finds the global optimum inside a search window — the principled cure for the wrong-minimum failure of w16.1."
+  />
+  <Reference
+    id="macenski2021"
+    authors="Macenski, S. and Jambrecic, I."
+    year={2021}
+    title="SLAM Toolbox: SLAM for the Dynamic World"
+    venue="Journal of Open Source Software 6(61), 2783"
+    doi="10.21105/joss.02783"
+    note="The 2D SLAM system most robots actually run. Worth reading as engineering rather than theory: serialization, lifelong mapping, and localization against a previously built graph."
+  />
+  <Reference
+    id="vizzo2023"
+    authors="Vizzo, I., Guadagnino, T., Mersch, B., Wiesmann, L., Behley, J. and Stachniss, C."
+    year={2023}
+    title="KISS-ICP: In Defense of Point-to-Point ICP — Simple, Accurate, and Robust Registration If Done the Right Way"
+    venue="IEEE Robotics and Automation Letters 8(2), 1029–1036"
+    doi="10.1109/LRA.2023.3236571"
+    note="The source of this chapter's front-end design: constant-velocity prediction, voxel downsampling, a bounded voxel-hash local map, and the adaptive threshold τ = 3σ. Its argument — that the classic objective done carefully beats elaborate feature pipelines — is why we teach it."
+  />
+  <Reference
+    id="lee2024"
+    authors="Lee, D., Jung, M., Yang, W. and Kim, A."
+    year={2024}
+    title="LiDAR Odometry Survey: Recent Advancements and Remaining Challenges"
+    venue="arXiv:2312.17487"
+    url="https://arxiv.org/abs/2312.17487"
+    note="The map of everything this chapter deliberately skipped: LOAM's feature lineage, LIO-SAM, FAST-LIO2, multi-LiDAR and LiDAR-inertial fusion, and the datasets they are measured on."
+  />
+</References>

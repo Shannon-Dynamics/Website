@@ -1,0 +1,705 @@
+/* ==========================================================================
+   Shannon Dynamics shell
+   --------------------------------------------------------------------------
+   The chrome this book shares with the rest of the Shannon Dynamics site: the
+   fixed glass nav, the halftone page banner, the graphite footer, and the type
+   and colour tokens they sit on. Lifted from `book-*.html` in the marketing
+   repo so the two read as one property.
+
+   SCOPE RULE — this file styles CHROME ONLY.
+   The book's data colours (the estimation palette: prior / prediction /
+   measurement / posterior, and the chart series) are a separate, deliberately
+   validated system. Nothing in here touches them, and nothing in here should
+   ever be reached for inside a figure.
+
+   Everything is `sd-` prefixed so it cannot collide with the book's own
+   classes or with Fumadocs'.
+   ========================================================================== */
+
+:root {
+  --sd-graphite: #10181b;
+  --sd-slate: #1b2529;
+  --sd-accent: #4c7eff;
+  --sd-accent-soft: #8faeff;
+  --sd-accent-pale: #a9c3ff;
+
+  --sd-shell: 1240px;
+  /* Height the fixed bar settles at once it is solid — the spacer and every
+     scroll-margin below are derived from it, so the bar is sized in one place. */
+  --sd-nav-h: 60px;
+
+  /* Ink for chrome that sits on the PAGE rather than on the dark plates.
+     The site itself is light-only; these carry the same values into a book
+     that also has a dark reading theme, so a button or an eyebrow is never
+     graphite-on-graphite. */
+  --sd-ink: #10181b;
+  --sd-ink-soft: rgba(16, 24, 27, 0.66);
+  --sd-ink-faint: rgba(16, 24, 27, 0.42);
+  --sd-line: rgba(16, 24, 27, 0.16);
+  /* the accent as TEXT: #4C7EFF does not clear AA on graphite, so dark lifts it */
+  --sd-accent-ink: #4c7eff;
+  --sd-btn-pri-bg: #10181b;
+  --sd-btn-pri-fg: #ffffff;
+}
+
+/* Both books' dark selectors — Fumadocs stamps a class, RL4RVR an attribute.
+   Listing both keeps this file identical across the two; the one that does not
+   apply simply never matches. */
+.dark,
+:root[data-theme='dark'] {
+  --sd-ink: rgba(255, 255, 255, 0.92);
+  --sd-ink-soft: rgba(255, 255, 255, 0.72);
+  --sd-ink-faint: rgba(255, 255, 255, 0.5);
+  --sd-line: rgba(255, 255, 255, 0.2);
+  --sd-accent-ink: #8faeff;
+  --sd-btn-pri-bg: #ffffff;
+  --sd-btn-pri-fg: #10181b;
+}
+
+/* --------------------------------------------------------------------------
+   Glass
+   -------------------------------------------------------------------------- */
+
+.sd-glass-dark {
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.04) 60%);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 10px 36px -14px rgba(0, 0, 0, 0.6);
+}
+
+/* --------------------------------------------------------------------------
+   Fixed top nav
+
+   Two modes. Over a banner the bar starts transparent and gains its surface on
+   scroll (`.is-stuck`), exactly as on the marketing site. On a page with no
+   banner — a chapter, where content starts at the top of a white page — it is
+   solid from the first frame (`.is-solid`), because the logo and links are
+   white-only assets and would otherwise land invisible on white.
+   -------------------------------------------------------------------------- */
+
+.sd-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 20px 0;
+  border-bottom: 1px solid transparent;
+  transition:
+    padding 0.3s ease,
+    background 0.3s ease,
+    border-color 0.3s ease;
+}
+
+/* three tracks, so the link island sits dead centre regardless of how wide the
+   logo or the trailing controls happen to be */
+.sd-nav-in {
+  max-width: var(--sd-shell);
+  margin-inline: auto;
+  padding-inline: 24px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+}
+
+.sd-nav-start {
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.sd-nav-links {
+  justify-self: center;
+}
+.sd-nav-end {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sd-nav-logo {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.sd-nav-logo img {
+  height: 28px;
+  width: auto;
+  display: block;
+}
+
+.sd-nav.is-stuck,
+.sd-nav.is-solid {
+  padding: 10px 0;
+  background: rgba(16, 24, 27, 0.92);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+
+/* the link pill already carries glass — stacked on the solid bar it reads as a
+   smudge, so it flattens and lets the bar do the work */
+.sd-nav.is-stuck .sd-nav-links,
+.sd-nav.is-solid .sd-nav-links {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.sd-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.sd-nav-link {
+  padding: 6px 14px;
+  border-radius: 9999px;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background 0.25s ease,
+    color 0.25s ease;
+}
+.sd-nav-link:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+/* the book's own links carry an active state the marketing nav never needed */
+.sd-nav-link.is-on {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+/* separates the book's own routes from the links back out to the site */
+.sd-nav-div {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.18);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+/* ── Library submenu — hover/focus disclosure, click-toggle for touch ──
+   The trigger is a real link that also happens to carry a menu; JS only handles
+   the touch case where hover cannot open it, plus outside-click and Escape. */
+.sd-nav-item {
+  position: relative;
+}
+.sd-nav-link-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sd-nav-chev {
+  transition: transform 0.25s ease;
+  flex-shrink: 0;
+}
+.sd-nav-item:hover .sd-nav-chev,
+.sd-nav-item.is-open .sd-nav-chev {
+  transform: rotate(180deg);
+}
+.sd-nav-sub {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translate(-50%, 6px);
+  width: 240px;
+  padding: 8px;
+  border-radius: 16px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease,
+    visibility 0.22s;
+  background: rgba(13, 19, 23, 0.97);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 20px 44px -18px rgba(0, 0, 0, 0.65);
+}
+/* gap-bridging pad so the pointer can travel from link to panel without the
+   hover chain breaking on the dead space between them */
+.sd-nav-item::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 14px;
+}
+.sd-nav-item:hover .sd-nav-sub,
+.sd-nav-item:focus-within .sd-nav-sub,
+.sd-nav-item.is-open .sd-nav-sub {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+.sd-nav-sub-link {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 10px;
+  text-decoration: none;
+  transition: background 0.2s ease;
+}
+.sd-nav-sub-link:hover,
+.sd-nav-sub-link:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+}
+.sd-nav-sub-link b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: -0.01em;
+}
+.sd-nav-sub-link small {
+  display: block;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 2px;
+}
+
+/* CTA keeps its own frame, outside the link island, so it stays pinned with
+   the bar rather than floating as a separate affordance */
+.sd-nav-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: #fff;
+  color: var(--sd-graphite);
+  border-radius: 9999px;
+  padding: 9px 18px;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: opacity 0.25s ease;
+}
+.sd-nav-cta:hover {
+  opacity: 0.88;
+}
+
+/* pinned along the bar's bottom edge, under the padding — the reading
+   progress bar rides here so it tracks the bar rather than the page */
+.sd-nav-under {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+}
+
+/* icon buttons living in the bar: the sidebar trigger, the theme switch */
+.sd-nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  color: rgba(255, 255, 255, 0.75);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  transition:
+    background 0.25s ease,
+    color 0.25s ease;
+}
+.sd-nav-icon:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+/* the links have nowhere to go at this width; logo and trailing controls hold
+   the bar, and the book's own sidebar carries navigation */
+@media (max-width: 1023.98px) {
+  .sd-nav-in {
+    grid-template-columns: 1fr auto;
+  }
+  .sd-nav-links {
+    display: none;
+  }
+  .sd-nav-cta {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd-nav,
+  .sd-nav-sub,
+  .sd-nav-chev {
+    transition-duration: 0.01ms;
+  }
+}
+
+/* When the bar is solid it covers the top of the viewport, so the page needs
+   to start below it and anchor jumps need to stop short of it. */
+.sd-nav-spacer {
+  height: var(--sd-nav-h);
+}
+
+/* --------------------------------------------------------------------------
+   Texture veil — legibility floor over the halftone canvases
+
+   The dot field swings bright enough to swallow small copy laid over it. This
+   drops a scrim BETWEEN the canvas and the text: the dots still read as
+   texture, but the area under the words is held dark enough to clear AA.
+   -------------------------------------------------------------------------- */
+
+.sd-tex > canvas.sd-halftone {
+  z-index: 0;
+}
+.sd-tex::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.sd-tex > *:not(canvas.sd-halftone) {
+  z-index: 2;
+}
+
+/* copy sits along the bottom edge — the page banner */
+.sd-tex-bottom::after {
+  background: linear-gradient(
+    to top,
+    rgba(11, 17, 20, 0.94) 0%,
+    rgba(11, 17, 20, 0.9) 26%,
+    rgba(11, 17, 20, 0.78) 46%,
+    rgba(11, 17, 20, 0.42) 66%,
+    transparent 88%
+  );
+}
+
+/* the footer carries copy top to bottom, so it takes a flatter, even scrim */
+.sd-tex-foot::after {
+  background: linear-gradient(
+    to bottom,
+    rgba(11, 17, 20, 0.86) 0%,
+    rgba(11, 17, 20, 0.78) 45%,
+    rgba(11, 17, 20, 0.88) 100%
+  );
+}
+
+.sd-halftone {
+  display: block;
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Page banner
+   -------------------------------------------------------------------------- */
+
+.sd-banner {
+  position: relative;
+  height: 44vh;
+  min-height: 420px;
+  background: var(--sd-graphite);
+  overflow: hidden;
+}
+/* secondary pages — contents, method — do not need the full plate */
+.sd-banner.sd-banner-sm {
+  height: 32vh;
+  min-height: 300px;
+}
+
+.sd-banner-in {
+  position: relative;
+  max-width: var(--sd-shell);
+  margin: 0 auto;
+  height: 100%;
+  padding: 0 24px 46px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.sd-crumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.72);
+  position: relative;
+  z-index: 10;
+}
+.sd-crumb a {
+  color: rgba(255, 255, 255, 0.72);
+  text-decoration: none;
+  transition: color 0.25s;
+  pointer-events: auto;
+}
+.sd-crumb a:hover {
+  color: #fff;
+}
+.sd-crumb span.on {
+  color: var(--sd-accent-pale);
+}
+
+.sd-banner-title {
+  color: #fff;
+  font-size: clamp(30px, 4vw, 52px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  max-width: 18ch;
+}
+.sd-banner-sub {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  line-height: 1.7;
+  max-width: 56ch;
+  margin-top: 16px;
+}
+
+/* --------------------------------------------------------------------------
+   Shared chrome atoms
+   -------------------------------------------------------------------------- */
+
+/* mono eyebrow — the site's section label */
+.sd-kicker {
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--sd-ink-faint);
+}
+.sd-kicker-accent {
+  color: var(--sd-accent-ink);
+}
+
+.sd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 9999px;
+  padding: 10px 20px;
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-decoration: none;
+  border: 1px solid var(--sd-line);
+  color: var(--sd-ink-soft);
+  transition:
+    background 0.3s,
+    color 0.3s,
+    border-color 0.3s;
+}
+.sd-btn:hover {
+  border-color: rgba(76, 126, 255, 0.5);
+  color: var(--sd-accent-ink);
+}
+.sd-btn.pri {
+  background: var(--sd-btn-pri-bg);
+  border-color: var(--sd-btn-pri-bg);
+  color: var(--sd-btn-pri-fg);
+}
+.sd-btn.pri:hover {
+  background: var(--sd-accent);
+  border-color: var(--sd-accent);
+  color: #fff;
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+
+.sd-foot {
+  position: relative;
+  background: var(--sd-graphite);
+  overflow: hidden;
+  margin-top: 64px;
+}
+/* full-bleed bands, so the hairlines between them run edge to edge while the
+   copy inside stays on the shell measure */
+.sd-foot-sec {
+  position: relative;
+}
+.sd-foot-sec + .sd-foot-sec {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.sd-foot-in {
+  max-width: var(--sd-shell);
+  margin: 0 auto;
+  padding: 0 24px;
+}
+.sd-foot-cta {
+  padding: 72px 0 56px;
+}
+.sd-foot-cta h2 {
+  color: #fff;
+  font-size: clamp(22px, 3vw, 34px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  max-width: 22ch;
+  margin-top: 16px;
+}
+.sd-foot-cta p {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13.5px;
+  line-height: 1.75;
+  max-width: 52ch;
+  margin-top: 18px;
+}
+.sd-foot-eyebrow {
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--sd-accent-soft);
+}
+.sd-foot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 26px;
+  border-radius: 9999px;
+  padding: 11px 22px;
+  background: #fff;
+  color: var(--sd-graphite);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: opacity 0.25s ease;
+}
+.sd-foot-btn:hover {
+  opacity: 0.88;
+}
+
+.sd-foot-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 40px 32px;
+  padding: 56px 0;
+}
+@media (min-width: 768px) {
+  .sd-foot-cols {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.sd-foot-brand p {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  line-height: 1.65;
+  margin-top: 16px;
+  max-width: 220px;
+}
+.sd-foot-brand img {
+  height: 24px;
+  width: auto;
+  display: block;
+}
+.sd-foot-mail {
+  display: inline-block;
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--sd-accent-soft);
+  text-decoration: none;
+}
+.sd-foot-mail:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sd-foot-col-head {
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 16px;
+  text-transform: uppercase;
+}
+.sd-foot-col-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sd-foot-col-list a {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+.sd-foot-col-list a:hover {
+  color: #fff;
+}
+
+.sd-foot-bar {
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+}
+@media (min-width: 640px) {
+  .sd-foot-bar {
+    flex-direction: row;
+  }
+}
+.sd-foot-bar .sd-foot-stamp {
+  font-family: var(--sd-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+/* --------------------------------------------------------------------------
+   Cursor
+
+   The site's precision aperture, scoped to the chrome only. It deliberately
+   does NOT go on <body>: the book's instruments carry their own affordance
+   cursors (ew-resize on a scrubbable number, grab on a draggable robot) and a
+   page-wide override would fight every one of them.
+   -------------------------------------------------------------------------- */
+
+.sd-nav,
+.sd-banner,
+.sd-foot {
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='22' height='22'><circle cx='11' cy='11' r='8.5' fill='none' stroke='%234C7EFF' stroke-width='1' opacity='.55'/><circle cx='11' cy='11' r='2' fill='%234C7EFF'/></svg>")
+      11 11,
+    auto;
+}
+.sd-nav a,
+.sd-nav button,
+.sd-banner a,
+.sd-foot a,
+.sd-foot button {
+  cursor:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='30' height='30'><circle cx='15' cy='15' r='12.5' fill='%234C7EFF' fill-opacity='.14' stroke='%234C7EFF' stroke-width='1.4'/><circle cx='15' cy='15' r='3.4' fill='%234C7EFF'/></svg>")
+      15 15,
+    pointer;
+}

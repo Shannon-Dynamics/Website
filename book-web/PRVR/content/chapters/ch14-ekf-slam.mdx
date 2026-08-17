@@ -1,0 +1,1272 @@
+---
+title: The SLAM Problem and EKF SLAM
+description: Put the map inside the state and the EKF solves the chicken-and-egg problem in one filter — then two flaws, one quadratic and one structural, end the era it started.
+chapter: 14
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Advanced
+readingTime: 65 min
+quote: In SLAM, observing a landmark does not just improve the position estimate of this very landmark, but that of other landmarks as well.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 10
+---
+
+import { CorrelationWeb } from '@/components/ch/ch14/correlation-web';
+import { ConsistencyAutopsy } from '@/components/ch/ch14/consistency-autopsy';
+import { GrowthMeter } from '@/components/ch/ch14/growth-meter';
+import { PoisonedWeb } from '@/components/ch/ch14/poisoned-web';
+import { TeX } from '@/components/ch/ch14/tex';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State the online and full SLAM posteriors, and say exactly which one the EKF computes',
+    'Derive the blockwise EKF SLAM prediction and show why it costs O(N) while the correction costs Θ(N²)',
+    'Explain why the Kalman gain is dense when the measurement Jacobian is not — and why that is the whole algorithm',
+    'Prove what a SLAM map converges to: relative structure exactly, absolute position never',
+    'Run maximum-likelihood data association with gating, a provisional list, and landmark existence evidence',
+    'Measure a filter\'s honesty with NEES and a χ² band, and diagnose EKF SLAM\'s built-in overconfidence',
+    'Implement EkfSlam in Rust with a state vector that grows at runtime',
+  ]}
+  prerequisites={[
+    'The EKF and its Jacobian discipline (Chapter 7)',
+    'The velocity motion model and its Jacobians (Chapter 9)',
+    'The range–bearing landmark model f = (r, φ, s) (Chapter 10)',
+    'Maximum-likelihood association and Mahalanobis gating (Chapter 11)',
+    'Binary Bayes filters in log odds (Chapter 13) — they return here as landmark existence evidence',
+  ]}
+>
+[Chapter 12](/chapters/ch12-localization-global) localized Rusty against a map somebody else drew.
+[Chapter 13](/chapters/ch13-occupancy-grids) drew a map from poses somebody else supplied. Put
+Rusty in a building nobody has surveyed and both chapters collapse into each other: you cannot
+localize without a map, and you cannot map without localizing. That circularity is the SLAM
+problem, and this chapter solves it the way the field first did — by refusing to choose. Put the
+map *into* the state vector and run the EKF you already have.
+
+What comes out is not "localization plus mapping bolted together". It is one Gaussian over
+robot and map together, and the interesting part of that Gaussian is its off-diagonal blocks. The
+correlations are what let a single sighting of a single beacon improve landmarks the robot cannot
+even see. They are, quite literally, the map's memory of where the robot was when it drew each
+piece.
+
+Then we perform an autopsy on our own hero. EKF SLAM costs time and memory quadratic in the
+number of landmarks, and — worse, because you cannot buy your way out of it — it is *provably
+overconfident*: a linearization, once applied, is welded into $\Sigma_t$ and the filter has no
+mechanism for revising it. Those two flaws are the founding charter of everything in
+[Chapter 15](/chapters/ch15-factor-graphs) onwards. You should leave this chapter loving the idea
+and distrusting the filter.
+</Overview>
+
+## A map with nothing to stand on
+
+Rusty rolls into an unlit apartment with a beacon detector and a wheel encoder. The encoder is a
+liar with a slow accent: each step it reports is off by a percent or two, and those errors are a
+random walk, so after twenty metres Rusty's idea of where it is has drifted by a metre and its
+idea of *which way it is pointing* by several degrees. Every beacon it plots goes onto the map at
+the wrong place, rotated by whatever the heading error happened to be at the moment of sighting.
+
+Localization would fix this — except localization needs the map. Mapping would fix *that* — except
+mapping needs the poses. The 1999 draft of *Probabilistic Robotics* calls it, memorably, a
+"chicken-and-egg problem", and the resolution is the one probability theory always offers when two
+unknowns are entangled: stop estimating them separately. Estimate the joint distribution.
+
+<Deferred>
+  <CorrelationWeb />
+</Deferred>
+
+Watch a full lap before reading on. Three things happen, and each one is a section of this chapter.
+
+**The pose ellipse breathes.** In the west cluster the beacons pin Rusty down. Out in the open
+corridor there is nothing to see, prediction runs unopposed, and the purple ellipse swells. That is
+[Chapter 5](/chapters/ch05-bayes-filter)'s "moving smears" with nothing to sharpen it.
+
+**The far cluster inherits the drift.** Beacons first seen at the east end are born inside an
+inflated pose, so they are born uncertain — and *correlated*, because their error and Rusty's error
+are largely the same error. That shared error is the orange in the heatmap's off-diagonal blocks.
+
+**Then the web snaps.** Rusty returns, sees a west beacon it has not measured in a hundred steps,
+and
+the pose uncertainty collapses by a factor of about five in a handful of frames. Landmarks it did
+not measure move too. Nothing sent them a measurement; $\Sigma$ did.
+
+<KeyIdea title="The one sentence version">
+EKF SLAM is one extended Kalman filter over the joint state $y_t = (x_t, m)$. Its map is not the
+diagonal of $\Sigma_t$ — it is the off-diagonal blocks, which is why one observation corrects
+everything and why the whole thing costs $O(N^2)$.
+</KeyIdea>
+
+## Building intuition: the map as a web
+
+Hold on to one picture for the whole chapter. The landmarks are knots. The correlations are
+threads. The robot is the spider that spun them, and every thread was spun out of the same
+uncertain pose, which is exactly why the threads exist. Pull one knot — re-observe one landmark
+after a long excursion — and the entire web moves.
+
+The ablation toggle in the widget above cuts every thread after every update. The marginals
+survive: each landmark keeps its own $2\times2$ block, each has an ellipse, the filter runs to
+completion without complaint. What dies is the filter's ability to know what it does not know.
+After 400 steps the ablated filter claims a map good to about 6 mm while its landmarks sit, on
+average, 0.6 m from the truth — a hundredfold lie. The honest filter claims 0.15 m and is wrong by
+0.36 m, which is the wrong side of honest but the right order of magnitude.
+
+Two mechanisms cause that collapse, and both are worth naming before the algebra:
+
+1. **Repeated sightings stop being repeated.** Once the pose and a landmark are uncorrelated, every
+   new observation of that landmark looks like fresh, independent evidence about it. Fifty
+   observations from a drifting robot get counted as fifty independent measurements, and the
+   variance falls like $1/k$ — all the way to zero, which is a place no map can go.
+2. **Nothing floors it.** In the real filter, a landmark's variance cannot fall below the
+   uncertainty in where the robot *started*. That floor is transmitted entirely through the
+   correlations. Cut them and the floor goes with them.
+
+<NotationTable
+  rows={[
+    { sym: 'y_t = (x_t\\T, m_1\\T, \\dots, m_{N_t}\\T)\\T', meaning: 'The joint SLAM state: pose and map in one vector, of dimension 3 + 2N_t.' },
+    { sym: 'p(x_t, m \\mid z_{1:t}, u_{1:t})', meaning: 'The online SLAM posterior — current pose and map. This is what the EKF computes.' },
+    { sym: 'p(x_{0:t}, m \\mid z_{1:t}, u_{1:t})', meaning: 'The full SLAM posterior — the whole trajectory and the map. The star of Chapter 15.' },
+    { sym: '\\Sigma_{xx},\\ \\Sigma_{xm},\\ \\Sigma_{mm}', meaning: 'Pose, pose–map, and map–map blocks of Σ_t. The middle one is the map\'s memory.' },
+    { sym: 'F_x,\\ F_{x,j}', meaning: 'Sparse projection matrices selecting the pose (resp. pose plus landmark j) subspace.' },
+    { sym: 'N_t', meaning: 'Number of landmarks currently in the state. It grows at run time; that fact has consequences for the type system.' },
+    { sym: '\\pi_k', meaning: 'Mahalanobis distance from an observation to landmark k. Unrelated to the policy π of Part VI.' },
+    { sym: '\\gamma_{\\text{gate}},\\ \\chi^2_{\\text{new}}', meaning: 'Association gate and new-landmark threshold, both χ² quantiles with 2 degrees of freedom.' },
+    { sym: '\\epsilon_t', meaning: 'NEES: (x_t − μ_{t,x})ᵀ Σ_xx⁻¹ (x_t − μ_{t,x}). The consistency instrument.' },
+    { sym: 'o_j', meaning: 'Existence log odds for landmark j — Chapter 13\'s binary Bayes filter, one per landmark.' },
+  ]}
+/>
+
+## The mathematics
+
+### Two SLAM problems, one of them ours
+
+The **online SLAM problem** asks for the posterior over the *current* pose and the map:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x_t,\, m \mid z_{1:t},\, u_{1:t})}
+$$
+</LinkedMath>
+
+The **full SLAM problem** asks for the posterior over the *entire trajectory* and the map:
+
+$$
+p(x_{0:t},\, m \mid z_{1:t},\, u_{1:t})
+$$
+
+They are not different problems. They are the same object seen through different apertures, and the
+relationship is a marginalization:
+
+$$
+p(x_t, m \mid z_{1:t}, u_{1:t}) \;=\;
+\int\!\!\int \cdots \int p(x_{0:t}, m \mid z_{1:t}, u_{1:t})\; dx_0\, dx_1 \cdots dx_{t-1}
+$$
+
+Say it in words, because the phrasing is the pivot of Part V: **online SLAM is full SLAM with the
+past integrated out.** A filter marginalizes each pose the instant it stops being current. That is
+what makes it constant-time per step, and it is also what makes it unable to change its mind — the
+information a marginalized pose carried is now smeared into $\Sigma_t$ in a form nobody can
+unpick. [Chapter 15](/chapters/ch15-factor-graphs) is, in one sentence, the decision to stop
+marginalizing.
+
+SLAM also has a discrete half. When the robot detects something it must decide *which* landmark it
+detected, and that decision is a correspondence variable $c_t^i$, not a probability. We do the
+continuous half first with correspondences handed to us, then earn them.
+
+### One state to rule both
+
+Stack the pose and every landmark into a single vector:
+
+<TeX display>{String.raw`
+y_t \;=\; \begin{pmatrix} x_t \\ m \end{pmatrix}
+\;=\; (\,x\;\; y\;\; \theta \;\;\vert\;\; m_{1,x}\; m_{1,y} \;\vert\; \cdots \;\vert\; m_{N,x}\; m_{N,y}\,)\T
+`}</TeX>
+
+with $\dim y_t = 3 + 2N_t$. Thrun's version carries a signature $s_i$ per landmark as a third
+component; we keep signatures out of the state and treat them, as most modern front ends do, as an
+attribute used for association only. The belief is Gaussian:
+
+<TeX display>{String.raw`
+\htmlClass{term-posterior}{\bel(y_t)} = \Normal(\mu_t,\, \Sigma_t),
+\qquad
+\Sigma_t = \begin{pmatrix}
+\Sigma_{xx} & \Sigma_{xm} \\[2pt]
+\Sigma_{mx} & \Sigma_{mm}
+\end{pmatrix}
+`}</TeX>
+
+Initialization follows Thrun: the robot's starting pose *defines* the world frame, so
+$\mu_0 = 0$ and $\Sigma_{xx,0}$ is small — in this chapter's lab, $\diag(0.05^2, 0.05^2, 0.02^2)$,
+a robot that knows where it is to five centimetres and one degree. It is tempting to set it to
+exactly zero. Don't: a prior the world does not honour makes every consistency number downstream a
+fiction, and that five-centimetre number will reappear later as a floor no amount of sensing can
+break through.
+
+The map part starts empty. Landmarks are not initialized at all until they are seen — which is why
+this filter's state vector has a length that is discovered, not declared.
+
+### Prediction: motion is a corner of the matrix
+
+Driving changes the pose and leaves every landmark exactly where it was. Writing that with a
+projection matrix $F_x = (\,I_3 \;\; 0_{3\times 2N}\,)$ keeps the equations the size of the state
+while the *work* stays the size of the pose:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\mu_t} = \mu_{t-1} + F_x\T\, \delta(u_t, \mu_{t-1}),
+\qquad
+G_t = I + F_x\T g_t F_x,
+\qquad
+\htmlClass{term-prediction}{\bar\Sigma_t} = G_t \Sigma_{t-1} G_t\T + F_x\T R_t F_x
+$$
+</LinkedMath>
+
+Here $\delta$ is the exact arc of the velocity model from
+[Chapter 9](/chapters/ch09-motion-models), and $g_t$ is its $3\times3$ Jacobian, whose only
+non-trivial entries are the derivatives with respect to heading:
+
+<TeX display>{String.raw`
+g_t = \begin{pmatrix}
+0 & 0 & \frac{v}{\omega}\big(\cos(\theta + \omega\Delta t) - \cos\theta\big) \\[4pt]
+0 & 0 & \frac{v}{\omega}\big(\sin(\theta + \omega\Delta t) - \sin\theta\big) \\[4pt]
+0 & 0 & 0
+\end{pmatrix}
+`}</TeX>
+
+<Callout type="warn">
+Thrun's Table 10.1 prints these two entries with the opposite sign. Differentiate the arc yourself,
+or check against a central-difference Jacobian, and the signs above are what you get. This is
+exactly the kind of error that makes a filter *slightly* wrong in a way no test catches until a
+long run diverges, which is why every Jacobian in this book is checked numerically before it is
+trusted.
+</Callout>
+
+<Derivation title="D1 — Why prediction costs O(N), not O(N²)" result="Σ_xx ← Gₓ Σ_xx Gₓᵀ + R,  Σ_xm ← Gₓ Σ_xm,  Σ_mm unchanged">
+**Step 1 — the Jacobian is the identity plus a corner.** $G_t = I + F_x\T g_t F_x$ has $g_t$'s
+$3\times3$ block in the top-left and ones down the rest of the diagonal. Call that top-left block
+$G_x = I_3 + g_t$.
+
+**Step 2 — multiply blockwise.** Partition <TeX>{String.raw`\Sigma_{t-1}`}</TeX> into its four
+blocks and write <TeX>{String.raw`G_t`}</TeX> as the block-diagonal
+<TeX>{String.raw`\operatorname{diag}(G_x,\, I_{2N})`}</TeX>. Then
+
+<TeX display>{String.raw`
+G_t \Sigma_{t-1} G_t\T =
+\begin{pmatrix}
+G_x \Sigma_{xx} G_x\T & G_x \Sigma_{xm} \\[2pt]
+\Sigma_{mx} G_x\T & \Sigma_{mm}
+\end{pmatrix}
+`}</TeX>
+
+**Step 3 — count.** The top-left block is two $3\times3$ products: constant work. The strip
+$G_x\Sigma_{xm}$ is a $3\times3$ times a $3\times 2N$: $\Theta(N)$. The map–map block is *not
+touched at all*. Adding $F_x\T R_t F_x$ writes nine more entries. Total: $\Theta(N)$.
+
+**Step 4 — read the middle line again.** $\Sigma_{xm} \leftarrow G_x \Sigma_{xm}$. Motion does not
+erase the pose–map correlations; it *rotates* them, by exactly the rotation the motion applied.
+The map's memory of the robot survives every step of dead reckoning. If it did not, the loop
+closure in the widget above could not do anything, because there would be nothing left to pull on.
+$\blacksquare$
+</Derivation>
+
+### Landmark birth: inverting the measurement
+
+The first time a feature $(r, \phi)$ is seen, the landmark has no entry in $\mu$ or $\Sigma$ and
+one has to be manufactured. Invert the measurement function:
+
+<TeX display>{String.raw`
+\mu_{j} =
+\begin{pmatrix}
+\bar\mu_{t,x} + r\cos(\phi + \bar\mu_{t,\theta}) \\
+\bar\mu_{t,y} + r\sin(\phi + \bar\mu_{t,\theta})
+\end{pmatrix}
+`}</TeX>
+
+and push the uncertainty through both Jacobians of that inversion — one with respect to the pose,
+one with respect to the measurement.
+
+<Derivation title="D2 — The birth of a landmark, and its correlations" result="Σ_jj = Gₓ Σ_xx Gₓᵀ + G_z Q G_zᵀ,  Σ_jx = Gₓ Σ_xx">
+**Step 1 — the inverse measurement function.** Write $\alpha = \phi + \bar\mu_{t,\theta}$ and
+$m_j = (\bar\mu_{t,x} + r\cos\alpha,\; \bar\mu_{t,y} + r\sin\alpha)$.
+
+**Step 2 — differentiate.** With respect to the pose $(x, y, \theta)$ and to the measurement
+$(r, \phi)$:
+
+<TeX display>{String.raw`
+G_x = \begin{pmatrix} 1 & 0 & -r\sin\alpha \\ 0 & 1 & \phantom{-}r\cos\alpha \end{pmatrix},
+\qquad
+G_z = \begin{pmatrix} \cos\alpha & -r\sin\alpha \\ \sin\alpha & \phantom{-}r\cos\alpha \end{pmatrix}
+`}</TeX>
+
+**Step 3 — propagate.** The new diagonal block and the new cross-blocks are
+
+<LinkedMath>
+$$
+\Sigma_{jj} = \htmlClass{term-prediction}{G_x \Sigma_{xx} G_x\T} + \htmlClass{term-measurement}{G_z Q_t G_z\T},
+\qquad
+\Sigma_{j\bullet} = G_x\, \Sigma_{x\bullet}
+$$
+</LinkedMath>
+
+where $\Sigma_{x\bullet}$ is the pose's row of $\Sigma$ against *everything already in the state*.
+Read the second equation carefully: a newborn landmark is correlated with every existing landmark,
+and the entire correlation arrives through the pose. Nothing else connects them. This is the
+formal statement of "the robot is the spider".
+
+**Step 4 — versus Thrun's table.** Table 10.1 instead sets the mean as above and gives the new
+landmark an effectively infinite prior covariance, letting the first measurement update do the rest.
+In the limit $\Sigma_{jj}^{\text{prior}} \to \infty$ the Kalman update reproduces exactly the
+expressions in Step 3, because an infinitely uncertain state simply adopts whatever the measurement
+says. Doing it directly is better behaved numerically, and gets the covariance right on the first
+frame rather than the second — which matters when something is drawing it. $\blacksquare$
+</Derivation>
+
+#### A worked example you can check by hand
+
+Freeze the robot at the origin, facing along $+x$, and let it *know* it is there: $\Sigma_{xx} = 0$.
+A beacon is detected at $r = 2\text{ m}$, $\phi = 0$, with $\sigma_r = 0.1\text{ m}$ and
+$\sigma_\phi = 0.05\text{ rad}$.
+
+The mean is trivially $\mu_j = (2, 0)$. For the covariance, $\alpha = 0$, so
+<TeX>{String.raw`G_z = \begin{pmatrix} 1 & 0 \\ 0 & 2 \end{pmatrix}`}</TeX> and
+
+$$
+\Sigma_{jj} = G_z \diag(0.1^2,\, 0.05^2) G_z\T
+= \diag\big(0.01,\; 4 \times 0.0025\big) = \diag(0.01,\; 0.01)
+$$
+
+The range noise contributes $\sigma_r^2 = 0.01$ along the beam; the bearing noise contributes
+$r^2\sigma_\phi^2 = 4 \times 0.0025 = 0.01$ across it. At two metres those happen to be equal, which
+is a coincidence worth noticing: bearing error scales with range and range error does not, so at
+ten metres the same beacon would be a long thin sliver, $\diag(0.01,\, 0.25)$.
+
+Now feed it a second, identical observation. The measurement Jacobian with respect to the landmark
+alone is <TeX>{String.raw`h_m = \begin{pmatrix} 1 & 0 \\ 0 & 1/2 \end{pmatrix}`}</TeX> (range differentiates to a
+unit vector along the beam; bearing to $1/r$ across it), so
+
+$$
+S = h_m \Sigma_{jj} h_m\T + Q = \diag(0.02,\ 0.005),
+\qquad
+K = \Sigma_{jj} h_m\T S^{-1} = \diag(0.5,\ 1)
+$$
+
+$$
+\Sigma_{jj}^+ = (I - K h_m)\Sigma_{jj} = \diag(0.5,\, 0.5)\,\diag(0.01,\, 0.01) = \diag(0.005,\, 0.005)
+$$
+
+Two identical measurements halve the variance, exactly as two independent measurements of anything
+should. Every number here is reproduced by a test in the Rust listing below and by the TypeScript
+port that runs the widgets.
+
+### The dense gain: why one sighting moves the whole map
+
+Now the step that makes SLAM SLAM. The measurement of landmark $j$ is the range–bearing model of
+[Chapter 10](/chapters/ch10-sensor-models), and its Jacobian with respect to the *full* state is
+$H_t^i = h_t^i F_{x,j}$, where $h_t^i$ is $2\times5$ and $F_{x,j}$ is the projection selecting the
+pose and landmark $j$. With $\delta = m_j - \mu_{t,xy}$ and $q = \delta\T\delta$:
+
+<TeX display>{String.raw`
+h_t^i = \frac{1}{q}\begin{pmatrix}
+-\sqrt{q}\,\delta_x & -\sqrt{q}\,\delta_y & 0 & \sqrt{q}\,\delta_x & \sqrt{q}\,\delta_y \\
+\delta_y & -\delta_x & -q & -\delta_y & \delta_x
+\end{pmatrix}
+`}</TeX>
+
+Five non-zero columns out of $3 + 2N$. The measurement is as local as a measurement gets. And yet:
+
+<Derivation title="D3 — A sparse Jacobian, a dense gain" result="K_t = Σ̄_t H_tᵀ S_t⁻¹ is dense; Σ_t ← Σ̄_t − K_t (Σ̄_t H_tᵀ)ᵀ writes every entry">
+**Step 1 — the standard EKF update, lifted.** Nothing changes from
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds) except the dimension:
+
+<LinkedMath>
+$$
+S_t = H_t \bar\Sigma_t H_t\T + Q_t, \qquad
+K_t = \bar\Sigma_t H_t\T S_t^{-1}, \qquad
+\mu_t = \bar\mu_t + K_t\big(\htmlClass{term-measurement}{z_t} - \hat z_t\big)
+$$
+</LinkedMath>
+
+**Step 2 — look at what $\bar\Sigma_t H_t\T$ is.** $H_t\T$ has five non-zero *rows*, so
+$\bar\Sigma_t H_t\T$ is a linear combination of five *columns* of $\bar\Sigma_t$ — the three pose
+columns and the two columns of landmark $j$. Those columns are not sparse. Column $x$ of
+$\bar\Sigma_t$ has an entry for every landmark correlated with the pose, which after a few minutes
+of driving is all of them.
+
+**Step 3 — hence $K_t$ is dense.** Row $k$ of $K_t$ is non-zero whenever landmark $k$ is correlated
+with the pose or with landmark $j$. The 2-vector innovation about *one* beacon therefore produces a
+correction to *every* coordinate in the state. That is not a side effect; it is the algorithm. The
+correlations act as a distribution network, and the pose is the hub.
+
+**Step 4 — and the covariance update is quadratic.** Written efficiently,
+
+$$
+\Sigma_t = \bar\Sigma_t - K_t \big(\bar\Sigma_t H_t\T\big)\T
+$$
+
+which is a rank-2 downdate of an $n \times n$ matrix: every one of the $(3+2N)^2$ entries is read
+and written. There is no honest way around this in moments form. You may exploit symmetry for a
+factor of two; you may not change the exponent, because the update genuinely *does* change every
+entry. A loop closure is this same mechanism with a large, highly informative innovation — one
+observation, one $O(N^2)$ update, and a map that visibly heals. $\blacksquare$
+</Derivation>
+
+### What converges, and what never does
+
+Take the widget's map after two laps and read the numbers off. The west cluster's landmarks settle
+at about $\sigma = 0.053$ m in each coordinate. The east cluster's *cross-corridor* uncertainty
+stalls between 0.25 and 0.3 m and stays there no matter how many times Rusty drives past.
+
+Neither number is a failure. Both are theorems.
+
+<Derivation title="D4 — Dissanayake's three facts, proved in one dimension" result="ρ → 1, Var(m) → Var(x₀): relative structure converges, absolute never does">
+Take the smallest possible SLAM problem: a robot at position $x$ and one landmark at position $m$,
+both on a line. The robot knows its own position to $\sigma_0^2$ — that is the prior that defines
+the frame. The sensor measures the *relative* displacement $z = m - x + \varepsilon$ with
+$\varepsilon \sim \Normal(0, \sigma_z^2)$. Note that this is the only kind of measurement a robot
+ever gets: no sensor reports absolute position.
+
+**Step 1 — birth.** The first measurement initializes $\hat m = \hat x + z$. Propagating
+uncertainty through that sum,
+
+<TeX display>{String.raw`
+\Sigma = \begin{pmatrix} \sigma_0^2 & \sigma_0^2 \\ \sigma_0^2 & \sigma_0^2 + \sigma_z^2 \end{pmatrix}
+`}</TeX>
+
+The off-diagonal is $\sigma_0^2$ and it is there for a reason: whatever error the robot has in $x$
+is copied verbatim into $m$.
+
+**Step 2 — update with $H = (-1,\ 1)$**, holding the robot still so that motion cannot muddy the
+picture. Then
+$\Sigma H\T = (\sigma_{xm} - \sigma_{xx},\; \sigma_{mm} - \sigma_{xm})\T = (0,\ \sigma_z^2)\T$ —
+the pose entry is exactly zero, and it stays zero, because the update multiplies it by itself. So
+$K = (0,\ \sigma_z^2/S)\T$, and the entire first row and column of $\Sigma$ pass through the update
+**unchanged**. The robot learns nothing about where it is. Of course it doesn't: a relative
+measurement cannot locate you.
+
+**Step 3 — what does shrink.** Let $d = \Var(m - x) = \sigma_{mm} - 2\sigma_{xm} + \sigma_{xx}$, the
+variance of the quantity actually measured. The scalar update gives
+$d \leftarrow d\,\sigma_z^2/(d + \sigma_z^2)$, so after $k$ measurements $d \approx \sigma_z^2/k \to 0$.
+The *relative* map becomes exact.
+
+**Step 4 — take the limit.** With $\sigma_{xx} = \sigma_{xm} = \sigma_0^2$ fixed and $d \to 0$,
+
+$$
+\sigma_{mm} \;\longrightarrow\; 2\sigma_{xm} - \sigma_{xx} = \sigma_0^2,
+\qquad
+\rho = \frac{\sigma_{xm}}{\sqrt{\sigma_{xx}\sigma_{mm}}} \longrightarrow 1
+$$
+
+So: **(i)** landmark variances decrease monotonically, **(ii)** correlations grow toward 1, and
+**(iii)** the landmark's variance is bounded below by the *initial vehicle variance* $\sigma_0^2$
+and can never beat it.
+
+**Step 5 — why letting the robot drive changes nothing.** The bound survives motion, and the
+information form says why in one line. The unobservable direction is $v = (1, 1)\T$ — slide robot
+and landmark together and every measurement is unchanged — and $Hv = 0$, so a measurement update
+$\Omega \leftarrow \Omega + H\T H/\sigma_z^2$ leaves $v\T\Omega v$ exactly as it was, while a motion
+update only ever *removes* information. At birth $v\T\Omega v = 1/\sigma_0^2$, and Cauchy–Schwarz
+with $\Sigma = \Omega^{-1}$ gives $1 = (e_2\T v)^2 \le \Var(m)\, (v\T\Omega v)$, hence
+$\Var(m) \ge \sigma_0^2$ forever. Dissanayake et al. proved the general version in 2001; this is
+the whole idea in one dimension. $\blacksquare$
+</Derivation>
+
+Now the two numbers make sense. The west cluster's floor of $0.053$ m is $\sigma_0 = 0.05$ m, the
+prior on the starting pose, plus a little measurement noise: the map cannot be located better than
+the frame it is expressed in. The east cluster's floor of $\approx 0.25$ m is the *other* half of
+the same statement, because the initial pose prior includes a heading uncertainty of
+$\sigma_{\theta,0} = 0.02$ rad, and a heading error is a lever: at ten metres of lever arm,
+$0.02 \times 10 = 0.2$ m of unremovable cross-corridor error. Run the widget with the correlation
+threads on and you can watch this happen: the east block goes strongly correlated with the pose
+heading and stays there forever.
+
+<Callout type="info">
+This is why every modern SLAM system reports poses *relative to* something and treats the global
+frame as a gauge freedom to be fixed by convention. [Chapter 15](/chapters/ch15-factor-graphs)
+makes the gauge explicit as a prior factor on the first pose;
+[Chapter 16](/chapters/ch16-scan-matching) exploits it by optimizing a pose graph that is only ever
+constrained by relative measurements.
+</Callout>
+
+### Earning the correspondences
+
+Everything so far assumed a helpful oracle whispering *that is beacon 5*. Real front ends supply
+$(r, \phi)$ and a shrug. The classical answer, and Thrun's Table 10.2, is incremental maximum
+likelihood.
+
+<Derivation title="D5 — ML association, gating, and why min-Mahalanobis is the right rule" result="j = argmin_k π_k, with π_k = (z − ẑᵏ)ᵀ (Sᵏ)⁻¹ (z − ẑᵏ)">
+**Step 1 — the likelihood of an observation under a hypothesis.** If the observation came from
+landmark $k$, then under the linearized model $z_t \sim \Normal(\hat z_t^k,\, S_t^k)$, so
+
+$$
+-2\log p(z_t \mid c_t = k) = \underbrace{(z_t - \hat z_t^k)\T (S_t^k)^{-1} (z_t - \hat z_t^k)}_{\pi_k}
+\;+\; \log\det S_t^k \;+\; \text{const}
+$$
+
+**Step 2 — when the log-det can be dropped.** Maximizing the likelihood over $k$ means minimizing
+$\pi_k + \log\det S_t^k$. Implementations almost always drop the second term, which is exactly
+right when all candidates have comparable innovation covariances and quietly wrong when they do
+not: a landmark with a huge $S$ has a wide, shallow gate and will win the $\pi_k$ contest against a
+well-known landmark that is genuinely closer. Keep the log-det if your map mixes fresh and mature
+landmarks, which it always does.
+
+**Step 3 — gating.** $\pi_k$ is distributed $\chi^2$ with 2 degrees of freedom under the hypothesis
+that the association is correct, so thresholds are quantiles, not tuning knobs:
+$\gamma_{\text{gate}} = 9.21$ is the 99% quantile, $\chi^2_{\text{new}} = 13.82$ the 99.9%. Between
+them lies a no-man's-land: too far to trust, too close to call new. Throw those observations away.
+Discarding information is the cheapest insurance a filter can buy, because a wrong association is
+$O(N^2)$ work spent making the map worse.
+
+**Step 4 — provisional landmarks and existence evidence.** A detection that gates to nothing does
+*not* immediately enter the state. It goes on a provisional list — a shadow map that no update ever
+touches — and is promoted only after $n_{\text{prom}}$ consistent sightings. Clutter does not repeat
+in the same place, so it never gets promoted. Once promoted, each landmark carries an existence log
+odds $o_j$, incremented when observed and decremented when it *should* have been observed and was
+not, exactly the binary Bayes filter of [Chapter 13](/chapters/ch13-occupancy-grids) with the cell
+index replaced by a landmark index. Landmarks whose evidence sinks below a floor are deleted,
+rows and columns and all. $\blacksquare$
+</Derivation>
+
+The decisive property of all of this — and the reason
+[Chapter 17](/chapters/ch17-fastslam) exists — is that the decision is **hard**. Table 10.2 picks
+one correspondence, applies the update, and moves on. There is no residual probability over
+alternatives, no mechanism to revisit the choice when the tenth observation makes it look silly.
+The filter does not merely make association errors; it *cannot recover from them*.
+
+The classical alternative is multi-hypothesis tracking: carry a mixture of Gaussians, one component
+per surviving association history, and prune. It is correct and it is unaffordable, because the
+number of histories grows exponentially and each component costs $O(N^2)$ to maintain.
+[Chapter 17](/chapters/ch17-fastslam) gets the same effect for a bearable price by making each
+*particle* carry its own association history, and [Chapter 15](/chapters/ch15-factor-graphs) gets it
+by making the association a variable you can go back and change.
+
+## The algorithms
+
+<Algorithm
+  name="EKF_SLAM_known_correspondences(μ_{t-1}, Σ_{t-1}, u_t, z_t, c_t)"
+  inputs="previous belief, control, features with their landmark ids"
+  outputs="μ_t, Σ_t"
+  complexity="prediction O(N); each observation update Θ(N²)"
+>
+1. $F_x = (\,I_3 \;\;0_{3\times 2N}\,)$
+2. $\bar\mu_t = \mu_{t-1} + F_x\T\,\delta(u_t, \mu_{t-1,\theta})$
+3. $G_t = I + F_x\T g_t F_x$
+4. $\bar\Sigma_t = G_t\Sigma_{t-1}G_t\T + F_x\T R_t F_x$
+5. for all observed features $z_t^i = (r_t^i\;\; \phi_t^i)\T$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;$j = c_t^i$
+7. &nbsp;&nbsp;&nbsp;&nbsp;if landmark $j$ never seen before then initialize it by D2 and continue
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\delta = (\bar\mu_{j,x} - \bar\mu_{t,x},\;\; \bar\mu_{j,y} - \bar\mu_{t,y})\T$, $\;q = \delta\T\delta$
+9. &nbsp;&nbsp;&nbsp;&nbsp;$\hat z_t^i = \big(\sqrt{q},\;\; \operatorname{atan2}(\delta_y, \delta_x) - \bar\mu_{t,\theta}\big)\T$
+10. &nbsp;&nbsp;&nbsp;&nbsp;$H_t^i = h_t^i F_{x,j}$
+11. &nbsp;&nbsp;&nbsp;&nbsp;$K_t^i = \bar\Sigma_t [H_t^i]\T \big(H_t^i \bar\Sigma_t [H_t^i]\T + Q_t\big)^{-1}$
+12. &nbsp;&nbsp;&nbsp;&nbsp;$\bar\mu_t = \bar\mu_t + K_t^i (z_t^i - \hat z_t^i)$
+13. &nbsp;&nbsp;&nbsp;&nbsp;$\bar\Sigma_t = (I - K_t^i H_t^i)\,\bar\Sigma_t$
+14. endfor
+15. return $\mu_t = \bar\mu_t$, $\Sigma_t = \bar\Sigma_t$
+</Algorithm>
+
+Line 13 is the entire cost of the algorithm and line 12 is the entire point of it. Note that the
+observations are folded in **sequentially**, each against the covariance the previous one produced;
+Thrun's table sums the corrections instead, which is equivalent only to first order and slightly
+worse in practice.
+
+Unknown correspondence replaces line 6 with a search:
+
+<Algorithm
+  name="EKF_SLAM(μ_{t-1}, Σ_{t-1}, N_{t-1}, u_t, z_t)"
+  inputs="previous belief, current map size, control, bare features"
+  outputs="μ_t, Σ_t, N_t"
+  complexity="+ O(N) gate evaluations per observation, each a 2×2 solve"
+>
+1. lines 1–4 of `EKF_SLAM_known_correspondences`
+2. for all observed features $z_t^i$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;for $k = 1$ to $N_t$ do
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\hat z_t^k$, $H_t^k$, $S_t^k = H_t^k\bar\Sigma_t[H_t^k]\T + Q_t$
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\pi_k = (z_t^i - \hat z_t^k)\T (S_t^k)^{-1}(z_t^i - \hat z_t^k)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+7. &nbsp;&nbsp;&nbsp;&nbsp;$j = \arg\min_k \pi_k$
+8. &nbsp;&nbsp;&nbsp;&nbsp;if $\pi_j < \gamma_{\text{gate}}$ then update against landmark $j$ (lines 8–13 above)
+9. &nbsp;&nbsp;&nbsp;&nbsp;else if $\pi_j < \chi^2_{\text{new}}$ then discard $z_t^i$
+10. &nbsp;&nbsp;&nbsp;&nbsp;else add $z_t^i$ to the provisional list; promote after $n_{\text{prom}}$ sightings
+11. endfor
+12. $o_j \mathrel{+}= \Delta^+$ for each landmark observed; $o_j \mathrel{-}= \Delta^-$ for each expected and missed
+13. retire every landmark with $o_j < o_{\min}$ (delete its rows and columns)
+14. return $\mu_t$, $\Sigma_t$, $N_t$
+</Algorithm>
+
+<Deferred>
+  <PoisonedWeb />
+</Deferred>
+
+## The autopsy
+
+EKF SLAM was the field's crown jewel for fifteen years and is, in 2026, taught rather than
+deployed. The authors’ own draft of *Probabilistic Robotics* says the quiet part: “the value of the EKF
+SLAM algorithm presented in this chapter is mostly historical.” Two flaws did it, and they are
+different in kind. One is an engineering constraint. The other is a lie.
+
+### Flaw (a): the cost is quadratic, and the constant does not save you
+
+<Deferred>
+  <GrowthMeter />
+</Deferred>
+
+D3 established that each observation update writes every entry of a $(3+2N)^2$ matrix. The widget
+above measures it rather than asserting it, in your browser, on the same `EkfSlam` implementation
+the other three widgets run. Fit a quadratic and extrapolate:
+
+| Landmarks $N$ | $\dim \Sigma$ | Dense $\Sigma$, f64 | Multiply–adds per observation |
+|---|---|---|---|
+| $10^2$ | 203 | 330 kB | $8\times 10^4$ |
+| $10^3$ | 2 003 | 32 MB | $8\times 10^6$ |
+| $10^4$ | 20 003 | 3.2 GB | $8\times 10^8$ |
+| $10^5$ | 200 003 | **320 GB** | $8\times 10^{10}$ |
+
+A visual SLAM front end produces $10^5$ features before it has left the building. At that size the
+covariance does not fit in a datacentre node, and one observation update means streaming those
+320 GB through the arithmetic units — tens of seconds at the memory bandwidth of a good server,
+for a single beacon sighting, of which the robot produces dozens per second. The same draft caps
+EKF SLAM at “relatively scarce maps with less than 1,000 features”, and that is generous.
+
+There is a second, crueller squeeze hidden in the table. Sparse maps make data association *harder*
+— fewer, more ambiguous landmarks — which is precisely the regime where the hard ML decision of D5
+is least reliable. The algorithm needs sparse maps to be affordable and dense maps to be reliable.
+It cannot have both.
+
+The 2000s produced a whole literature of band-aids for this: compressed and local-map EKFs that
+defer the global update, submap architectures such as ATLAS and hierarchical SLAM that keep each
+filter small and stitch the pieces later, and decoupled variants that approximate the correlations
+they cannot afford to store. They work, they are ingenious, and this book skips them, because the
+next two chapters remove the exponent instead of amortizing it. If you meet one in a legacy
+codebase, read it as a very clever way of pretending the covariance is block-diagonal — which is
+exactly the ablation toggle in w14.1, applied on purpose and with care.
+
+### Flaw (b): the filter is provably overconfident
+
+This one is not about speed, and buying a bigger computer does not touch it.
+
+<Deferred>
+  <ConsistencyAutopsy />
+</Deferred>
+
+The setup is deliberately rigged in the filter's favour. Correspondences are handed over. The
+process noise the filter assumes is *exactly* the noise the simulator applies — not a tuned
+approximation of it, the same numbers. The prior is calibrated: the true initial pose is drawn from
+it. Under those conditions a correct estimator has
+
+$$
+\E[\epsilon_t] = \E\big[(x_t - \mu_{t,x})\T \Sigma_{xx}^{-1} (x_t - \mu_{t,x})\big] = \dim(x_t) = 3
+$$
+
+and $\epsilon_t \sim \chi^2_3$. Averaging 40 independent runs shrinks the 95% acceptance band to
+roughly $[2.29,\, 3.81]$. Short loops sit inside it. Long loops leave it and stay out.
+
+<Derivation title="D6 — Where the confidence comes from" result="linearization at the estimated heading manufactures information about an unobservable direction">
+**Step 1 — the only remaining approximation.** Everything else has been made exact by construction,
+so whatever breaks must be the Taylor expansion.
+
+**Step 2 — the heading error is a rotation.** Suppose the filter's heading is wrong by
+$\tilde\theta$. The predicted bearing to every landmark is then wrong by approximately
+$\tilde\theta$, and the predicted displacement to each is the true displacement rotated by
+$\tilde\theta$. The Jacobians $h_t^i$ are evaluated at that rotated geometry.
+
+**Step 3 — a rotation looks like information.** The filter's linear model has no way to represent
+"my whole map may be rotated". It sees a set of bearing residuals that are consistent with each
+other and concludes it has measured something. Part of what it credits as fresh metric information
+is actually the signature of its own heading error, and $\Sigma$ shrinks accordingly.
+
+**Step 4 — the observability argument.** The global position and heading of a SLAM solution are
+unobservable: any rigid transform of (pose, map) explains the same relative measurements equally
+well. A correct estimator must keep three unobservable directions with undiminished uncertainty
+forever. Linearizing at *different, wrong* headings at different times makes the filter's implicit
+constraint sets inconsistent with one another, so the intersection is smaller than the truth — the
+filter gains information along directions where no information exists.
+
+**Step 5 — it can never be repaired.** This is the structural half. Each update writes its
+linearization into $\Sigma_t$ and then the linearization point is thrown away. Ten steps later,
+when the pose estimate is much better and the old Jacobian is visibly wrong, there is nothing to
+recompute: the filter has kept only the consequences. Julier and Uhlmann's 2001 counterexample
+makes this concrete with a robot that does not move at all — repeated observation of a single
+landmark from a stationary vehicle *reduces* the heading variance, which is provably impossible,
+since a stationary robot observing one point learns nothing about its own orientation. $\blacksquare$
+</Derivation>
+
+The second chart in the autopsy shows Step 5 as it happens: the reported $\sigma_\theta$ drifts
+below the heading error the robot is actually making, and once it does, every landmark mapped
+afterwards is placed with false precision and the gates used to recognize old landmarks become too
+small. That last consequence is visible in the Poisoned Web above as *duplicate* landmarks — the
+filter failing to recognize its own beacons after the blind crossing, because its confidence has
+outrun its accuracy. Flaw (b) manufactures work for flaw (a).
+
+Two exits exist, and the book takes both.
+
+**Better linearization.** Choose *where* to linearize so that the unobservable directions stay
+unobservable. First-estimates-Jacobian and observability-constrained EKFs freeze the linearization
+point per state so the filter cannot accumulate inconsistent constraint sets; the invariant EKF of
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds) achieves the same thing more elegantly by linearizing
+in an error coordinate whose dynamics do not depend on the estimate at all. This helps a great deal
+and does not fully cure the disease, because the filter still marginalizes.
+
+**Stop marginalizing.** Keep the past poses, keep the raw measurements, and re-linearize everything
+whenever the estimate improves. That is [Chapter 15](/chapters/ch15-factor-graphs), and it is the
+reason the last two decades of SLAM look the way they do.
+
+## Implementation in Rust
+
+The first thing this filter teaches is a lesson from the type system.
+[Chapter 6](/chapters/ch06-kalman-filters)'s Kalman filter was
+`Kf<const N: usize, const U: usize, const M: usize>`: dimensions in the type, allocation on the
+stack, and the compiler checking that a $3\times3$ never meets a $5\times5$. That is impossible
+here. $N_t$ is
+*discovered at run time*, so the state must be heap-allocated and dynamically sized. The type
+system just told us something true about SLAM: a map is not a fixed-size object.
+
+```rust title="crates/ch14_ekfslam/src/lib.rs"
+use nalgebra::{DMatrix, DVector, Matrix2, Matrix2x3, Matrix3};
+use motion::VelocityCmd;   // Ch. 9
+use sensor::Feature;       // Ch. 10: f = (r, φ[, s])
+
+/// Where landmark `j` starts in the state vector.
+#[inline]
+pub const fn landmark_index(j: usize) -> usize {
+    3 + 2 * j
+}
+
+pub struct SlamConfig {
+    /// Per-metre and per-radian noise, in the *body* frame. The filter rotates
+    /// it into the world frame; that rotation is the only place heading enters
+    /// R_t, and it is the reason a heading error contaminates everything.
+    pub along_track: f64,
+    pub cross_track: f64,
+    pub heading_per_metre: f64,
+    pub heading_per_radian: f64,
+    /// Q_t, as standard deviations.
+    pub sigma_r: f64,
+    pub sigma_phi: f64,
+    /// χ² quantiles with 2 dof: 9.21 is 99%, 13.82 is 99.9%.
+    pub gate_chi2: f64,
+    pub new_chi2: f64,
+    pub promote_after: u32,
+    pub retire_below: f64,
+}
+
+pub struct EkfSlam {
+    /// [x y θ | m₀ₓ m₀ᵧ | m₁ₓ m₁ᵧ | …] — length 3 + 2N, and N grows.
+    mu: DVector<f64>,
+    sigma: DMatrix<f64>,
+    /// Ground-truth labels for bookkeeping only; never read by the filter.
+    labels: Vec<i32>,
+    /// Ch. 13's binary Bayes filter, one instance per landmark.
+    existence: Vec<f64>,
+    provisional: Vec<Candidate>,
+    /// Σ entries written since construction — the measured Θ(N²).
+    pub entries_touched: u64,
+    pub cfg: SlamConfig,
+}
+
+pub enum Association {
+    Matched { landmark: usize, nis: f64 },
+    Born { landmark: usize },
+    Candidate { index: usize },
+    Rejected { nis: f64 },
+}
+
+impl EkfSlam {
+    pub fn n_landmarks(&self) -> usize {
+        (self.mu.len() - 3) / 2
+    }
+}
+```
+
+Prediction is D1 written literally. The projection matrices $F_x$ never appear: forming them would
+turn an $O(N)$ step into an $O(N^2)$ one, which is the single most common way a textbook
+implementation of this algorithm becomes accidentally slow.
+
+```rust title="crates/ch14_ekfslam/src/predict.rs" {28-46}
+impl EkfSlam {
+    /// Table 10.1, lines 2–5 — but blockwise, so the cost is O(N).
+    pub fn predict(&mut self, u: &VelocityCmd) {
+        let (v, w, dt) = (u.v, u.omega, u.dt);
+        let th = self.mu[2];
+        let nt = th + w * dt;
+
+        // Exact arc integration (Ch. 9). The *mean* goes through g, never
+        // through the Jacobian — a mistake that costs accuracy on every turn.
+        let (dx, dy, g02, g12) = if w.abs() < 1e-6 {
+            (v * th.cos() * dt, v * th.sin() * dt, -v * th.sin() * dt, v * th.cos() * dt)
+        } else {
+            let r = v / w;
+            (
+                -r * th.sin() + r * nt.sin(),
+                r * th.cos() - r * nt.cos(),
+                r * (nt.cos() - th.cos()),
+                r * (nt.sin() - th.sin()),
+            )
+        };
+        self.mu[0] += dx;
+        self.mu[1] += dy;
+        self.mu[2] = wrap_pi(nt);
+
+        let gx = Matrix3::new(1.0, 0.0, g02, 0.0, 1.0, g12, 0.0, 0.0, 1.0);
+        let r_t = self.process_noise(u, th);
+        let n = self.mu.len();
+
+        // M = Gₓ · Σ[0..3, ..] against the *old* Σ. Three rows, N columns.
+        let m = &gx * self.sigma.rows(0, 3);
+
+        // Σ_xx ← (Gₓ Σ_xx) Gₓᵀ + R_t
+        let xx: Matrix3<f64> = Matrix3::from(m.fixed_view::<3, 3>(0, 0)) * gx.transpose() + r_t;
+
+        // Σ_xm ← Gₓ Σ_xm, and its mirror. The map–map block is never read:
+        // motion cannot tell you anything new about where the walls are.
+        for c in 3..n {
+            for i in 0..3 {
+                self.sigma[(i, c)] = m[(i, c)];
+                self.sigma[(c, i)] = m[(i, c)];
+            }
+        }
+        self.sigma.fixed_view_mut::<3, 3>(0, 0).copy_from(&xx);
+    }
+
+    /// R_t: body-frame noise for this command, rotated into the world frame.
+    fn process_noise(&self, u: &VelocityCmd, theta: f64) -> Matrix3<f64> {
+        let d = u.v.abs() * u.dt;
+        let turn = u.omega.abs() * u.dt;
+        let (sa, sc) = (self.cfg.along_track * d, self.cfg.cross_track * d);
+        let st = self.cfg.heading_per_metre * d + self.cfg.heading_per_radian * turn;
+        let (c, s) = (theta.cos(), theta.sin());
+        let (a2, c2) = (sa * sa, sc * sc);
+        Matrix3::new(
+            c * c * a2 + s * s * c2, c * s * (a2 - c2), 0.0,
+            c * s * (a2 - c2),       s * s * a2 + c * c * c2, 0.0,
+            0.0,                     0.0,               st * st,
+        )
+    }
+}
+```
+
+The correction is D3 written literally, and the shape of the code *is* the complexity argument: one
+$O(N)$ loop to build $\bar\Sigma H\T$, one $2\times2$ solve, and one $O(N^2)$ loop that no amount of
+cleverness removes.
+
+```rust title="crates/ch14_ekfslam/src/correct.rs" {31-40}
+impl EkfSlam {
+    /// One landmark observation, folded in. Table 10.1 lines 12–20.
+    pub fn update_landmark(&mut self, j: usize, f: &Feature) -> UpdateInfo {
+        let n = self.mu.len();
+        let idx = [0, 1, 2, landmark_index(j), landmark_index(j) + 1];
+        let (z_hat, h) = self.expected(j);          // h is 2×5, not 2×n
+
+        let innov = nalgebra::Vector2::new(f.r - z_hat[0], wrap_pi(f.phi - z_hat[1]));
+
+        // PHt = Σ̄ Hᵀ, built from five columns of Σ̄. O(N) — and the reason the
+        // gain is dense: those five columns are not.
+        let mut pht = DMatrix::<f64>::zeros(n, 2);
+        for r in 0..n {
+            for (p, &c) in idx.iter().enumerate() {
+                pht[(r, 0)] += self.sigma[(r, c)] * h[(0, p)];
+                pht[(r, 1)] += self.sigma[(r, c)] * h[(1, p)];
+            }
+        }
+
+        let mut s = Matrix2::zeros();
+        for a in 0..2 {
+            for b in 0..2 {
+                s[(a, b)] = (0..5).map(|p| h[(a, p)] * pht[(idx[p], b)]).sum();
+            }
+        }
+        s[(0, 0)] += self.cfg.sigma_r.powi(2);
+        s[(1, 1)] += self.cfg.sigma_phi.powi(2);
+        let s_inv = s.try_inverse().expect("innovation covariance is singular");
+
+        let k = &pht * s_inv;                       // n × 2, dense
+        let correction = &k * innov;
+        self.mu += correction;
+        self.mu[2] = wrap_pi(self.mu[2]);
+
+        // Σ ← Σ − K (Σ̄ Hᵀ)ᵀ. Every entry. This single statement is why EKF
+        // SLAM does not scale, and there is no version of it that is cheaper:
+        // the update genuinely changes all n² numbers.
+        self.sigma -= &k * pht.transpose();
+        symmetrize(&mut self.sigma);
+        self.entries_touched += (n * n) as u64;
+
+        UpdateInfo { innovation: innov, s, nis: (innov.transpose() * s_inv * innov)[0] }
+    }
+
+    /// ẑ and the 2×5 Jacobian of eq. (10.21), against the five state
+    /// dimensions the observation actually touches.
+    fn expected(&self, j: usize) -> (nalgebra::Vector2<f64>, nalgebra::Matrix2x5<f64>) {
+        let b = landmark_index(j);
+        let (dx, dy) = (self.mu[b] - self.mu[0], self.mu[b + 1] - self.mu[1]);
+        let q = (dx * dx + dy * dy).max(1e-9);
+        let sq = q.sqrt();
+        let z = nalgebra::Vector2::new(sq, wrap_pi(dy.atan2(dx) - self.mu[2]));
+        let h = nalgebra::Matrix2x5::new(
+            -dx / sq, -dy / sq,  0.0,  dx / sq, dy / sq,
+             dy / q,  -dx / q,  -1.0, -dy / q,  dx / q,
+        );
+        (z, h)
+    }
+}
+```
+
+Landmark birth is the only place the state changes shape, and `nalgebra`'s dynamic matrices make
+the surgery explicit — which is good, because growing a covariance is a place to be careful rather
+than clever.
+
+```rust title="crates/ch14_ekfslam/src/lib.rs (continued)"
+impl EkfSlam {
+    /// D2: invert the measurement, push the uncertainty through both Jacobians,
+    /// and grow μ and Σ by two. The new landmark is born correlated with
+    /// everything already in the state — all of it through the pose.
+    pub fn init_landmark(&mut self, f: &Feature, label: i32) -> usize {
+        let n_old = self.mu.len();
+        let a = wrap_pi(f.phi + self.mu[2]);
+        let (ca, sa) = (a.cos(), a.sin());
+
+        let g_x = Matrix2x3::new(1.0, 0.0, -f.r * sa, 0.0, 1.0, f.r * ca);
+        let g_z = Matrix2::new(ca, -f.r * sa, sa, f.r * ca);
+        let q = Matrix2::new(self.cfg.sigma_r.powi(2), 0.0, 0.0, self.cfg.sigma_phi.powi(2));
+
+        let cross = &g_x * self.sigma.rows(0, 3);               // 2 × n_old
+        let mm = Matrix2::from(cross.fixed_view::<2, 3>(0, 0)) * g_x.transpose()
+            + &g_z * q * g_z.transpose();
+
+        self.mu = self.mu.clone().insert_rows(n_old, 2, 0.0);
+        self.mu[n_old] = self.mu[0] + f.r * ca;
+        self.mu[n_old + 1] = self.mu[1] + f.r * sa;
+
+        self.sigma = self.sigma.clone().insert_rows(n_old, 2, 0.0).insert_columns(n_old, 2, 0.0);
+        for c in 0..n_old {
+            for i in 0..2 {
+                self.sigma[(n_old + i, c)] = cross[(i, c)];
+                self.sigma[(c, n_old + i)] = cross[(i, c)];
+            }
+        }
+        self.sigma.fixed_view_mut::<2, 2>(n_old, n_old).copy_from(&mm);
+
+        self.labels.push(label);
+        self.existence.push(1.0);
+        self.n_landmarks() - 1
+    }
+
+    /// Retire a landmark: delete its two rows, its two columns, and its
+    /// bookkeeping. The one operation a factor graph never needs.
+    pub fn retire(&mut self, j: usize) {
+        let b = landmark_index(j);
+        self.mu = self.mu.clone().remove_rows(b, 2);
+        self.sigma = self.sigma.clone().remove_rows(b, 2).remove_columns(b, 2);
+        self.labels.remove(j);
+        self.existence.remove(j);
+    }
+}
+```
+
+Association uses `statrs` for the thresholds rather than magic constants, because a gate is a
+hypothesis test and deserves to look like one:
+
+```rust title="crates/ch14_ekfslam/src/correct.rs (association)"
+use statrs::distribution::{ChiSquared, ContinuousCDF};
+
+impl SlamConfig {
+    /// γ_gate and χ²_new as honest quantiles of χ²(2).
+    pub fn with_gates(mut self, gate_p: f64, new_p: f64) -> Self {
+        let chi2 = ChiSquared::new(2.0).expect("2 dof");
+        self.gate_chi2 = chi2.inverse_cdf(gate_p);   // 0.99  → 9.210
+        self.new_chi2 = chi2.inverse_cdf(new_p);     // 0.999 → 13.816
+        self
+    }
+}
+
+impl EkfSlam {
+    /// Table 10.2: maximum-likelihood association with gating and a
+    /// provisional list. The decision is hard, and it is permanent.
+    pub fn correct(&mut self, features: &[Feature], t: u32) -> Vec<Association> {
+        features
+            .iter()
+            .map(|f| {
+                let (best, pi) = (0..self.n_landmarks())
+                    .map(|k| (k, self.mahalanobis(k, f)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap_or((usize::MAX, f64::INFINITY));
+
+                if pi < self.cfg.gate_chi2 {
+                    let info = self.update_landmark(best, f);
+                    Association::Matched { landmark: best, nis: info.nis }
+                } else if pi < self.cfg.new_chi2 {
+                    // Too far to trust, too close to call new. Throwing data
+                    // away is cheaper than an O(N²) update that is wrong.
+                    Association::Rejected { nis: pi }
+                } else {
+                    self.handle_candidate(f, t)
+                }
+            })
+            .collect()
+    }
+}
+```
+
+### The tests that pin the worked example
+
+```rust title="crates/ch14_ekfslam/tests/micro.rs"
+use approx::assert_relative_eq;
+use ch14_ekfslam::{EkfSlam, SlamConfig};
+use nalgebra::{DMatrix, DVector};
+use sensor::Feature;
+
+fn cfg() -> SlamConfig {
+    SlamConfig { sigma_r: 0.1, sigma_phi: 0.05, ..SlamConfig::default() }
+}
+
+#[test]
+fn worked_example_ch14_landmark_birth() {
+    // Pose known exactly: Σ_xx = 0, so the landmark's covariance is pure
+    // measurement noise pushed through G_z.
+    let mut f = EkfSlam::new(DVector::zeros(3), DMatrix::zeros(3, 3), cfg());
+    let j = f.init_landmark(&Feature { r: 2.0, phi: 0.0, s: Some(7) }, 7);
+
+    let m = f.landmark_mean(j);
+    assert_relative_eq!(m[0], 2.0, epsilon = 1e-12);
+    assert_relative_eq!(m[1], 0.0, epsilon = 1e-12);
+
+    // σ_r² = 0.01 along the beam; r²σ_φ² = 4 × 0.0025 = 0.01 across it.
+    let c = f.landmark_cov(j);
+    assert_relative_eq!(c[(0, 0)], 0.01, epsilon = 1e-12);
+    assert_relative_eq!(c[(1, 1)], 0.01, epsilon = 1e-12);
+
+    // A second identical observation halves it, as two independent
+    // measurements of anything must.
+    f.update_landmark(j, &Feature { r: 2.0, phi: 0.0, s: Some(7) });
+    let c = f.landmark_cov(j);
+    assert_relative_eq!(c[(0, 0)], 0.005, epsilon = 1e-12);
+    assert_relative_eq!(c[(1, 1)], 0.005, epsilon = 1e-12);
+}
+
+#[test]
+fn d4_floor_is_the_initial_vehicle_variance() {
+    // Now give the robot a real prior. D4(iii) says the landmark variance
+    // converges to σ₀², not to zero, no matter how many measurements arrive.
+    let s0 = 0.04;
+    let mut p = DMatrix::zeros(3, 3);
+    p[(0, 0)] = s0;
+    p[(1, 1)] = s0;
+    p[(2, 2)] = 1e-10;                      // heading pinned, to isolate translation
+    let mut f = EkfSlam::new(DVector::zeros(3), p, cfg());
+    let j = f.init_landmark(&Feature { r: 2.0, phi: 0.0, s: Some(1) }, 1);
+
+    for _ in 0..400 {
+        f.update_landmark(j, &Feature { r: 2.0, phi: 0.0, s: Some(1) });
+    }
+
+    let c = f.landmark_cov(j);
+    assert_relative_eq!(c[(0, 0)], s0, epsilon = 1e-3);   // the floor, not zero
+    assert!(f.correlation(0, 3) > 0.999);                 // and ρ → 1
+}
+
+#[test]
+fn covariance_update_is_quadratic() {
+    // Not a timing test — a counting test. The number of Σ entries written per
+    // observation must be exactly (3 + 2N)².
+    for n in [1usize, 4, 16, 64] {
+        let mut f = EkfSlam::new(DVector::zeros(3), DMatrix::identity(3, 3) * 0.01, cfg());
+        for k in 0..n {
+            let phi = (k as f64 / n as f64) * std::f64::consts::TAU - std::f64::consts::PI;
+            f.init_landmark(&Feature { r: 2.0, phi, s: Some(k as i32) }, k as i32);
+        }
+        let before = f.entries_touched;
+        f.update_landmark(0, &Feature { r: 2.0, phi: -std::f64::consts::PI, s: Some(0) });
+        assert_eq!(f.entries_touched - before, ((3 + 2 * n) * (3 + 2 * n)) as u64);
+    }
+}
+```
+
+<Callout type="info">
+The TypeScript in `web/lib/slam/ekf-slam.ts` is a line-for-line port of the Rust above, and it is
+what the four widgets on this page execute — the same blockwise prediction, the same five-column
+$\bar\Sigma H\T$, the same rank-2 downdate. The first two tests here are reproduced there against
+the same constants, which is why the numbers in the worked example and the numbers on your screen
+agree.
+</Callout>
+
+## Putting it together
+
+Run the loop lab end to end and the shape of the chapter is one picture: a filter that is beautiful
+for exactly as long as you do not measure it.
+
+The beauty is real. Eight beacons, a nineteen-dimensional Gaussian, and one recursion that solves a
+problem two chapters could not solve separately. Every loop closure is free — no keyframe database,
+no pose graph, no optimizer, just an innovation arriving through a covariance that has been quietly
+tracking who is correlated with whom since the first frame. When people say EKF SLAM is elegant,
+this is what they mean, and they are right.
+
+The measurements are also real. The cost curves away from linear before the map reaches fifty
+landmarks. The NEES average leaves its band and does not come back. And the mechanism behind that
+second failure is not a bug to be fixed but a property of the form: a filter marginalizes the past,
+so it keeps the *consequences* of its linearizations and discards the *evidence*. Ten steps later,
+with a far better estimate in hand, there is nothing left to re-linearize.
+
+Which is the question [Chapter 15](/chapters/ch15-factor-graphs) opens with. What if we kept the
+past? Keep every pose, keep every raw measurement, treat the whole thing as one big nonlinear
+least-squares problem, and re-linearize all of it whenever the estimate improves. The information
+matrix of that problem turns out to be *sparse* where $\Sigma$ was dense — the same
+correlations, stored the other way up — and sparse means `faer`'s sparse Cholesky instead of a
+$320$ GB dense downdate. The two flaws of this chapter are, exactly, the two things that get fixed.
+
+[Chapter 17](/chapters/ch17-fastslam) takes the other road: factor the same posterior differently,
+sample the trajectory, and note that *conditioned on a trajectory*, the landmarks are independent —
+so the $O(N^2)$ web that this chapter spent its length defending simply dissolves.
+[Chapter 18](/chapters/ch18-visual-slam) shows EKF SLAM's most successful descendant, the MSCKF,
+which keeps the filter and throws away the landmarks. All three are arguments with this chapter,
+and none of them make sense until you have felt what it is arguing with.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Count the prediction">
+    Carry out D1 explicitly for $N = 3$. Write $\Sigma_{t-1}$ as a $9 \times 9$ matrix with named
+    blocks, form $G_t \Sigma_{t-1} G_t\T$, and mark every entry that changes. Then count
+    multiply–adds as a function of $N$ and confirm the $\Theta(N)$ claim. Finally, explain in one
+    sentence what would go wrong if an implementation formed $F_x$ explicitly and multiplied the
+    full $(3+2N) \times (3+2N)$ matrices.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="1-D linear SLAM by hand">
+    Take the two-state problem of D4 with $\sigma_0^2 = 1$ and $\sigma_z^2 = 1$. Run the Kalman
+    filter by hand for three observe–move cycles, where "move" adds process noise $\sigma_u^2 = 0.5$
+    to the robot only. Tabulate $\sigma_{xx}$, $\sigma_{xm}$, $\sigma_{mm}$ and $\rho$ at each step.
+    Then prove the general claim — now *with* motion — that $\sigma_{mm}$ is bounded below by the
+    initial vehicle variance no matter how many measurements arrive.
+    <details>
+      <summary>Hint</summary>
+      Work in the information form. The unobservable direction is $v = (1,1)\T$ and $H v = 0$, so a
+      measurement leaves $v\T\Omega v$ unchanged while motion can only decrease it. Then bound
+      $\Var(m)$ from below with Cauchy–Schwarz, as in D4 step 5.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="No cheaper moments form">
+    Prove that the covariance update of D3 must write $\Theta(N^2)$ entries: show that for a
+    generic $\bar\Sigma_t$ with non-zero pose–map correlations, every entry of
+    $K_t (\bar\Sigma_t H_t\T)\T$ is non-zero, even though $H_t$ has only five non-zero columns.
+    Then explain why the *information* form does not have this problem, and what it pays instead.
+    (You will meet the answer in Chapter 15; try to predict it first.)
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then verify: the ablation">
+    In <strong>w14.1</strong>, let a full lap complete with the ablation off and note the claimed
+    map σ and the actual map RMSE. Now predict, before you touch it, what turning the diagonal-only
+    ablation on will do to each of those two numbers — same, up, or down — and by roughly how much.
+    Run it. Most readers get the direction of one of them wrong; explain the mechanism behind
+    whichever one surprised you, in terms of what the update does to a landmark that is no longer
+    correlated with the pose.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify: the loop length">
+    In <strong>w14.2</strong>, find the shortest loop length at which the 40-run mean NEES leaves
+    its band and stays out. Then switch to single-run mode at that same setting and try to convince
+    yourself from one trace that the filter is inconsistent. Write down why you cannot, using the
+    two acceptance bands the widget prints, and state how many runs you would need for a band of
+    half the current width.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Gates that are too small">
+    In <strong>w14.4</strong>, set the clutter rate to zero and the gate to 5.99 (the 95% quantile),
+    and run three laps. Count the duplicate landmarks. Now raise the gate to 20 and repeat, then
+    lower it to 3. Explain the U-shaped failure curve you get, and connect the left-hand branch to
+    the autopsy in the previous section — specifically, which quantity being wrong makes a
+    correctly-derived χ² gate the wrong size?
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Retire a landmark">
+    Implement `retire_landmark` end to end: the per-landmark existence log odds, the decrement for
+    landmarks that were expected in view and not seen, and the block deletion. Then measure, on the
+    w14.4 scenario, the number of false landmarks surviving after 500 steps as a function of clutter
+    rate, with and without the provisional list, and plot the two curves. Report the point at which
+    the provisional list stops helping and explain what changes there.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Re-run the autopsy on a manifold">
+    Re-implement the pose part of `EkfSlam` as an error-state filter on $\SEtwo$, using the
+    $\bplus$ / $\bminus$ operators of [Chapter 7](/chapters/ch07-ekf-ukf-manifolds) so the
+    linearization point for the pose is always the identity. Re-run the 40-run Monte Carlo NEES.
+    Report how much of the inconsistency disappears — it should be a lot — and then find a loop
+    length at which it comes back. That residue is the part no filter can fix, and it is what
+    Chapter 15 exists to remove.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Smith, R., Self, M., and Cheeseman, P."
+    year={1990}
+    title="Estimating Uncertain Spatial Relationships in Robotics"
+    venue="Autonomous Robot Vehicles, Springer, 167–193"
+    doi="10.1007/978-1-4613-8997-2_14"
+    note="The stochastic map: the paper that first put robot and landmarks in one correlated state. Everything in this chapter is a footnote to its section 4."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 10 is this chapter's spine: Tables 10.1 and 10.2, the provisional list, and the map-management machinery of §10.3.3. The two sentences quoted in the autopsy — 'mostly historical' and the 1,000-feature ceiling — are from the authors' 1999–2000 draft of that chapter."
+  />
+  <Reference
+    authors="Dissanayake, M. W. M. G., Newman, P., Clark, S., Durrant-Whyte, H. F., and Csorba, M."
+    year={2001}
+    title="A solution to the simultaneous localization and map building (SLAM) problem"
+    venue="IEEE Transactions on Robotics and Automation 17(3), 229–241"
+    doi="10.1109/70.938381"
+    note="The convergence theorems of D4: monotonically decreasing map covariance, correlations tending to one, and the lower bound set by the initial vehicle uncertainty."
+  />
+  <Reference
+    authors="Julier, S. J. and Uhlmann, J. K."
+    year={2001}
+    title="A counter example to the theory of simultaneous localization and map building"
+    venue="Proceedings 2001 IEEE International Conference on Robotics and Automation (ICRA), vol. 4, 4238–4243"
+    doi="10.1109/ROBOT.2001.933280"
+    note="The stationary-robot counterexample of D6, step 5: with a range–bearing sensor of non-zero angular uncertainty, the full-covariance filter is always inconsistent."
+  />
+  <Reference
+    authors="Bailey, T., Nieto, J., Guivant, J., Stevens, M., and Nebot, E."
+    year={2006}
+    title="Consistency of the EKF-SLAM Algorithm"
+    venue="2006 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 3562–3568"
+    doi="10.1109/IROS.2006.281644"
+    note="The empirical study that set the methodology w14.2 follows: Monte Carlo NEES against a χ² band, and the finding that heading uncertainty is the trigger."
+  />
+  <Reference
+    authors="Huang, S. and Dissanayake, G."
+    year={2007}
+    title="Convergence and Consistency Analysis for Extended Kalman Filter Based SLAM"
+    venue="IEEE Transactions on Robotics 23(5), 1036–1049"
+    doi="10.1109/TRO.2007.903811"
+    note="Ties the inconsistency directly to linearization at the estimated rather than the true state, and to the unobservable directions D6 step 4 is about."
+  />
+  <Reference
+    authors="Barrau, A. and Bonnabel, S."
+    year={2023}
+    title="The Geometry of Navigation Problems"
+    venue="IEEE Transactions on Automatic Control 68(2), 689–704"
+    doi="10.1109/TAC.2022.3144328"
+    note="The modern treatment of the first exit: choose error coordinates whose dynamics do not depend on the estimate, and the manufactured information of D6 largely disappears. Connects Chapter 7's invariant EKF to this chapter's failure."
+  />
+  <Reference
+    authors="Rosen, D. M., Doherty, K. J., Terán Espinoza, A., and Leonard, J. J."
+    year={2021}
+    title="Advances in Inference and Representation for Simultaneous Localization and Mapping"
+    venue="Annual Review of Control, Robotics, and Autonomous Systems 4, 215–242"
+    doi="10.1146/annurev-control-072720-082553"
+    note="Where the field went after this chapter's two flaws: the survey to read before Chapter 15, and the clearest statement of why smoothing replaced filtering."
+  />
+  <Reference
+    authors="Carlone, L., Kim, A., Barfoot, T., Cremers, D., and Dellaert, F. (eds.)"
+    year={2026}
+    title="SLAM Handbook: From Localization and Mapping to Spatial Intelligence"
+    venue="Cambridge University Press"
+    url="https://github.com/SLAM-Handbook-contributors/slam-handbook-public-release"
+    note="The current community reference, released openly. Its framing of SLAM as inference over a factor graph is the destination the next three chapters are heading for."
+  />
+</References>

@@ -1,0 +1,1267 @@
+---
+title: Kalman Filters
+description: Two assumptions buy the Bayes filter a closed form. What comes back is the gain — not a tuning knob but a precision-weighted balance — a second coordinate system where the costs are reversed, and the first hint that waiting for the future beats recursion.
+chapter: 6
+part: PART II
+partTitle: The Bayes Filter Family
+difficulty: Intermediate
+readingTime: 55 min
+quote: The fact that the residual uncertainty is smaller than the contributing Gaussians may appear counter-intuitive, but it is a general characteristic of information integration in Kalman filters.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 3
+---
+
+import { KalmanTuningBench } from '@/components/ch/ch06/kalman-tuning-bench';
+import { GainLever } from '@/components/ch/ch06/gain-lever';
+import { MomentsVsInformation } from '@/components/ch/ch06/moments-vs-information';
+import { SmootherRewind } from '@/components/ch/ch06/smoother-rewind';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State the three assumptions that make a Bayes filter exactly Gaussian, and say what each one buys',
+    'Derive both Kalman filter steps by completing the square, not by quoting them',
+    'Read the Kalman gain as precision-weighted trust, and explain why it never depends on the data',
+    'Translate any filter between moments form and information form, and predict which one is cheaper',
+    'Detect an overconfident filter with NEES and NIS before it diverges',
+    'Implement Kf, the information filter, and the RTS smoother in Rust on nalgebra, with Joseph-form updates',
+  ]}
+  prerequisites={[
+    'The Bayes filter recursion (Chapter 5)',
+    'Gaussians in n dimensions, moments vs. canonical form (Chapter 2)',
+    'Matrix algebra: transpose, inverse, positive definiteness',
+    'Rust generics; const generics are explained where they first appear',
+  ]}
+>
+[Chapter 5](/chapters/ch05-bayes-filter) left us with an exact recursion and no way to run it. The
+prediction step is an integral over a continuous state space; the correction step needs a function
+evaluated everywhere. The histogram filter escapes by chopping the space into cells, and pays for
+it: to localize Rusty on a ten-metre rail to the nearest centimetre you need a thousand cells for
+one dimension, and a thousand *cubed* the moment you want a full pose.
+
+This chapter buys computability with two commitments — linearity and Gaussianity — and gets back
+the most consequential algorithm in engineering. The belief collapses from a function to
+two numbers per dimension, and the Bayes filter's two lines become matrix algebra you can run at
+ten kilohertz on a microcontroller.
+
+Three things come out of the algebra that are worth the price of the chapter on their own. The
+**Kalman gain** is not a parameter; it falls out of the derivation as the ratio of two precisions,
+and it is completely determined before any data arrives. The **information form** is the same
+Gaussian in different coordinates, in which the *other* filter step is the cheap one — a duality
+that quietly sets up [Chapter 15](/chapters/ch15-factor-graphs). And the **RTS smoother** shows that
+filtering, for all its elegance, is only the best *causal* use of the data.
+</Overview>
+
+## The problem with a grid
+
+Rusty is on a rail. One degree of freedom, a beacon that pings its position, and a motor that
+never quite delivers the commanded step. The histogram filter of Chapter 5 will localize it
+perfectly well — at a thousand cells for centimetre resolution, recomputed every step, to describe
+a belief that is, every single time, one smooth bump.
+
+That is the observation this chapter turns into an algorithm. If the belief is *always* going to
+be a single bump, stop storing the bump and store its mean and its width. Two numbers instead of a
+thousand, and the update becomes arithmetic.
+
+<Deferred>
+  <KalmanTuningBench />
+</Deferred>
+
+Leave it running for a few cycles before reading on. Four things in that widget are the chapter.
+
+**The posterior is taller than both its parents** — taller meaning narrower, since all four curves
+are densities. The green measurement blob and the orange prediction blob combine into a purple blob
+tighter than either. This is the sentence in the epigraph, and it is not a rounding artifact: two
+independent opinions genuinely beat one, and the algebra below says by exactly how much.
+
+**Prediction always widens; correction always narrows.** Orange is never taller than the blue prior
+that preceded it. That is "moving smears" from Chapter 5, now in closed form: the covariance gains
+an additive $\mat{R}_t$ every step and there is nothing it can do about it.
+
+**The gain settles by itself.** Watch the $K$ readout. It converges within a dozen steps and then
+holds, even though the measurements keep changing. Nothing told it to. We will prove why: the
+covariance recursion never looks at the data.
+
+**A confident filter is not an accurate one.** Press <strong>divergent</strong>. The filter is told
+the cart obeys its model almost perfectly ($\mat{R} \approx 0$) while the cart in fact slips. Its
+covariance collapses, its 2σ band shrinks to a hairline, and the truth walks straight out of it.
+The NIS readout goes red well before the RMSE readout looks alarming — and NIS is the one you can
+compute on a real robot.
+
+One implementation note, because it matters for Exercise 7. The bench carries **two** states — the
+cart's position and its velocity — while the beacon reports position only. The four blobs are the
+position marginal. Velocity is never measured at any point in the run, and the filter estimates it
+anyway, through the off-diagonal terms of $\Sigma$ that couple the two. That is the quiet superpower
+of a Gaussian belief: correlations turn one sensor into evidence about everything the sensor is
+correlated with.
+
+<KeyIdea title="The one sentence version">
+If the models are linear and every distribution in sight is Gaussian, the Bayes filter's integral
+and product have closed forms, and the belief can be carried forever as $(\mu_t, \Sigma_t)$ — with
+the weight given to each new measurement fixed in advance by the ratio of the two precisions.
+</KeyIdea>
+
+## Building intuition
+
+Before any algebra, get the mechanism into your hands. The scalar case contains the entire idea,
+and the entire idea is a balance.
+
+You have a prediction that says the cart is near $\bar\mu$, with uncertainty $\bar\sigma^2$. A
+beacon says it is near $z$, with uncertainty $\sigma_z^2$. Neither is right. The Kalman filter's
+answer is *not* to average them, and it is not to pick the more trustworthy one. It is to hang a
+weight at each claim whose mass is that claim's **precision** — the reciprocal of its variance —
+and take the centre of mass.
+
+<Deferred>
+  <GainLever />
+</Deferred>
+
+Two facts that widget makes physical, and that the derivations below make exact:
+
+1. The posterior mean is always strictly between $\bar\mu$ and $z$. A Kalman filter can be wrong,
+   but it cannot be wild.
+2. The posterior precision is the *sum* of the two input precisions. Not the larger of them — the
+   sum. That is why the purple curve is taller than both parents, and it is the whole reason
+   fusing sensors is worth doing.
+
+Everything else in this chapter is those two facts written in matrices.
+
+## The mathematics
+
+### Linear-Gaussian systems
+
+The Kalman filter is the Bayes filter under three additional assumptions — linearity, Gaussian
+noise, and a Gaussian starting point — layered on top of the Markov assumption
+[Chapter 5](/chapters/ch05-bayes-filter) already consumed.
+
+**Assumption 1 — linear motion with additive Gaussian noise.**
+
+$$
+x_t = \mat{A}_t x_{t-1} + \mat{B}_t u_t + \varepsilon_t,
+\qquad \varepsilon_t \sim \Normal(0, \mat{R}_t)
+$$
+
+so that
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1})} =
+\Normal\!\left(x_t;\; \mat{A}_t x_{t-1} + \mat{B}_t u_t,\; \mat{R}_t\right)
+$$
+</LinkedMath>
+
+**Assumption 2 — linear measurements with additive Gaussian noise.**
+
+<LinkedMath>
+$$
+z_t = \mat{C}_t x_t + \delta_t,
+\qquad \delta_t \sim \Normal(0, \mat{Q}_t),
+\qquad
+\htmlClass{term-measurement}{p(z_t \mid x_t)} = \Normal\!\left(z_t;\; \mat{C}_t x_t,\; \mat{Q}_t\right)
+$$
+</LinkedMath>
+
+**Assumption 3 — Gaussian prior.** $\htmlClass{term-prior}{\bel(x_0)} = \Normal(x_0; \mu_0, \Sigma_0)$.
+
+Together these are exactly enough. Under them the posterior is Gaussian at every $t$ — not
+approximately, not asymptotically — so the filter never needs to represent anything but a mean and
+a covariance. That closure claim is what the next two derivations prove.
+
+<NotationTable
+  rows={[
+    { sym: '\\mu_t,\\ \\Sigma_t', meaning: 'Moments form: the belief mean and covariance at time t.' },
+    { sym: '\\bar\\mu_t,\\ \\bar\\Sigma_t', meaning: 'The predicted belief, after the control and before the measurement.' },
+    { sym: '\\xi_t = \\Sigma_t^{-1}\\mu_t', meaning: 'Information vector — the canonical form’s linear coefficient.' },
+    { sym: '\\Omega_t = \\Sigma_t^{-1}', meaning: 'Information matrix — the curvature of the negative log-belief.' },
+    { sym: '\\mathbf{A}_t,\\ \\mathbf{B}_t,\\ \\mathbf{C}_t', meaning: 'State transition, control, and measurement matrices.' },
+    { sym: '\\mathbf{R}_t', meaning: 'Motion noise covariance.', note: 'Thrun’s convention. Most control texts call this Q.' },
+    { sym: '\\mathbf{Q}_t', meaning: 'Measurement noise covariance.', note: 'Thrun’s convention. Most control texts call this R.' },
+    { sym: '\\mathbf{K}_t', meaning: 'Kalman gain — how far towards the measurement to move.' },
+    { sym: 'S_t = \\mathbf{C}_t\\bar\\Sigma_t\\mathbf{C}_t^{\\mathsf{T}} + \\mathbf{Q}_t', meaning: 'Innovation covariance: how surprised the filter is entitled to be.' },
+    { sym: '\\mu_{t|T},\\ \\Sigma_{t|T}', meaning: 'Smoothed belief: state t conditioned on all T measurements.' },
+  ]}
+/>
+
+<Callout type="warn">
+**The R/Q trap.** In this book, following Thrun, $\mat{R}$ is *motion* noise and $\mat{Q}$ is
+*measurement* noise. In most of the control literature — and, deliberately, in the TypeScript port
+that runs the widgets on this page — the letters are the other way around, so you can see the
+translation happening at the call site. There is no principled reason for either choice, and
+there is no chance the field will fix it. Whenever you read Kalman filter code, find one line that
+tells you which convention it uses before you touch a number. Every slider in this chapter is
+labelled with both the symbol and its meaning, for exactly this reason.
+</Callout>
+
+### Prediction
+
+<Derivation title="The prediction step, from the Bayes filter's integral" result="µ̄ = Aµ + Bu,  Σ̄ = AΣAᵀ + R">
+We want line 2 of the Bayes filter,
+
+<LinkedMath>
+$$
+\belbar(x_t) = \int
+\htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1})}\;
+\htmlClass{term-prior}{\bel(x_{t-1})}\; dx_{t-1}
+$$
+</LinkedMath>
+
+with both factors Gaussian. Write $x$ for $x_{t-1}$, drop the time subscripts on the matrices, and
+put $d = x_t - \mat{B}u$ to keep the control out of the way. The integrand is $\exp(-L)$ with
+
+$$
+L = \tfrac12 (d - \mat{A}x)\T \mat{R}^{-1} (d - \mat{A}x)
+  + \tfrac12 (x - \mu)\T \Sigma^{-1} (x - \mu)
+$$
+
+**Step 1 — recognize a joint quadratic.** $L$ is quadratic in $(x_t, x)$ jointly, so the integrand
+is an unnormalized Gaussian over both. Expanding and collecting the terms in $x$:
+
+$$
+L = \tfrac12 x\T \underbrace{(\mat{A}\T\mat{R}^{-1}\mat{A} + \Sigma^{-1})}_{=\;\Psi^{-1}} x
+  \;-\; (\mat{A}\T\mat{R}^{-1} d + \Sigma^{-1}\mu)\T x
+  \;+\; \tfrac12 d\T\mat{R}^{-1}d + \tfrac12 \mu\T\Sigma^{-1}\mu
+$$
+
+**Step 2 — complete the square in $x$ and integrate it out.** Any quadratic splits as
+
+$$
+L = \tfrac12 (x - x^\star)\T \Psi^{-1} (x - x^\star) + L^\star,
+\qquad x^\star = \Psi\,(\mat{A}\T\mat{R}^{-1} d + \Sigma^{-1}\mu)
+$$
+
+The first term integrates to $\sqrt{\det(2\pi\Psi)}$, a constant that does not involve $x_t$. It is
+absorbed into the normalizer and never seen again. Everything that matters is in
+
+$$
+L^\star = \tfrac12 d\T\mat{R}^{-1}d + \tfrac12\mu\T\Sigma^{-1}\mu
+ - \tfrac12 (\mat{A}\T\mat{R}^{-1}d + \Sigma^{-1}\mu)\T \Psi\, (\mat{A}\T\mat{R}^{-1}d + \Sigma^{-1}\mu)
+$$
+
+**Step 3 — read off the quadratic coefficient of $d$.** Collecting the terms in $d\T(\cdot)d$:
+
+$$
+\tfrac12\, d\T \left(\mat{R}^{-1} - \mat{R}^{-1}\mat{A}\,\Psi\,\mat{A}\T\mat{R}^{-1}\right) d
+$$
+
+and the inversion lemma below, with $\mat{U} = \mat{R}$, $\mat{P} = \mat{A}$, $\mat{V} = \Sigma$,
+says that bracket is exactly $(\mat{R} + \mat{A}\Sigma\mat{A}\T)^{-1}$.
+
+**Step 4 — read off the linear coefficient.** The cross term is
+$-\,d\T\mat{R}^{-1}\mat{A}\,\Psi\,\Sigma^{-1}\mu$, and
+
+$$
+(\mat{R} + \mat{A}\Sigma\mat{A}\T)^{-1}\mat{A}
+ = \mat{R}^{-1}\mat{A} - \mat{R}^{-1}\mat{A}\Psi\mat{A}\T\mat{R}^{-1}\mat{A}
+ = \mat{R}^{-1}\mat{A}\Psi\left(\Psi^{-1} - \mat{A}\T\mat{R}^{-1}\mat{A}\right)
+ = \mat{R}^{-1}\mat{A}\Psi\Sigma^{-1}
+$$
+
+so that cross term is $-\,d\T(\mat{R} + \mat{A}\Sigma\mat{A}\T)^{-1}\mat{A}\mu$. A quadratic with
+that Hessian and that linear term is, up to a constant,
+
+$$
+L^\star = \tfrac12 (d - \mat{A}\mu)\T (\mat{R} + \mat{A}\Sigma\mat{A}\T)^{-1} (d - \mat{A}\mu) + \text{const}
+$$
+
+Undoing $d = x_t - \mat{B}u$ gives the result. $\blacksquare$
+
+**The two-line version, and why we did it the long way.** A linear map of a Gaussian is Gaussian,
+so it suffices to push the first two moments through:
+$\E[x_t] = \mat{A}\mu + \mat{B}u$ and $\Cov(x_t) = \mat{A}\Sigma\mat{A}\T + \mat{R}$, using
+$\Cov(\mat{A}x + b) = \mat{A}\Cov(x)\mat{A}\T$ and the independence of $\varepsilon_t$. Correct,
+and four lines shorter. The long derivation earns its keep in
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds): when $\mat{A}$ becomes a Jacobian the shortcut
+silently stops being exact, and only the completing-the-square version shows you *which* step
+became an approximation.
+</Derivation>
+
+The result, in the colors of the widget: the blue prior becomes the orange prediction by
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\mu_t} = \mat{A}_t \htmlClass{term-prior}{\mu_{t-1}} + \mat{B}_t u_t,
+\qquad
+\htmlClass{term-prediction}{\bar\Sigma_t} = \mat{A}_t \htmlClass{term-prior}{\Sigma_{t-1}} \mat{A}_t\T + \mat{R}_t
+$$
+</LinkedMath>
+
+Read the covariance line twice. $\mat{A}\Sigma\mat{A}\T$ is the old uncertainty *dragged through*
+the dynamics — for a contracting system it can shrink. The $+\mat{R}_t$ is the uncertainty this
+step *creates*, and since $\mat{R}_t$ is positive definite, that term only ever adds. In every
+system we will meet, prediction is a net loss.
+
+### Correction
+
+<Derivation title="The correction step, and where the gain comes from" result="K = Σ̄Cᵀ(CΣ̄Cᵀ + Q)⁻¹">
+Line 3 of the Bayes filter is a product of two Gaussians in $x_t$:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)} = \eta\;
+\htmlClass{term-measurement}{\Normal(z_t; \mat{C}x_t, \mat{Q})}\;
+\htmlClass{term-prediction}{\Normal(x_t; \bar\mu, \bar\Sigma)}
+$$
+</LinkedMath>
+
+Write $x$ for $x_t$. The exponent is a sum of two quadratics,
+
+$$
+J(x) = \tfrac12 (z - \mat{C}x)\T\mat{Q}^{-1}(z - \mat{C}x) + \tfrac12 (x - \bar\mu)\T\bar\Sigma^{-1}(x - \bar\mu)
+$$
+
+**Step 1 — the Hessian is the posterior information.** Differentiating twice,
+
+$$
+\frac{\partial^2 J}{\partial x^2} = \mat{C}\T\mat{Q}^{-1}\mat{C} + \bar\Sigma^{-1}
+\qquad\Longrightarrow\qquad
+\Sigma_t = \left(\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C}\right)^{-1}
+$$
+
+For a Gaussian, "the exponent's curvature" *is* the inverse covariance. Note that the two
+information contributions simply added — remember this line, it is the whole information filter.
+
+**Step 2 — the minimum is the posterior mean.** Setting $\partial J/\partial x = 0$:
+
+$$
+-\mat{C}\T\mat{Q}^{-1}(z - \mat{C}\mu_t) + \bar\Sigma^{-1}(\mu_t - \bar\mu) = 0
+\;\Longrightarrow\;
+\left(\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C}\right)\mu_t = \bar\Sigma^{-1}\bar\mu + \mat{C}\T\mat{Q}^{-1} z
+$$
+
+so $\mu_t = \Sigma_t\left(\bar\Sigma^{-1}\bar\mu + \mat{C}\T\mat{Q}^{-1}z\right)$.
+
+**Step 3 — that is already the answer.** Steps 1 and 2 are the complete measurement update, in two
+lines, with no gain anywhere. They are the information filter's correct step, written a section
+early. Everything that follows is the work of translating them back into moments.
+
+**Step 4 — rearrange into an innovation.** Split $z = (z - \mat{C}\bar\mu) + \mat{C}\bar\mu$ inside
+Step 2's right-hand side:
+
+$$
+\bar\Sigma^{-1}\bar\mu + \mat{C}\T\mat{Q}^{-1}\mat{C}\bar\mu + \mat{C}\T\mat{Q}^{-1}(z - \mat{C}\bar\mu)
+= \Sigma_t^{-1}\bar\mu + \mat{C}\T\mat{Q}^{-1}(z - \mat{C}\bar\mu)
+$$
+
+Multiplying by $\Sigma_t$ gives
+$\mu_t = \bar\mu + \Sigma_t\mat{C}\T\mat{Q}^{-1}(z - \mat{C}\bar\mu)$, which names the gain:
+$\mat{K}_t := \Sigma_t\mat{C}\T\mat{Q}^{-1}$.
+
+**Step 5 — the usable form of the gain.** That expression needs $\Sigma_t$, which needs an $n\times
+n$ inversion. The familiar form needs only an $m \times m$ one. They are equal:
+
+$$
+\left(\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C}\right)^{-1}\mat{C}\T\mat{Q}^{-1}
+\;=\;
+\bar\Sigma\mat{C}\T\left(\mat{C}\bar\Sigma\mat{C}\T + \mat{Q}\right)^{-1}
+$$
+
+Multiply *both* sides on the left by $(\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C})$ and on the
+right by $(\mat{C}\bar\Sigma\mat{C}\T + \mat{Q})$. The left-hand side becomes the first line below,
+the right-hand side the second:
+
+$$
+\mat{C}\T\mat{Q}^{-1}\left(\mat{C}\bar\Sigma\mat{C}\T + \mat{Q}\right) = \mat{C}\T\mat{Q}^{-1}\mat{C}\bar\Sigma\mat{C}\T + \mat{C}\T
+$$
+$$
+\left(\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C}\right)\bar\Sigma\mat{C}\T = \mat{C}\T + \mat{C}\T\mat{Q}^{-1}\mat{C}\bar\Sigma\mat{C}\T
+$$
+
+The same thing. $\blacksquare$
+
+**Step 6 — the covariance in moments form.** Apply the inversion lemma to
+$\Sigma_t = (\bar\Sigma^{-1} + \mat{C}\T\mat{Q}^{-1}\mat{C})^{-1}$:
+
+$$
+\Sigma_t = \bar\Sigma - \bar\Sigma\mat{C}\T(\mat{C}\bar\Sigma\mat{C}\T + \mat{Q})^{-1}\mat{C}\bar\Sigma
+ = \bar\Sigma - \mat{K}_t\mat{C}\bar\Sigma = (\mat{I} - \mat{K}_t\mat{C})\bar\Sigma
+$$
+
+**Step 7 — the Joseph form, and why the code uses it.** For *any* gain $\mat{K}$, not just the
+optimal one, propagating the error $x_t - \mu_t = (\mat{I}-\mat{KC})(x_t - \bar\mu) - \mat{K}\delta_t$
+through $\Cov$ gives
+
+$$
+\Sigma_t = (\mat{I} - \mat{K}\mat{C})\bar\Sigma(\mat{I} - \mat{K}\mat{C})\T + \mat{K}\mat{Q}\mat{K}\T
+$$
+
+Expanding it and using $\bar\Sigma\mat{C}\T = \mat{K}S_t$ at the optimal gain collapses it back to
+$(\mat{I}-\mat{KC})\bar\Sigma$:
+
+$$
+(\mat{I} - \mat{KC})\bar\Sigma - \left[\bar\Sigma\mat{C}\T - \mat{K}(\mat{C}\bar\Sigma\mat{C}\T + \mat{Q})\right]\mat{K}\T
+= (\mat{I} - \mat{KC})\bar\Sigma
+$$
+
+So the two agree in exact arithmetic. They do not agree in floating point. The short form is a
+difference of two matrices and can go indefinite after enough round-off; the Joseph form is a sum
+of two symmetric positive-semidefinite terms and cannot. Exercise 6 makes this happen on purpose.
+</Derivation>
+
+Collecting the results, with the colors of the widget:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{S_t} = \mat{C}_t\htmlClass{term-prediction}{\bar\Sigma_t}\mat{C}_t\T + \mat{Q}_t,
+\qquad
+\mat{K}_t = \htmlClass{term-prediction}{\bar\Sigma_t}\mat{C}_t\T \htmlClass{term-measurement}{S_t^{-1}}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\mu_t} = \htmlClass{term-prediction}{\bar\mu_t}
+ + \mat{K}_t\bigl(\htmlClass{term-measurement}{z_t} - \mat{C}_t\htmlClass{term-prediction}{\bar\mu_t}\bigr),
+\qquad
+\htmlClass{term-posterior}{\Sigma_t} = (\mat{I} - \mat{K}_t\mat{C}_t)\htmlClass{term-prediction}{\bar\Sigma_t}
+$$
+</LinkedMath>
+
+The quantity $z_t - \mat{C}_t\bar\mu_t$ is the **innovation**: the part of the measurement the
+filter did not already know. $S_t$ is how surprised the filter is *entitled* to be. Both names earn
+their keep later — [Chapter 11](/chapters/ch11-localization-gaussian) uses $S_t$ to gate outliers,
+and the consistency section below uses it to catch a filter lying about its own confidence.
+
+### The gain is precision-weighted trust
+
+Specialize to one dimension with $\mat{C} = 1$. Then $S = \bar\sigma^2 + \sigma_z^2$ and
+
+<LinkedMath>
+$$
+K = \frac{\bar\sigma^2}{\bar\sigma^2 + \sigma_z^2},
+\qquad
+\htmlClass{term-posterior}{\mu} = (1-K)\,\htmlClass{term-prediction}{\bar\mu} + K\,\htmlClass{term-measurement}{z},
+\qquad
+\htmlClass{term-posterior}{\sigma^2} = (1-K)\,\htmlClass{term-prediction}{\bar\sigma^2}
+$$
+</LinkedMath>
+
+Substituting $K$ into the variance and inverting turns that last equation into the sentence the
+Gain Lever draws:
+
+<LinkedMath>
+$$
+\frac{1}{\htmlClass{term-posterior}{\sigma^2}}
+= \frac{1}{\htmlClass{term-prediction}{\bar\sigma^2}} + \frac{1}{\htmlClass{term-measurement}{\sigma_z^2}}
+$$
+</LinkedMath>
+
+**Precisions add.** Not variances, not standard deviations — precisions. The posterior is more
+certain than either input, always, by an amount that does not depend on whether the two sources
+agreed. That is the epigraph, and it is also why the gain is not a knob: $K$ is nothing but the
+fraction of the total precision that the prediction contributed, so choosing it means choosing
+$\bar\sigma^2$ and $\sigma_z^2$, which are physical claims about a motor and a beacon.
+
+<KeyIdea title="Σ, and therefore K, never sees the data">
+Look at the four equations again: $\bar\Sigma_t$, $S_t$, $\mat{K}_t$, and $\Sigma_t$ are built from
+$\mat{A}, \mat{C}, \mat{R}, \mat{Q}$ and the previous $\Sigma$ — and nothing else. No $z$ appears
+anywhere. The covariance recursion is a deterministic matrix difference equation (a Riccati
+recursion), so the entire gain sequence can be computed before the robot is switched on, and for a
+time-invariant system it converges to a constant. This is why $K$ settles in the tuning bench, and
+it is a genuine engineering opportunity: precompute the gains offline, ship a table.
+
+It is also the first thing [Chapter 7](/chapters/ch07-ekf-ukf-manifolds) destroys. As soon as
+$\mat{C}_t$ becomes a Jacobian evaluated at $\bar\mu_t$, the covariance depends on the estimate,
+the estimate depends on the data, and the whole precomputation collapses.
+</KeyIdea>
+
+### The inversion lemma
+
+Both derivations leaned on one identity. It is Thrun's Table 3.2, and it is more usually called the
+Sherman–Morrison–Woodbury formula.
+
+**Lemma.** For invertible $\mat{U}$ and $\mat{V}$ and any $\mat{P}$ of compatible shape,
+
+$$
+\left(\mat{U} + \mat{P}\mat{V}\mat{P}\T\right)^{-1}
+= \mat{U}^{-1} - \mat{U}^{-1}\mat{P}\left(\mat{V}^{-1} + \mat{P}\T\mat{U}^{-1}\mat{P}\right)^{-1}\mat{P}\T\mat{U}^{-1}
+$$
+
+(Thrun states it with $\mat{R}$ and $\mat{Q}$ in those two roles; neutral letters here, since in this
+chapter those symbols are already taken.)
+
+*Verification.* Multiply the right-hand side by $(\mat{U} + \mat{P}\mat{V}\mat{P}\T)$ and write
+$\Psi^{-1} = \mat{V}^{-1} + \mat{P}\T\mat{U}^{-1}\mat{P}$. The result is
+
+$$
+\mat{I} + \mat{U}^{-1}\mat{P}\mat{V}\mat{P}\T
+ - \mat{U}^{-1}\mat{P}\Psi\left(\mat{P}\T + \mat{P}\T\mat{U}^{-1}\mat{P}\mat{V}\mat{P}\T\right)
+= \mat{I} + \mat{U}^{-1}\mat{P}\mat{V}\mat{P}\T - \mat{U}^{-1}\mat{P}\Psi\Psi^{-1}\mat{V}\mat{P}\T
+= \mat{I}
+$$
+
+using $\mat{P}\T + \mat{P}\T\mat{U}^{-1}\mat{P}\mat{V}\mat{P}\T = (\mat{V}^{-1} + \mat{P}\T\mat{U}^{-1}\mat{P})\mat{V}\mat{P}\T$.
+$\blacksquare$
+
+The two places this chapter uses it: $\mat{U} = \mat{R}, \mat{P} = \mat{A}, \mat{V} = \Sigma$ in the
+prediction derivation, and $\mat{U} = \bar\Sigma^{-1}, \mat{P} = \mat{C}\T, \mat{V} = \mat{Q}^{-1}$
+in the correction one.
+
+The practical reading: it converts an $n \times n$ inversion into an $m \times m$ one. When a robot
+carries a 12-dimensional state and receives 2-dimensional range–bearing readings, that is the
+difference between inverting a 12×12 matrix and a 2×2 one, on every measurement, forever.
+
+## The algorithm
+
+<Algorithm
+  name="Kalman_filter(µ_{t-1}, Σ_{t-1}, u_t, z_t)"
+  inputs="previous belief (µ, Σ), control u_t, measurement z_t"
+  outputs="µ_t, Σ_t"
+  complexity="O(n³ + m³ + m n²) per step — the m³ is the inversion of S_t, the n³ the Joseph update"
+>
+1. $\bar\mu_t = \mat{A}_t\mu_{t-1} + \mat{B}_t u_t$
+2. $\bar\Sigma_t = \mat{A}_t\Sigma_{t-1}\mat{A}_t\T + \mat{R}_t$
+3. $S_t = \mat{C}_t\bar\Sigma_t\mat{C}_t\T + \mat{Q}_t$
+4. $\mat{K}_t = \bar\Sigma_t\mat{C}_t\T S_t^{-1}$
+5. $\mu_t = \bar\mu_t + \mat{K}_t(z_t - \mat{C}_t\bar\mu_t)$
+6. $\Sigma_t = (\mat{I} - \mat{K}_t\mat{C}_t)\bar\Sigma_t$
+7. return $\mu_t, \Sigma_t$
+</Algorithm>
+
+Lines 1–2 are prediction, lines 3–6 correction. This is Thrun's Table 3.1 with the innovation
+covariance given its own line, because every diagnostic in this chapter needs it. Line 6 is the
+form that appears in every textbook; the Rust below runs the Joseph variant of it instead, for the
+reason Step 7 of the derivation gives.
+
+## The other coordinate system
+
+Step 3 of the correction derivation was an aside with a filter hidden in it. Written in the
+canonical parameters
+
+$$
+\Omega_t = \Sigma_t^{-1}, \qquad \xi_t = \Sigma_t^{-1}\mu_t
+$$
+
+the entire measurement update is
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\Omega_t} = \htmlClass{term-prediction}{\bar\Omega_t} + \mat{C}_t\T\mat{Q}_t^{-1}\mat{C}_t,
+\qquad
+\htmlClass{term-posterior}{\xi_t} = \htmlClass{term-prediction}{\bar\xi_t} + \mat{C}_t\T\mat{Q}_t^{-1}\htmlClass{term-measurement}{z_t}
+$$
+</LinkedMath>
+
+No gain. No innovation covariance. No inversion of anything the size of the state. Two additions.
+
+The reason has a name: $\Omega$ is the Hessian of the negative log-belief, and log-densities of
+independent sources *add*. Fusing $k$ sensors in information form is a fold over $k$ matrix
+additions, in any order, with no intermediate normalization. That is why large multi-sensor systems
+are so often written this way.
+
+The price appears on the other step. Prediction, which was a single matrix product in moments form,
+now requires going out to covariance and back:
+
+$$
+\bar\Omega_t = \left(\mat{A}_t\Omega_{t-1}^{-1}\mat{A}_t\T + \mat{R}_t\right)^{-1},
+\qquad
+\bar\xi_t = \bar\Omega_t\left(\mat{A}_t\Omega_{t-1}^{-1}\xi_{t-1} + \mat{B}_t u_t\right)
+$$
+
+<Algorithm
+  name="Information_filter(ξ_{t-1}, Ω_{t-1}, u_t, z_t)"
+  inputs="previous canonical belief (ξ, Ω), control u_t, measurement z_t"
+  outputs="ξ_t, Ω_t"
+  complexity="predict O(n³) — two inversions; correct O(m³ + m n²) — additive, no n×n inversion"
+>
+1. $\bar\Omega_t = \left(\mat{A}_t\Omega_{t-1}^{-1}\mat{A}_t\T + \mat{R}_t\right)^{-1}$
+2. $\bar\xi_t = \bar\Omega_t\left(\mat{A}_t\Omega_{t-1}^{-1}\xi_{t-1} + \mat{B}_t u_t\right)$
+3. $\Omega_t = \bar\Omega_t + \mat{C}_t\T\mat{Q}_t^{-1}\mat{C}_t$
+4. $\xi_t = \bar\xi_t + \mat{C}_t\T\mat{Q}_t^{-1} z_t$
+5. return $\xi_t, \Omega_t$
+</Algorithm>
+
+<Deferred>
+  <MomentsVsInformation />
+</Deferred>
+
+| Operation | Moments $(\mu, \Sigma)$ | Information $(\xi, \Omega)$ |
+|---|---|---|
+| Prediction | one product plus an addition — **cheap** | two $n\times n$ inversions — **expensive** |
+| Correction | innovation, gain, Joseph update — **expensive** | one addition per sensor — **cheap** |
+| Fusing $k$ sensors | $k$ full updates, order matters numerically | $k$ additions, order irrelevant |
+| Marginalizing a variable | delete a row and column of $\Sigma$ | Schur complement — real work |
+| Conditioning on a variable | real work | delete a row and column of $\Omega$ |
+| Natural prior for "I know nothing" | $\Sigma \to \infty$, not representable | $\Omega = 0$, perfectly representable |
+
+The last three rows are the ones to remember, because they are the reason this section exists. In
+[Chapter 14](/chapters/ch14-ekf-slam) a robot builds a map by keeping a covariance over its pose and
+every landmark, and that matrix becomes dense and enormous. Its inverse, it turns out, is nearly
+sparse: $\Omega_{ij}$ is non-zero only when landmarks $i$ and $j$ were seen from a common pose.
+[Chapter 15](/chapters/ch15-factor-graphs) throws away the covariance entirely and works in the
+sparse information matrix forever, and the "expensive" prediction step stops being a problem
+because it is never performed — the whole trajectory is solved at once.
+
+<Callout type="info">
+Thrun's draft also develops the *extended* information filter as a nonlinear SLAM engine. That
+lineage is told honestly in Chapter 15, where its descendants live. Here the information filter
+appears only in its linear form, sized to carry the duality.
+</Callout>
+
+## Is the filter telling the truth?
+
+RMSE answers "how wrong is the estimate?" It cannot answer "does the filter know how wrong it is?"
+— and the second question is the one that predicts a crash. A filter that reports 5 cm of
+uncertainty while making 50 cm errors will reject the very measurements that could save it,
+because they fall outside its gate.
+
+Two statistics answer it. Under a correct linear-Gaussian model, the normalized estimation error
+squared
+
+<LinkedMath>
+$$
+\epsilon_t = (\htmlClass{term-truth}{x_t} - \htmlClass{term-posterior}{\mu_t})\T\,
+\htmlClass{term-posterior}{\Sigma_t^{-1}}\,
+(\htmlClass{term-truth}{x_t} - \htmlClass{term-posterior}{\mu_t})
+$$
+</LinkedMath>
+
+is $\chi^2$ distributed with $n$ degrees of freedom, so $\E[\epsilon_t] = n$. And the normalized
+innovation squared
+
+<LinkedMath>
+$$
+\nu_t = (\htmlClass{term-measurement}{z_t} - \mat{C}_t\htmlClass{term-prediction}{\bar\mu_t})\T\,
+S_t^{-1}\,
+(\htmlClass{term-measurement}{z_t} - \mat{C}_t\htmlClass{term-prediction}{\bar\mu_t})
+$$
+</LinkedMath>
+
+is $\chi^2$ with $m$ degrees of freedom, so $\E[\nu_t] = m$.
+
+The difference between them is operational, and decisive. NEES needs $x_t$, so it exists only in
+simulation. NIS needs nothing the robot does not already have, so it runs on the real hardware, in
+flight, forever. Average either over $N$ steps and compare against the $\chi^2$ envelope with $Nn$
+(or $Nm$) degrees of freedom, divided by $N$: outside the band, and the filter's covariance is a
+work of fiction. Above the band means overconfident, which is dangerous; below means conservative,
+which merely wastes information.
+
+Go back to the tuning bench and run the three failure presets while watching the two meters. Each
+one moves a single slider away from *balanced*, and the three results are genuinely different
+diseases. Over a 400-step run, seeded and reproducible, they come out like this:
+
+| preset | $\mat{R}$ ($\sigma_a$) | $\mat{Q}$ ($\sigma_z$) | RMSE | mean NEES (want 2) | mean NIS (want 1) |
+|---|---|---|---|---|---|
+| balanced | 0.45 | 0.32 | 0.175 | 2.33 | 1.15 |
+| sluggish | 0.45 | 2.40 | 0.488 | 1.59 | 0.07 |
+| jittery | 4.00 | 0.32 | 0.252 | 1.37 | 0.84 |
+| divergent | 0.004 | 0.32 | 2.069 | 9186 | 43.6 |
+
+*Sluggish* claims the beacon is seven times noisier than it is, so it discounts every reading, lags
+every turn, and nearly triples its RMSE. NEES stays in band and NIS collapses to a seventh of its
+expected value: this filter is not lying, it is *ignoring information*, and NIS is the instrument
+that says so.
+
+*Jittery* claims the cart slips nine times harder than it does. The prediction is worthless, so the
+filter follows the beacon almost exactly and inherits the sensor's noise — its RMSE is about what
+you would get by plotting the raw measurements. Yet both consistency statistics are fine. This is
+the case that matters most for how you tune: a filter can be *honest and wasteful*, and no amount
+of NIS-watching will find it. Only RMSE against known truth will.
+
+*Divergent* is the dangerous one. Told the cart obeys its model almost perfectly, the covariance
+shrinks every step, the gain goes to zero, and the filter simply stops updating. Its own claimed
+σ ends the run at 0.05 m while it is 2 m from the truth. In the seeded run above, a sliding
+40-step NIS average leaves its envelope at step 48; the same window's RMSE does not look alarming
+until step 66. Eighteen steps is not much, but it is the difference between a warning and a
+post-mortem — and unlike RMSE, NIS is available on the robot.
+
+## Implementation in Rust
+
+The type is where the chapter's assumptions become enforceable. Three const generic parameters —
+state, control, and measurement dimension — mean that feeding a 4-state filter a 3×2 measurement
+matrix is a compile error, not a panic during a field trial.
+
+```rust title="crates/ch06_kalman/src/kf.rs" {11-14,49-55}
+use nalgebra::{SMatrix, SVector};
+use pr_core::prob::Gaussian; // Ch. 2's moments-form belief — reused, not redeclared
+
+/// A linear-Gaussian system and the belief it carries.
+///
+/// `N` = state dimension, `U` = control dimension, `M` = measurement dimension.
+pub struct Kf<const N: usize, const U: usize, const M: usize> {
+    pub a: SMatrix<f64, N, N>, // A_t  state transition
+    pub b: SMatrix<f64, N, U>, // B_t  control
+    pub c: SMatrix<f64, M, N>, // C_t  measurement
+    /// R_t — **motion** noise, Thrun's convention. Most control texts call this Q.
+    pub r: SMatrix<f64, N, N>,
+    /// Q_t — **measurement** noise, Thrun's convention. Most control texts call this R.
+    pub q: SMatrix<f64, M, M>,
+    pub belief: Gaussian<N>,
+}
+
+/// Everything a correction learned, handed back for gating and diagnostics.
+#[derive(Clone, Copy, Debug)]
+pub struct Update<const N: usize, const M: usize> {
+    pub innovation: SVector<f64, M>,
+    pub s: SMatrix<f64, M, M>,
+    pub gain: SMatrix<f64, N, M>,
+    /// log p(z_t | z_{1:t-1}) = log N(innovation; 0, S) — Chapter 5's evidence,
+    /// still free, and the same quantity Chapter 11 gates outliers with.
+    pub log_evidence: f64,
+}
+
+impl<const N: usize, const U: usize, const M: usize> Kf<N, U, M> {
+    /// Table 3.1, lines 1–2.
+    pub fn predict(&mut self, u: &SVector<f64, U>) {
+        self.belief.mu = self.a * self.belief.mu + self.b * u;
+        // A Σ Aᵀ is the old uncertainty dragged through the dynamics — it can
+        // shrink. + R is the uncertainty this step *creates*, and it cannot.
+        self.belief.sigma = self.a * self.belief.sigma * self.a.transpose() + self.r;
+        self.belief.symmetrize();
+    }
+
+    /// Table 3.1, lines 3–6, with the Joseph-form covariance.
+    pub fn correct(&mut self, z: &SVector<f64, M>) -> Update<N, M> {
+        let ct = self.c.transpose();
+        let innovation = z - self.c * self.belief.mu;
+        let s = self.c * self.belief.sigma * ct + self.q;
+        let s_inv = s.try_inverse().expect("S_t singular: a measurement carries no noise");
+        let gain = self.belief.sigma * ct * s_inv;
+
+        self.belief.mu += gain * innovation;
+
+        // Joseph form: (I − KC) Σ̄ (I − KC)ᵀ + K Q Kᵀ. Identical to (I − KC)Σ̄
+        // at the optimal gain, but it is a *sum* of two positive-semidefinite
+        // terms rather than a difference, so round-off cannot make it indefinite.
+        let i_kc = SMatrix::<f64, N, N>::identity() - gain * self.c;
+        self.belief.sigma =
+            i_kc * self.belief.sigma * i_kc.transpose() + gain * self.q * gain.transpose();
+        self.belief.symmetrize();
+
+        // Ch. 2's Cholesky-based log-density, evaluated at the innovation.
+        let log_evidence = pr_core::prob::log_normal_pdf(&innovation, &SVector::zeros(), &s);
+        Update { innovation, s, gain, log_evidence }
+    }
+}
+
+impl<const N: usize, const U: usize, const M: usize> bayes_core::BayesFilter for Kf<N, U, M> {
+    type Belief = Gaussian<N>;
+    type Control = SVector<f64, U>;
+    type Measurement = SVector<f64, M>;
+
+    fn predict(&mut self, u: &Self::Control) {
+        Kf::predict(self, u)
+    }
+
+    fn correct(&mut self, z: &Self::Measurement) -> f64 {
+        Kf::correct(self, z).log_evidence.exp()
+    }
+
+    fn belief(&self) -> &Self::Belief {
+        &self.belief
+    }
+}
+```
+
+The information filter is the same struct with the belief stored the other way round. Notice how
+much shorter `correct` is than `predict` — the exact inverse of the shape above.
+
+```rust title="crates/ch06_kalman/src/info.rs" {41-43}
+use nalgebra::{SMatrix, SVector};
+use pr_core::prob::Gaussian;
+
+/// The same belief in canonical coordinates: Ω = Σ⁻¹, ξ = Σ⁻¹µ.
+pub struct InfoFilter<const N: usize, const U: usize, const M: usize> {
+    pub xi: SVector<f64, N>,
+    pub omega: SMatrix<f64, N, N>,
+    pub a: SMatrix<f64, N, N>,
+    pub b: SMatrix<f64, N, U>,
+    pub c: SMatrix<f64, M, N>,
+    pub r: SMatrix<f64, N, N>,
+    pub q: SMatrix<f64, M, M>,
+}
+
+impl<const N: usize, const U: usize, const M: usize> InfoFilter<N, U, M> {
+    /// Table 3.4, lines 1–2. Two n×n inversions: the expensive step *here*.
+    pub fn predict(&mut self, u: &SVector<f64, U>) {
+        let sigma = self.omega.try_inverse().expect("Ω must be positive definite");
+        let mu = sigma * self.xi;
+        let sigma_bar = self.a * sigma * self.a.transpose() + self.r;
+        self.omega = sigma_bar.try_inverse().expect("Σ̄ must be positive definite");
+        self.xi = self.omega * (self.a * mu + self.b * u);
+    }
+
+    /// Table 3.4, lines 3–4, with this filter's own sensor.
+    pub fn correct(&mut self, z: &SVector<f64, M>) {
+        let (c, q) = (self.c, self.q);
+        self.add_information(z, &c, &q);
+    }
+
+    /// No gain, no S, nothing n×n inverted: the measurement's information is
+    /// added in, and that is the entire update. Any sensor of any dimension `K`
+    /// contributes through the same three lines, which is why fusion in
+    /// information form is a fold rather than a special case.
+    pub fn add_information<const K: usize>(
+        &mut self,
+        z: &SVector<f64, K>,
+        c: &SMatrix<f64, K, N>,
+        q: &SMatrix<f64, K, K>,
+    ) {
+        let ct_qinv = c.transpose() * q.try_inverse().expect("Q must be invertible");
+        self.omega += ct_qinv * c;
+        self.xi += ct_qinv * z;
+    }
+
+    pub fn to_moments(&self) -> Gaussian<N> {
+        let sigma = self.omega.try_inverse().expect("Ω must be positive definite");
+        Gaussian::new(sigma * self.xi, sigma)
+    }
+
+    /// Start from a moments-form belief and the same system matrices as a `Kf`.
+    pub fn from_kf(kf: &Kf<N, U, M>) -> Self {
+        let omega = kf.belief.sigma.try_inverse().expect("Σ must be positive definite");
+        Self {
+            xi: omega * kf.belief.mu,
+            omega,
+            a: kf.a,
+            b: kf.b,
+            c: kf.c,
+            r: kf.r,
+            q: kf.q,
+        }
+    }
+}
+```
+
+The smoother needs the forward run kept rather than thrown away — which is the first time in this
+book that a filter's defining virtue, forgetting the past, is the thing standing in the way.
+
+```rust title="crates/ch06_kalman/src/smooth.rs"
+use nalgebra::{SMatrix, SVector};
+use pr_core::prob::Gaussian;
+
+/// One time step of a stored forward run: what the filter believed before the
+/// measurement, after it, and the A_t that connected them.
+#[derive(Clone, Copy)]
+pub struct Step<const N: usize> {
+    pub predicted: Gaussian<N>, // (µ̄_t, Σ̄_t)
+    pub filtered: Gaussian<N>,  // (µ_t,  Σ_t)
+    pub a: SMatrix<f64, N, N>,
+}
+
+/// Rauch–Tung–Striebel fixed-interval smoother.
+///
+/// One backward pass over a completed run. The middle line says everything:
+/// correct each state by how wrong its own prediction of the future turned out
+/// to be, scaled by how much that state was responsible for the prediction.
+pub fn rts_smooth<const N: usize>(run: &[Step<N>]) -> Vec<Gaussian<N>> {
+    let mut out: Vec<Gaussian<N>> = run.iter().map(|s| s.filtered).collect();
+
+    for t in (0..run.len().saturating_sub(1)).rev() {
+        let next = &run[t + 1];
+        let l = run[t].filtered.sigma
+            * next.a.transpose()
+            * next.predicted.sigma.try_inverse().expect("Σ̄ must be invertible");
+
+        out[t].mu = run[t].filtered.mu + l * (out[t + 1].mu - next.predicted.mu);
+        out[t].sigma = run[t].filtered.sigma
+            + l * (out[t + 1].sigma - next.predicted.sigma) * l.transpose();
+    }
+    out
+}
+
+/// NEES — needs ground truth, so it exists only in simulation. E[·] = N.
+pub fn nees<const N: usize>(truth: &SVector<f64, N>, bel: &Gaussian<N>) -> f64 {
+    let d = truth - bel.mu;
+    let omega = bel.sigma.try_inverse().expect("Σ must be positive definite");
+    (d.transpose() * omega * d)[(0, 0)]
+}
+
+/// NIS — needs only the innovation and S, so it runs on the real robot. E[·] = M.
+pub fn nis<const M: usize>(innovation: &SVector<f64, M>, s: &SMatrix<f64, M, M>) -> f64 {
+    let s_inv = s.try_inverse().expect("S must be invertible");
+    (innovation.transpose() * s_inv * innovation)[(0, 0)]
+}
+```
+
+### A worked example you can check by hand
+
+One dimension, one control, one measurement. The cart is commanded to move one metre per step, and
+a beacon reports its position.
+
+$$
+\mat{A} = \mat{B} = \mat{C} = 1, \qquad \mat{R} = 0.25, \qquad \mat{Q} = 0.5,
+\qquad \bel(x_0) = \Normal(0, 1)
+$$
+
+Step one. The control $u_1 = 1$ gives $\bar\mu_1 = 0 + 1 = 1$ and
+$\bar\Sigma_1 = 1 + 0.25 = 1.25$. The beacon reports $z_1 = 1.7$, so
+$S_1 = 1.25 + 0.5 = 1.75$ and
+
+$$
+K_1 = \frac{1.25}{1.75} = \frac{5}{7} \approx 0.714286
+$$
+
+The filter moves five sevenths of the way from its prediction to the reading:
+$\mu_1 = 1 + 0.714286 \times 0.7 = 1.5$, and $\Sigma_1 = (1 - 5/7)\times 1.25 = 2.5/7 \approx
+0.357143$. That posterior variance is smaller than the prediction's 1.25 *and* smaller than the
+measurement's own 0.5 — the epigraph, in arithmetic you can do on paper.
+
+Step two. $u_2 = 1$ gives $\bar\mu_2 = 2.5$, $\bar\Sigma_2 = 2.5/7 + 0.25 = 4.25/7 \approx 0.607143$.
+The beacon reports $z_2 = 2.1$, which is *below* the prediction, so
+$S_2 = 4.25/7 + 0.5 = 7.75/7$ and $K_2 = 4.25/7.75 \approx 0.548387$.
+
+| step | $\bar\mu$ | $\bar\Sigma$ | $z$ | $S$ | $K$ | $\mu$ | $\Sigma$ |
+|---|---|---|---|---|---|---|---|
+| 1 | 1.000000 | 1.250000 | 1.7 | 1.750000 | 0.714286 | 1.500000 | 0.357143 |
+| 2 | 2.500000 | 0.607143 | 2.1 | 1.107143 | 0.548387 | 2.280645 | 0.274194 |
+
+Notice the gain *fell* between the steps, from 0.714 to 0.548, without any instruction. The
+prediction got better — its variance dropped from 1.25 to 0.607 — so the measurement's share of the
+total precision shrank. Notice too that $\Sigma$ is converging: 1, 0.357, 0.274, heading for the
+fixed point of the Riccati recursion, which for these numbers is exactly
+$\Sigma_\infty = 0.25$ and $K_\infty = 0.5$. (Substitute: $\bar\Sigma = 0.25 + 0.25 = 0.5$,
+$S = 1$, $K = 0.5$, $\Sigma = 0.5 \times 0.5 = 0.25$. A fixed point you can verify in one line, and
+the reason the gain readout in the tuning bench stops moving.)
+
+```rust title="crates/ch06_kalman/examples/cart_1d.rs"
+use approx::assert_relative_eq;
+use ch06_kalman::{InfoFilter, Kf};
+use nalgebra::{SMatrix, SVector};
+use pr_core::prob::Gaussian;
+
+/// The chapter's 1-D cart, built once so the example and the test cannot drift.
+fn cart() -> Kf<1, 1, 1> {
+    Kf {
+        a: SMatrix::identity(),
+        b: SMatrix::identity(),
+        c: SMatrix::identity(),
+        r: SMatrix::from_element(0.25), // motion noise      R
+        q: SMatrix::from_element(0.50), // measurement noise Q
+        belief: Gaussian::new(SVector::zeros(), SMatrix::identity()),
+    }
+}
+
+fn main() {
+    let mut kf = cart();
+    for (t, (u, z)) in [(1.0, 1.7), (1.0, 2.1)].into_iter().enumerate() {
+        kf.predict(&SVector::from_element(u));
+        print!("step {}:  µ̄ = {:.6}  Σ̄ = {:.6}", t + 1, kf.belief.mu[0], kf.belief.sigma[(0, 0)]);
+        let up = kf.correct(&SVector::from_element(z));
+        println!(
+            "   K = {:.6}   µ = {:.6}  Σ = {:.6}",
+            up.gain[(0, 0)], kf.belief.mu[0], kf.belief.sigma[(0, 0)]
+        );
+    }
+}
+
+#[test]
+fn worked_example_ch06_cart_1d() {
+    let mut kf = cart();
+
+    kf.predict(&SVector::from_element(1.0));
+    assert_relative_eq!(kf.belief.mu[0], 1.0, epsilon = 1e-12);
+    assert_relative_eq!(kf.belief.sigma[(0, 0)], 1.25, epsilon = 1e-12);
+
+    let u1 = kf.correct(&SVector::from_element(1.7));
+    assert_relative_eq!(u1.gain[(0, 0)], 5.0 / 7.0, epsilon = 1e-12);
+    assert_relative_eq!(kf.belief.mu[0], 1.5, epsilon = 1e-12);
+    assert_relative_eq!(kf.belief.sigma[(0, 0)], 2.5 / 7.0, epsilon = 1e-12);
+
+    kf.predict(&SVector::from_element(1.0));
+    assert_relative_eq!(kf.belief.mu[0], 2.5, epsilon = 1e-12);
+    assert_relative_eq!(kf.belief.sigma[(0, 0)], 4.25 / 7.0, epsilon = 1e-12);
+
+    let u2 = kf.correct(&SVector::from_element(2.1));
+    assert_relative_eq!(u2.gain[(0, 0)], 4.25 / 7.75, epsilon = 1e-12);
+    assert_relative_eq!(kf.belief.mu[0], 2.280_645_161_290_323, epsilon = 1e-9);
+    assert_relative_eq!(kf.belief.sigma[(0, 0)], 0.274_193_548_387_096_8, epsilon = 1e-9);
+}
+
+/// The same two steps in canonical coordinates must land on the same posterior.
+/// If this ever fails, one of the two derivations above is wrong.
+#[test]
+fn information_form_agrees() {
+    let mut kf = cart();
+    let mut inf = InfoFilter::from_kf(&kf);
+
+    for (u, z) in [(1.0, 1.7), (1.0, 2.1)] {
+        let (u, z) = (SVector::from_element(u), SVector::from_element(z));
+        kf.predict(&u);
+        kf.correct(&z);
+        inf.predict(&u);
+        inf.correct(&z);
+    }
+
+    let moments = inf.to_moments();
+    assert_relative_eq!(moments.mu[0], kf.belief.mu[0], epsilon = 1e-9);
+    assert_relative_eq!(moments.sigma[(0, 0)], kf.belief.sigma[(0, 0)], epsilon = 1e-9);
+}
+```
+
+<Callout type="info">
+The widget at the top of this chapter runs the same algorithm: `lib/filters/kf.ts` is a
+line-for-line port of the Rust above, including the Joseph form, and `lib/filters/info.ts` is the
+port of the information filter. Both reproduce the table you just checked by hand.
+</Callout>
+
+One more habit worth building here, because every later chapter reuses it. The book hand-rolls its
+filters — that is the point — but a hand-rolled filter with no external witness is a hand-rolled
+filter with an untested opinion. `adskalman` is a dev-dependency of `ch06_kalman` for exactly one
+purpose: to run the same matrices through somebody else's implementation and assert agreement to
+$10^{-9}$. It is not in the release build and never appears in a listing outside a `#[cfg(test)]`
+block. It is the cheapest available insurance against a transposed matrix — the class of bug that
+produces plausible numbers rather than a crash.
+
+The failure gallery in the tuning bench is not hand-tuned for the widget either. It lives in the
+library, so the prose, the simulation, and the tests all cite the same four numbers.
+
+```rust title="crates/ch06_kalman/src/tuning.rs"
+/// A claim about how noisy the world is. The cart on the bench really has
+/// `accel_sigma = 0.45` and `range_sigma = 0.32`; every other preset is a lie
+/// of a particular shape.
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    /// R_t, as a white-acceleration σ in m/s².
+    pub accel_sigma: f64,
+    /// Q_t, as a range σ in m.
+    pub range_sigma: f64,
+}
+
+pub const BALANCED: Tuning = Tuning { accel_sigma: 0.45, range_sigma: 0.32 };
+/// Q enormous: the beacon is discounted, the estimate lags, NIS collapses.
+pub const SLUGGISH: Tuning = Tuning { accel_sigma: 0.45, range_sigma: 2.40 };
+/// R enormous: the model is discarded and the estimate inherits sensor noise.
+/// Honest — both consistency tests pass — and wasteful.
+pub const JITTERY: Tuning = Tuning { accel_sigma: 4.00, range_sigma: 0.32 };
+/// R ≈ 0 while the cart really slips: Σ collapses and the filter stops listening.
+pub const DIVERGENT: Tuning = Tuning { accel_sigma: 0.004, range_sigma: 0.32 };
+
+#[test]
+fn divergence_is_caught_by_nis_before_rmse() {
+    let seeded = crate::bench::run(DIVERGENT, /* steps */ 400, /* seed */ 7);
+    assert!(seeded.first_nis_out_of_band < seeded.first_rmse_alarm);
+}
+```
+
+## Putting it together: waiting for the future
+
+A filter is causal by construction. Its estimate at time $t$ has seen $z_{1:t}$ and nothing more,
+because that is what "online" means. But once a run is over — a logged dataset, a mapping session,
+a post-flight analysis — the constraint is gone. The state at $t = 40$ can be re-estimated using
+the measurements from $t = 41$ onwards, and it should be, because those measurements are informative
+about it.
+
+<Derivation title="The RTS smoother, from a conditional Gaussian" result="L_t = Σ_t A_{t+1}ᵀ Σ̄_{t+1}⁻¹">
+Write $\mu_{t|T}, \Sigma_{t|T}$ for the belief about $x_t$ given *all* $T$ measurements, and keep
+$\mu_t, \Sigma_t$ for the filtered ones.
+
+**Step 1 — the joint of two consecutive states, given the past.** Conditioned on $z_{1:t}$, the pair
+$(x_t, x_{t+1})$ is jointly Gaussian, because $x_{t+1} = \mat{A}_{t+1}x_t + \mat{B}u + \varepsilon$
+is a linear function of $x_t$ plus independent noise. Its mean is $(\mu_t, \bar\mu_{t+1})$, and its
+covariance is built from three blocks we already have:
+
+$$
+\Cov(x_t) = \Sigma_t,
+\qquad
+\Cov(x_t,\, x_{t+1}) = \Sigma_t\mat{A}_{t+1}\T,
+\qquad
+\Cov(x_{t+1}) = \bar\Sigma_{t+1}
+$$
+
+The middle one is the load-bearing one, and it comes for free:
+$\Cov(x_t,\, \mat{A}_{t+1}x_t + \mat{B}u + \varepsilon) = \Sigma_t\mat{A}_{t+1}\T$, because
+$\varepsilon$ is independent of $x_t$.
+
+**Step 2 — condition on $x_{t+1}$.** The conditional-Gaussian identity gives
+
+$$
+p(x_t \mid x_{t+1}, z_{1:t}) = \Normal\!\left(x_t;\;
+\mu_t + \mat{L}_t(x_{t+1} - \bar\mu_{t+1}),\;
+\Sigma_t - \mat{L}_t\bar\Sigma_{t+1}\mat{L}_t\T\right)
+$$
+
+with the **smoother gain** $\mat{L}_t = \Sigma_t\mat{A}_{t+1}\T\bar\Sigma_{t+1}^{-1}$.
+
+**Step 3 — the future adds nothing more.** By the Markov assumption, $z_{t+1:T}$ is conditionally
+independent of $x_t$ given $x_{t+1}$, so
+
+$$
+p(x_t \mid x_{t+1}, z_{1:T}) = p(x_t \mid x_{t+1}, z_{1:t})
+$$
+
+This is the step that makes a backward *recursion* possible at all: everything the future has to
+say about $x_t$ arrives through $x_{t+1}$.
+
+**Step 4 — average over the smoothed successor.** By the tower rule, with the expectation taken
+over $x_{t+1} \sim \Normal(\mu_{t+1|T}, \Sigma_{t+1|T})$:
+
+$$
+\mu_{t|T} = \E\!\left[\mu_t + \mat{L}_t(x_{t+1} - \bar\mu_{t+1})\right]
+= \mu_t + \mat{L}_t\left(\mu_{t+1|T} - \bar\mu_{t+1}\right)
+$$
+
+and by the law of total covariance,
+
+$$
+\Sigma_{t|T} = \underbrace{\Sigma_t - \mat{L}_t\bar\Sigma_{t+1}\mat{L}_t\T}_{\E[\Cov(x_t \mid x_{t+1})]}
+ + \underbrace{\mat{L}_t\Sigma_{t+1|T}\mat{L}_t\T}_{\Cov(\E[x_t \mid x_{t+1}])}
+= \Sigma_t + \mat{L}_t\left(\Sigma_{t+1|T} - \bar\Sigma_{t+1}\right)\mat{L}_t\T
+$$
+
+Initialize at $t = T$ with the filtered belief — the last state has no future to borrow from — and
+run backwards. $\blacksquare$
+
+Since $\Sigma_{t+1|T} \preceq \bar\Sigma_{t+1}$ always, the correction term is negative
+semidefinite: **smoothing never increases a covariance.** The improvement is largest where
+$\bar\Sigma_{t+1}$ was largest, which is to say exactly where the filter was least sure.
+</Derivation>
+
+<Deferred>
+  <SmootherRewind />
+</Deferred>
+
+That widget is this book's longest-range foreshadowing. The smoothed trajectory is the posterior
+over *all* states given *all* measurements, $p(x_{0:T} \mid z_{1:T}, u_{1:T})$ — and computing it
+took a forward pass, a stored history, and a backward pass. [Chapter 15](/chapters/ch15-factor-graphs)
+computes the same posterior a completely different way: assemble every measurement and every motion
+as a constraint in one large sparse system, and solve it. When the models are linear and Gaussian
+the two answers are identical to machine precision. When they are not — which is always, on a real
+robot with rotations in its state — the batch method can iterate to convergence and the filter
+cannot. That is the argument that ended the filtering era in SLAM, and you have just seen its
+first move.
+
+<Callout type="info">
+The natural next questions are what happens when $\mat{A}_t$ and $\mat{C}_t$ stop being matrices
+and start being nonlinear functions ([Chapter 7](/chapters/ch07-ekf-ukf-manifolds)), and what
+happens when a single Gaussian genuinely cannot describe the belief — three identical doors, a
+kidnapped robot ([Chapter 8](/chapters/ch08-nonparametric-filters)). Both keep every equation on
+this page and change exactly one thing.
+</Callout>
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={1} title="Precisions add">
+    Derive $K = \bar\sigma^2/(\bar\sigma^2 + \sigma_z^2)$ directly, by completing the square in the
+    1-D exponent $\tfrac12(z-x)^2/\sigma_z^2 + \tfrac12(x-\bar\mu)^2/\bar\sigma^2$ rather than by
+    specializing the matrix result. Then show $1/\sigma^2 = 1/\bar\sigma^2 + 1/\sigma_z^2$, and use
+    it to reproduce both rows of the chapter's numeric table with a calculator.
+    <details>
+      <summary>Check</summary>
+      Your second row should give $K_2 = 4.25/7.75 = 0.548387$ and $\Sigma_2 = 0.274194$. If you get
+      $\Sigma_2 = 0.208333$ you skipped the $+\mat{R}$ in the second prediction; if you get
+      $\Sigma_2 = 0.375$ you predicted from $\bar\Sigma_1$ instead of $\Sigma_1$.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The gain never sees the data">
+    Prove that $\Sigma_t$, and therefore $\mat{K}_t$, depends only on
+    $\mat{A}_{1:t}, \mat{C}_{1:t}, \mat{R}_{1:t}, \mat{Q}_{1:t}$ and $\Sigma_0$ — never on
+    $z_{1:t}$. What does this let you precompute before the robot is switched on? Then state
+    precisely which line of the derivation breaks when $\mat{C}_t$ is replaced by a Jacobian
+    evaluated at $\bar\mu_t$, as it will be in [Chapter 7](/chapters/ch07-ekf-ukf-manifolds).
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Count the flops and pick a side">
+    Using the inversion lemma, show that the information filter's correct step and the Kalman
+    filter's correct step produce the same posterior. Then count multiply–adds for both forms of
+    both steps at $n = 13$, $m = 2$ (a 3-DoF pose plus five 2-D landmarks, observed by a
+    range–bearing sensor — the [Chapter 14](/chapters/ch14-ekf-slam) state, in miniature), and again
+    at $n = 13$ with six independent 2-D sensors fused per step. Which form wins in each case, and
+    what would have to be true of $\Omega$ for the answer to flip again? The ledger in w6.2 prices
+    the same formula at $m = 1$; drag its dimension slider to 13 and check that your totals have
+    the same shape.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then verify">
+    In the Kalman Tuning Bench, write down your predictions *before* touching anything: if
+    $\mat{Q}$ is multiplied by 100, what happens to (a) the steady-state gain $K$, (b) the RMSE,
+    (c) the mean NIS? Now do it. Two of the three probably surprised you; explain why NIS moves in
+    the direction it does.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the honest failure">
+    Switch the bench to sweep mode. Find a region of the $(\mat{R}, \mat{Q})$ grid where the mean
+    NIS is inside its envelope but the RMSE is poor, and a second region where RMSE is good but NIS
+    is far outside. Explain what each region means physically, and say which of the two filters you
+    would rather deploy on a robot that has to gate outliers.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Break the covariance on purpose">
+    Implement the naive update $\Sigma_t = (\mat{I} - \mat{K}_t\mat{C}_t)\bar\Sigma_t$ alongside the
+    Joseph form. Run the 1-D cart for $10^6$ steps in `f32`, logging the smallest eigenvalue of
+    $\Sigma$ every thousand steps. Plot both. Then repeat with a deliberately suboptimal gain
+    ($0.9\mat{K}_t$) and report which form survives, and why the Joseph form's algebraic structure
+    predicts the result.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Smooth a logged run">
+    Log a 2-D constant-velocity run in the Apartment ([Chapter 4](/chapters/ch04-rusty-and-sensors))
+    with $N = 4$ (position and velocity) and $M = 2$ (beacon position fixes only). Confirm that the
+    filter recovers velocity, a state it never measures, through the cross-covariance terms — plot
+    $\Sigma_{13}$ over time and explain its shape. Then run `rts_smooth` over the stored trajectory
+    and report filtered vs. smoothed RMSE plus the covariance ratio at mid-trajectory. Cross-check
+    the whole thing against `adskalman`'s implementation in a test; a disagreement above $10^{-9}$
+    is a bug in one of you.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Kalman, R. E."
+    year={1960}
+    title="A New Approach to Linear Filtering and Prediction Problems"
+    venue="Journal of Basic Engineering 82(1), 35–45"
+    doi="10.1115/1.3662552"
+    note="The original. Worth reading for how little it resembles the modern presentation: Kalman derives the estimator from orthogonal projection, not from Bayes rule, and the word Gaussian barely appears."
+  />
+  <Reference
+    authors="Rauch, H. E., Tung, F., and Striebel, C. T."
+    year={1965}
+    title="Maximum Likelihood Estimates of Linear Dynamic Systems"
+    venue="AIAA Journal 3(8), 1445–1450"
+    doi="10.2514/3.3166"
+    note="The smoother in the last section of this chapter, in its original form. Note the framing: maximum likelihood over the whole trajectory — which is precisely the view Chapter 15 returns to."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 3 is the source of this chapter's notation, the Table 3.1 and 3.4 algorithms, the completing-the-square derivation, and the inversion lemma."
+  />
+  <Reference
+    authors="Bar-Shalom, Y., Li, X. R., and Kirubarajan, T."
+    year={2001}
+    title="Estimation with Applications to Tracking and Navigation: Theory, Algorithms and Software"
+    venue="Wiley-Interscience"
+    doi="10.1002/0471221279"
+    note="Where NEES and NIS come from, with the χ² acceptance regions and the multi-run averaging this chapter's consistency meters use. The standard reference for filter tuning done as engineering rather than by eye."
+  />
+  <Reference
+    authors="Barfoot, T. D."
+    year={2024}
+    title="State Estimation for Robotics"
+    venue="Cambridge University Press, 2nd edition"
+    url="https://www.cambridge.org/us/universitypress/subjects/computer-science/computer-graphics-image-processing-and-robotics/state-estimation-robotics-second-edition-2nd-edition"
+    note="The modern robotics treatment, and the source for this chapter's RTS presentation. Barfoot derives the filter as a special case of batch estimation rather than the other way round — the reordering this book's Part V follows."
+  />
+  <Reference
+    authors="Ortiz, J., Evans, T., and Davison, A. J."
+    year={2021}
+    title="A Visual Introduction to Gaussian Belief Propagation"
+    venue="arXiv:2107.02308"
+    url="https://arxiv.org/abs/2107.02308"
+    note="What the information form becomes when you stop assuming a chain: message passing on a sparse Ω. The interactive figures are the best answer to “why would anyone accept the information filter's expensive prediction step?”"
+  />
+  <Reference
+    authors="Tracy, K. S."
+    year={2022}
+    title="A Square-Root Kalman Filter Using Only QR Decompositions"
+    venue="arXiv:2208.06452"
+    url="https://arxiv.org/abs/2208.06452"
+    note="The numerical-hygiene chapter this one only gestures at. Propagating a Cholesky factor of Σ instead of Σ doubles the working precision and makes the positive-definiteness that Joseph form defends structurally impossible to lose."
+  />
+  <Reference
+    authors="Revach, G., Shlezinger, N., Ni, X., Escoriza, A. L., van Sloun, R. J. G., and Eldar, Y. C."
+    year={2022}
+    title="KalmanNet: Neural Network Aided Kalman Filtering for Partially Known Dynamics"
+    venue="IEEE Transactions on Signal Processing 70, 1532–1547"
+    doi="10.1109/TSP.2022.3158588"
+    note="What happens when the gain stops being derivable because R and Q are unknown: learn K with a recurrent network while keeping the rest of the recursion intact. Chapter 25 differentiates through this chapter's Kf to get there."
+  />
+</References>

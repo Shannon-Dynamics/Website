@@ -1,0 +1,294 @@
+---
+title: Learning Navigation & Mobile Manipulation
+chapter: 19
+quote:
+  text: The effectiveness of end-to-end versus hybrid modular solutions varies by problem. Neither approach is universally superior.
+  author: Chen Tang and colleagues
+  affiliation: UT Austin · University of Virginia · Sony AI
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Navigation is where partial observability stops being a footnote. A robot in an unmapped building genuinely does not know where it is, and Chapter 4's honest formalism — the POMDP — is unavoidable rather than optional. This chapter derives the belief-MDP response, shows how a recurrent policy learns to track a belief without being told to, and confronts the architectural question the survey finds genuinely open: how much of the navigation stack should be learned? Then mobile manipulation, where a base and an arm must coordinate, and long-horizon tasks force the question of what a skill even is."
+  outcomes={[
+    'Construct the belief MDP for navigation and explain why it restores the Markov property',
+    'Explain how a recurrent policy approximates a belief tracker, and how to probe what it stores',
+    'Compare end-to-end, hybrid and modular architectures on the axes that actually differ',
+    'Resolve kinematic redundancy for a mobile manipulator with a weighted pseudoinverse',
+    'Formulate a long-horizon task as a semi-MDP over skills and state the credit-assignment benefit',
+    'Explain why "which skills should the robot learn?" is the field’s open question',
+  ]}
+  foundation="Belief MDPs for navigation, recurrent policies as approximate filters, semi-MDP skill composition, and weighted-pseudoinverse redundancy resolution for whole-body control."
+  conceptual="The pipeline switcher: the same task under three architectures, with the success/interpretability/data trade made explicit as the environment gets less structured."
+  practical="Lidar Rusty in rapier2d, a recurrent GRU policy in burn, a hierarchical skill selector, and a mobile-Reacher whole-body fetch task."
+/>
+
+## 19.1 Rusty graduates
+
+Chapter 4's Rusty lived in a 12×9 grid and always knew which cell he occupied. The real Rusty has a 2-D lidar returning 64 noisy range measurements, wheel odometry that drifts, and a building he has never seen.
+
+The observation is now $o_t = (\text{scan}_t, \text{goal vector}_t, \text{velocity}_t)$ — about 70 numbers, none of which is the state. The state would include his true pose and the complete geometry of the building.
+
+This is the POMDP that Chapter 4 introduced and postponed. Here it is unavoidable, and it is worth seeing what goes wrong if you ignore it: a policy treating the current scan as state cannot distinguish two identical-looking corridors, cannot remember that it already tried the left branch, and will oscillate at symmetric junctions. Those are not tuning problems; they are consequences of a state representation that is not Markov.
+
+## 19.2 Belief, and how a network learns to track it
+
+Chapter 4 gave the repair. Maintain a belief $b_t(s) = \mathbb{P}(S_t = s \mid o_{1:t}, a_{1:t-1})$, updated by Bayes' rule, and the belief *is* Markov: $b_{t+1}$ depends only on $b_t$, $a_t$ and $o_{t+1}$. Planning over beliefs is therefore an ordinary MDP — over a continuous, high-dimensional space, which is why exact solutions are out of reach.
+
+The practical answer is to let the policy learn its own belief representation. A recurrent policy carries a hidden state $h_t$ updated as $h_t = \text{GRU}(h_{t-1}, o_t, a_{t-1})$, and acts as $\pi(a_t \mid h_t)$.
+
+<Callout variant="insight" title="The recurrent state is a learned, task-specific filter">
+Nothing tells the GRU to estimate pose. It is trained only to maximize return. But return depends on reaching goals, reaching goals requires knowing roughly where you are, so **the hidden state learns to encode whatever about the history is useful** — and no more.
+
+That last clause is the advantage over a hand-built filter. An EKF estimates full pose with a covariance, at a cost. A recurrent policy learns to track only the aspects of location that matter for the decisions it faces, which is typically far less information.
+
+You can check this. Freeze the policy, collect trajectories, and train a linear probe from $h_t$ to true pose. High probe accuracy means the network is genuinely localizing; low accuracy with good performance means it found a shortcut that does not require localization — which is worth knowing before deployment, because such shortcuts often depend on training-environment regularities.
+</Callout>
+
+Two implementation details decide whether recurrent PPO works. **Sequence-based batching**: hidden states must be carried across a trajectory, so batches are sequences, not shuffled transitions. And **burn-in**: when replaying a stored sequence, run the recurrent state forward over some initial steps without computing loss, so the hidden state is warm before gradients are taken.
+
+## 19.3 The architecture question
+
+Here the survey's finding is unusually direct: neither end-to-end nor modular wins in general. That is a real result rather than a failure to decide, and the reason is that they fail differently.
+
+<PipelineSwitcher />
+
+**The classical modular stack** — SLAM, global planner, local planner, tracking controller — is inspectable, independently testable, and needs no training data. In mapped, static, structured environments it is excellent, and reaching for RL there is a mistake.
+
+**End-to-end policies** handle situations nobody wrote a cost function for. They also fail without explanation, need substantial data, and cannot be debugged stage by stage. When an end-to-end policy drives into a glass door, the diagnosis is "the network did that".
+
+**The hybrid** — classical mapping and global routing, learned local navigation — dominates deployed systems, and the reason is visible in the widget: hand-tuned local planners degrade fastest as environments become crowded and dynamic, because their cost functions encode assumptions that stop holding. That is precisely the layer worth learning, and precisely the layer where a mistake is cheapest.
+
+**Social navigation** deserves a note. Moving among people is not obstacle avoidance with moving obstacles: humans react to the robot, so the environment is a multi-agent system where the robot's action changes others' behaviour. That makes simulation hard for exactly the reason Chapter 1 gave — humans are the unmodelable part — and it is why social navigation sits lower on the maturity ladder. Chapter 21 treats it properly under human–robot interaction.
+
+## 19.4 Mobile manipulation: base plus arm
+
+Attach Reacher to Rusty and you have a mobile manipulator with a genuinely new problem: the base and the arm can both contribute to end-effector motion, so the system is **kinematically redundant**.
+
+With combined configuration $q = (q_{\text{base}}, q_{\text{arm}})$ and a task Jacobian $J(q)$ mapping to end-effector velocity, the task $\dot p = J\dot q$ has infinitely many solutions when $\dim(q) > \dim(p)$. The standard resolution is the weighted pseudoinverse:
+
+$$\dot q = W^{-1} J^\top \left(J W^{-1} J^\top\right)^{-1} \dot p + \left(I - J^\dagger J\right) \dot q_0,$$
+
+where $W$ weights joint motion — heavy for the base, light for the arm, so small corrections use the arm and large repositioning uses the base — and the second term projects a secondary objective (joint-limit avoidance, manipulability maximization, keeping clear of a person) into the null space, where it cannot disturb the task.
+
+<Callout variant="note" title="Where learning helps here">
+The pseudoinverse solves the *instantaneous* redundancy question well. What it cannot answer is the strategic one: should the robot drive closer before reaching, or reach from here? That depends on what comes next, which is exactly a sequential decision problem.
+
+The productive division is therefore to learn the high-level allocation — how much of the task each subsystem should take, and when to reposition — while keeping the instantaneous resolution analytic. This is Chapter 17's residual and hierarchical framing applied to whole-body control.
+</Callout>
+
+## 19.5 Long horizons and the skill question
+
+"Fetch the mug from the kitchen" decomposes into navigate, locate, approach, grasp, lift, navigate back, place. Minutes of operation, thousands of timesteps, and a reward that arrives once at the end. Flat RL has no chance: random exploration will not stumble on that sequence in any number of episodes.
+
+Chapter 17's options framework is the formal response. With skills as temporally extended actions, the high-level policy decides every few seconds rather than every 20 ms, and the effective horizon shortens by two orders of magnitude. Credit assignment becomes tractable because there are only a handful of decisions to assign credit among.
+
+Three ways to compose skills, each with a real cost. **Hierarchical RL** learns the selector by RL — general, and unstable, since the high level's environment changes as the low level improves. **Planning over skills** uses a symbolic planner with learned skills as operators — reliable, and requires hand-written preconditions and effects. **End-to-end with skill priors** trains one policy conditioned on a skill embedding — flexible, and data-hungry.
+
+<Callout variant="warning" title="The open question, stated plainly">
+Tang's survey identifies this as central and unresolved: **what skills should the robot learn?**
+
+Hand-specified skills work — most deployed systems use them — but require exactly the domain knowledge RL was supposed to remove. Automatic discovery, via goal-conditioned or unsupervised RL, produces skills that look reasonable in benchmarks and rarely correspond to the decomposition a task actually needs.
+
+This is not a detail awaiting an engineering fix. It is the main obstacle between the competencies of Part IV and a general-purpose robot, and it is worth watching as the field's most consequential open problem.
+</Callout>
+
+<RustSnippet title="rl-deep/src/recurrent/gru_policy.rs" caption="A recurrent policy step in burn. The hidden state is the learned belief; the probe head is optional and exists so you can check what the network actually tracks — which is the difference between trusting it and hoping.">
+
+```rust
+use burn::prelude::*;
+use burn::nn::gru::{Gru, GruConfig};
+
+pub struct RecurrentPolicy<B: Backend> {
+    encoder: Mlp<B>,        // lidar scan → compact embedding
+    gru: Gru<B>,            // the learned belief tracker
+    actor_head: Mlp<B>,
+    critic_head: Mlp<B>,    // may see privileged state during training (Ch 15)
+    /// Diagnostic head predicting true pose from the hidden state. Not used for
+    /// control — it exists to answer "is this thing actually localizing?"
+    probe_head: Option<Mlp<B>>,
+}
+
+pub struct PolicyStep<B: Backend> {
+    pub action_mean: Tensor<B, 2>,
+    pub action_log_std: Tensor<B, 2>,
+    pub value: Tensor<B, 1>,
+    pub hidden: Tensor<B, 2>,
+}
+
+impl<B: Backend> RecurrentPolicy<B> {
+    pub fn step(
+        &self,
+        scan: Tensor<B, 2>,        // [batch, n_beams]
+        goal_vec: Tensor<B, 2>,    // [batch, 2] — goal in the robot frame
+        prev_action: Tensor<B, 2>,
+        hidden: Tensor<B, 2>,
+    ) -> PolicyStep<B> {
+        let obs = Tensor::cat(vec![scan, goal_vec, prev_action], 1);
+        let embedded = self.encoder.forward(obs);
+
+        // One GRU step: h_t = GRU(h_{t−1}, o_t). The hidden state carries
+        // everything the policy has decided is worth remembering.
+        let hidden = self.gru.forward(embedded.unsqueeze_dim(1), Some(hidden))
+            .squeeze(1);
+
+        let actor_out = self.actor_head.forward(hidden.clone());
+        let (mean, log_std) = actor_out.split_with_sizes(vec![2, 2], 1)
+            .into_iter()
+            .collect_tuple()
+            .unwrap();
+
+        PolicyStep {
+            action_mean: mean,
+            action_log_std: log_std.clamp(-5.0, 2.0),
+            value: self.critic_head.forward(hidden.clone()).squeeze(1),
+            hidden,
+        }
+    }
+
+    /// Train a linear probe from the hidden state to true pose, on frozen
+    /// trajectories. High accuracy ⇒ the network learned to localize.
+    pub fn probe_localization(&self, hidden: Tensor<B, 2>) -> Option<Tensor<B, 2>> {
+        self.probe_head.as_ref().map(|p| p.forward(hidden))
+    }
+}
+```
+
+</RustSnippet>
+
+## 19.6 Chapter bridge
+
+Navigation forced partial observability into the open and answered it with recurrence rather than explicit filtering. Mobile manipulation added redundancy — a resource, resolved analytically at the instant and strategically by learning. Long horizons pushed us to skills, and left the open question of where skills come from.
+
+Chapter 20 takes on the competency that has resisted hardest. Manipulation is where simulators are least trustworthy, where object diversity defeats generalization, and where the field's maturity ladder tops out below the real-world tiers. It is also where every technique in this book converges: grasp scoring with the value methods of Chapter 9, contact-rich insertion with the continuous control of Chapter 11 and the impedance action spaces of Chapter 13, demonstrations from Chapter 16, and the randomization of Chapter 15 pushed to its limit.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'The belief update',
+    difficulty: 2,
+    body: 'Write the Bayes filter for lidar-based localization on a known map, identifying the prediction and correction terms. Then explain why the belief is Markov even though the raw observation is not.',
+  },
+  {
+    layer: 'F',
+    title: 'Symmetric corridors',
+    difficulty: 2,
+    body: 'Construct an environment where two distinct states produce identical observations, and show that any memoryless policy is provably suboptimal there. Then show that a policy with one bit of memory can be optimal.',
+  },
+  {
+    layer: 'F',
+    title: 'Weighted redundancy resolution',
+    difficulty: 3,
+    body: 'Derive the weighted pseudoinverse solution and verify that the null-space term does not disturb the task velocity. Then determine the weighting W that makes a mobile manipulator prefer arm motion over base motion, and quantify "prefer".',
+  },
+  {
+    layer: 'F',
+    title: 'Horizon reduction',
+    difficulty: 2,
+    body: 'A task takes 6000 timesteps at 50 Hz. Using skills of average duration 3 seconds, compute the effective horizon for the high-level policy. Then explain the effect on TD credit assignment using Chapter 7’s n-step analysis.',
+  },
+  {
+    layer: 'C',
+    title: 'Find the crossover',
+    difficulty: 2,
+    body: 'In the pipeline switcher, find the unstructuredness at which the hybrid architecture overtakes the modular one, and where end-to-end overtakes hybrid (if it does). Relate both crossovers to what each stack assumes about the world.',
+  },
+  {
+    layer: 'C',
+    title: 'Price the interpretability',
+    difficulty: 2,
+    body: 'At 60% unstructuredness, note the success and interpretability of each architecture. Then argue which you would deploy in a hospital, and which in a warehouse after hours — the answers should differ.',
+  },
+  {
+    layer: 'P',
+    title: 'Probe the hidden state',
+    difficulty: 3,
+    body: 'Train a recurrent policy on lidar navigation, then freeze it and fit a linear probe from the GRU hidden state to true pose. Report probe accuracy. Then retrain in an environment with a distinctive landmark and see whether the network stops localizing and starts recognizing.',
+  },
+  {
+    layer: 'P',
+    title: 'Whole-body fetch',
+    difficulty: 3,
+    body: 'Build mobile-Reacher and implement a fetch task with a learned high-level allocator over analytic whole-body control. Compare against a fixed policy that always drives to a nominal standoff distance before reaching, and report where learning actually helped.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§4.2 navigation (wheeled, legged, aerial) and §4.4 mobile manipulation, including the architecture finding of §19.3 and the skill question of §19.5.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§1.3 on partial observability as the normal condition for robots, and §5.2 prior knowledge through task structuring.',
+  },
+  {
+    key: 'kaelbling1998',
+    authors: 'Kaelbling, L. P., Littman, M. L. & Cassandra, A. R.',
+    year: 1998,
+    title: 'Planning and acting in partially observable stochastic domains',
+    venue: 'Artificial Intelligence 101(1–2)',
+    note: 'The belief-MDP construction that §19.2 approximates with recurrence.',
+  },
+  {
+    key: 'thrun2005',
+    authors: 'Thrun, S., Burgard, W. & Fox, D.',
+    year: 2005,
+    title: 'Probabilistic Robotics',
+    venue: 'MIT Press',
+    note: 'The classical localization and SLAM stack that the modular architecture is built from.',
+  },
+  {
+    key: 'hausknecht2015',
+    authors: 'Hausknecht, M. & Stone, P.',
+    year: 2015,
+    title: 'Deep Recurrent Q-Learning for Partially Observable MDPs',
+    venue: 'AAAI Fall Symposium',
+    note: 'Recurrent policies for POMDPs, and the sequence-batching details of §19.2.',
+  },
+  {
+    key: 'kapturowski2019',
+    authors: 'Kapturowski, S., Ostrovski, G., Quan, J., Munos, R. & Dabney, W.',
+    year: 2019,
+    title: 'Recurrent Experience Replay in Distributed Reinforcement Learning',
+    venue: 'ICLR 2019',
+    note: 'The burn-in technique for stored recurrent states.',
+  },
+  {
+    key: 'xiao2022',
+    authors: 'Xiao, X., Liu, B., Warnell, G. & Stone, P.',
+    year: 2022,
+    title: 'Motion planning and control for mobile robot navigation using machine learning: a survey',
+    venue: 'Autonomous Robots 46',
+    note: 'The learned-versus-classical navigation landscape in detail.',
+  },
+  {
+    key: 'sutton1999',
+    authors: 'Sutton, R. S., Precup, D. & Singh, S.',
+    year: 1999,
+    title: 'Between MDPs and semi-MDPs: A framework for temporal abstraction',
+    venue: 'Artificial Intelligence 112(1–2)',
+    note: 'The options framework underlying §19.5.',
+  },
+  {
+    key: 'siciliano2009',
+    authors: 'Siciliano, B., Sciavicco, L., Villani, L. & Oriolo, G.',
+    year: 2009,
+    title: 'Robotics: Modelling, Planning and Control',
+    venue: 'Springer',
+    note: 'Redundancy resolution and null-space projection, as used in §19.4.',
+  },
+]} />

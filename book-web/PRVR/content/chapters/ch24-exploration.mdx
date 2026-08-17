@@ -1,0 +1,1420 @@
+---
+title: Exploration and Active SLAM
+description: Where should the robot go in order to learn? Map entropy, expected information gain, frontiers, and the moment the pose graph's information matrix stops being an output and becomes a decision variable.
+chapter: 24
+part: PART VI
+partTitle: Planning and Acting under Uncertainty
+difficulty: Advanced
+readingTime: 60 min
+quote: "The central question in exploration is: Given what you know about the world, where should you move to gain as much new information as possible?"
+quoteAuthor: Brian Yamauchi
+quoteSource: A Frontier-Based Approach for Autonomous Exploration (1997), §2
+---
+
+import { FrontierChaser } from '@/components/ch/ch24/frontier-chaser';
+import { DisambiguationDetour } from '@/components/ch/ch24/disambiguation-detour';
+import { LoopOrPushOn } from '@/components/ch/ch24/loop-or-push-on';
+import { StopSign } from '@/components/ch/ch24/stop-sign';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write down the entropy of a log-odds occupancy map, and read it as a score the robot is trying to drive down',
+    'Derive expected information gain as a mutual information, and prove it is never negative — while a single measurement still can be',
+    'Compute the expected gain of a sensing pose by ray-casting through the map you already have, with the reach probability that makes occlusion honest',
+    'Define frontiers, and prove that chasing them until none remain maps everything reachable',
+    'Choose motions that sharpen the pose belief, not just the map — active localization as a depth-1 POMDP backup',
+    'Score candidate trajectories by what they do to the pose graph: log det Ω, D-optimality, and why odometry alone changes neither',
+    'Build the identify–select–execute loop in Rust and run a robot that maps an apartment it has never seen',
+  ]}
+  prerequisites={[
+    'Entropy and mutual information (Chapter 2)',
+    'The log-odds binary Bayes filter and occupancy grids (Chapters 8 and 13)',
+    'Monte Carlo localization and multi-modal beliefs (Chapter 12)',
+    'The pose graph and its information matrix Ω (Chapters 15 and 16)',
+    'Grid planning and trajectory tracking (Chapters 20 and 23), used here as services',
+    'The POMDP frame and why exact belief-space planning is intractable (Chapter 22)',
+  ]}
+>
+Every chapter until now handed Rusty a goal. Localize here. Map this. Drive there. This chapter
+asks the question autonomy actually begins with: *where should the robot go in order to learn?*
+
+That question turns the machinery of Parts II through V inside out. The belief has been the
+**output** of everything we have built; from here it is the **objective**. The score a robot
+maximizes is a property of its own uncertainty, and the actions available to it are moves that
+change what it will see next. This is the same structure as [Chapter 22](/chapters/ch22-pomdps)'s
+POMDP — because it *is* a POMDP, and an intractable one. What the field does instead is a
+three-stage pipeline that Placed et al. named in their 2023 survey: **identify** the candidate
+actions, **select** one by a utility, **execute** it while the estimator keeps running. This
+chapter builds all three, twice: once over the occupancy grid, where the objective is map entropy,
+and once over the pose graph, where the objective is the determinant of the information matrix you
+have been assembling since [Chapter 15](/chapters/ch15-factor-graphs).
+
+The reward for getting there is the book's pre-capstone: a robot dropped into a floorplan it has
+never seen, which maps the whole thing by itself and stops when stopping is the right call.
+</Overview>
+
+## The lawnmower fallacy
+
+Here is the obvious way to map a room you have never seen: drive a boustrophedon sweep. Lanes up,
+lanes down, like mowing a lawn. Coverage path planning is a solved problem with a beautiful theory
+behind it (Choset's cellular decompositions), and if you already have the floorplan it is exactly
+what you should do.
+
+Rusty does not have the floorplan. That is the entire point. So the lanes run into walls the
+script did not know about, they cross rooms that were finished three lanes ago, and every metre of
+re-scanned corridor is a metre of odometry drift bought for nothing. The widget below will run it
+for you: 93 metres of lawn-mowing leaves 4% of the apartment unmapped, and it does not know that,
+because a script has no notion of what it has already learned.
+
+<Deferred>
+  <FrontierChaser />
+</Deferred>
+
+Switch it to **Utility** and watch what changes. The robot now has an opinion. Every few seconds it
+stops, looks at its own map, finds the places where mapped free space touches the unknown, asks how
+many bits a scan from each of them would be worth and how many metres each would cost, and drives
+to the argmax. Over ten seeded runs it clears 4000 of the map's 4800 bits in a median of **33.6
+metres**, against 46.0 for the lawnmower.
+
+Three things in that sentence are doing real work, and the rest of the chapter is about them.
+
+**"How many bits."** Not "how much unknown area" — bits, of the entropy of the same log-odds grid
+[Chapter 13](/chapters/ch13-occupancy-grids) built. The objective was already there; nobody had
+asked the map what it was worth.
+
+**"Would be worth."** The robot has to score a measurement it has not taken. That is an
+expectation over a measurement it does not have, evaluated through the map it does have — and the
+map is wrong. Every honest word about exploration lives in that sentence.
+
+**"And how many metres each would cost."** Information alone is not a policy. A robot that
+maximizes bits without pricing motion will happily cross the apartment for one extra doorway. The
+weights that trade the two are the difference between a good explorer and a busy one.
+
+<KeyIdea title="The one sentence version">
+Exploration is a Bayes filter run forwards: instead of asking what the measurement did to the
+belief, ask what a measurement *would* do, average over the measurements you might get, and drive
+to wherever that number is largest per unit of effort.
+</KeyIdea>
+
+## Building intuition
+
+Before any algebra, three observations you can make from the widget above.
+
+**Nearest is not a different algorithm; it is one setting of a knob.** Push $w_C$ — the cost weight
+— above about 0.9 and the utility policy stops crossing the apartment and starts creeping to
+whatever boundary is closest. It has not switched strategies; the information term has simply been
+priced out of the argmax. Yamauchi's original frontier explorer is the $w_I \to 0$ corner of the
+same family, and so is every "go to the nearest unexplored cell" implementation shipped since.
+
+**Greed is efficient per metre right up to the point where it stalls.** Select **Nearest frontier**
+and watch the distance readout. It stops moving. The robot is not frozen: with $w_I = 0$ the
+utility is $-C(a)$, and the cheapest frontier to reach is the one directly under the wheels, which
+costs nothing. So Rusty stands there re-scanning until the map pushes the boundary far enough away
+to be worth walking to. Across ten seeds that policy is the *most* efficient of the three per metre
+travelled — 83 bits/m against the utility policy's 77 — and it reaches the 4000-bit mark in two
+runs out of ten. Efficiency per metre is the wrong statistic when the metres stop happening.
+
+**The score falls in steps, not smoothly.** The bits-per-metre sparkline spikes every time Rusty
+crosses a threshold and a whole room resolves at once, then decays as the room fills in. Exploration
+is not a gradient descent on entropy; it is a sequence of decisions to go somewhere and be
+surprised. That shape is what makes stopping hard, and it is the last section of this chapter.
+
+## The mathematics
+
+### Entropy, from the map you already have
+
+[Chapter 13](/chapters/ch13-occupancy-grids) stored the map as an array of log odds
+$\ell_i = \log \frac{p(m_i = 1)}{p(m_i = 0)}$, one per cell, and recovered probabilities with the
+logistic
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{p_i} \;=\; 1 - \frac{1}{1 + e^{\ell_i}}.
+$$
+</LinkedMath>
+
+Each cell is a Bernoulli variable, so its uncertainty is the binary entropy
+
+$$
+H_b(p) \;=\; -p\log_2 p - (1-p)\log_2(1-p) \quad \text{bits},
+$$
+
+which is $1$ at $p = \tfrac12$ (a cell you know nothing about) and $0$ at $p \in \{0, 1\}$. Under
+Chapter 13's standing approximation that cells are independent given the poses, the entropy of the
+whole map is a sum:
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{H(m)} \;=\; \sum_i H_b(p_i).
+$$
+</LinkedMath>
+
+That is the objective. It has units, it is computable in one pass over the array, and it starts at
+exactly the number of cells: the apartment at 15 cm resolution is $80 \times 60 = 4800$ cells, so
+a virgin map holds **4800 bits of ignorance**. Everything Rusty does for the rest of this chapter
+is an attempt to spend metres to remove bits.
+
+<Callout type="warn">
+Per-cell independence is a lie, and it is Chapter 13's lie, inherited here without repair. Real
+walls are correlated: knowing one cell of a wall is occupied tells you a great deal about the next
+one along. The sum above therefore *over-counts* the ignorance in structured environments, and the
+expected gains computed from it are systematically optimistic. We keep the approximation because
+the whole pipeline is built on it and because the ranking of candidate actions survives it better
+than the absolute numbers do — but a gain of 40 bits is not a promise of 40 bits.
+</Callout>
+
+<NotationTable
+  rows={[
+    { sym: 'H(b) = -\\sum_x b(x)\\log_2 b(x)', meaning: 'Entropy of a belief, in bits. For a pose belief this is over MCL particles or grid cells; for the map it is the per-cell sum above.' },
+    { sym: 'a \\in \\mathcal{A}', meaning: 'A candidate action: a sensing pose, or a whole trajectory. A is the candidate set produced by the identify stage.' },
+    { sym: 'I(a) = H(b) - \\E_{z_a}[H(b \\mid z_a)]', meaning: 'Expected information gain of a — the mutual information between what we do not know and what a would tell us.' },
+    { sym: 'C(a)', meaning: 'Cost of a: path length through known-free space, or time, or energy. Never Euclidean distance.' },
+    { sym: 'U(a) = w_I I(a) + w_G \\Delta_a - w_C C(a)', meaning: 'Utility. The weights carry units: bits, nats, and metres are not interchangeable until you say what they are worth.' },
+    { sym: '\\Omega', meaning: "The pose graph's information matrix from Chapter 15 — from here on, a decision variable." },
+    { sym: '\\mathrm{Dopt}(\\Omega) = \\exp\\!\\big(\\tfrac{1}{n}\\log\\det\\Omega\\big)', meaning: 'D-optimality, with n = dim Ω: the geometric mean of the eigenvalues of Ω, and the criterion that makes graphs of different sizes comparable.' },
+  ]}
+/>
+
+<Callout type="info">
+The weights are $w_I$, $w_G$, $w_C$ — never $\alpha$ or $\beta$. Those two are spoken for:
+$\alpha_{1\ldots6}$ are the motion-noise parameters of
+[Chapter 9](/chapters/ch09-motion-models), and $\alpha$-vectors are the value-function
+representation of [Chapter 22](/chapters/ch22-pomdps).
+</Callout>
+
+### Expected information gain
+
+Fix a candidate action $a$ — say, "drive to that doorway and take one scan." Before acting, the
+robot's uncertainty about the map is $H(m)$. Afterwards it will be $H(m \mid z_a = z)$ for whichever
+reading $z$ arrives. The robot does not have $z$. What it has is a distribution over it, so the
+honest thing to score is the average:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{I(a)}
+\;=\; \htmlClass{term-prior}{H(m)} \;-\;
+\E_{z \sim p(z_a)}\!\left[\, \htmlClass{term-posterior}{H(m \mid z_a = z)} \,\right]
+\;=\; I(m ; z_a).
+$$
+</LinkedMath>
+
+The right-hand equality is the definition of mutual information, and it is the whole reason this
+quantity behaves. Two consequences follow immediately, and they are the two facts every
+practitioner needs.
+
+<Derivation title="Sensing never hurts in expectation — but a measurement can" result="I(a) = \mathrm{KL}\big(p(m, z_a)\,\|\,p(m)p(z_a)\big) \ge 0">
+**Step 1 — rewrite the gain as a mutual information.** The *conditional entropy* $H(m \mid z_a)$ is
+by definition the average of $H(m \mid z_a = z)$ over $z$, so the second term is already exactly it:
+
+$$
+I(a) = H(m) - \E_{z \sim p(z_a)}\big[H(m \mid z_a = z)\big] = H(m) - H(m \mid z_a) = I(m; z_a).
+$$
+
+Confusing $H(m \mid z_a = z)$ — one realized reading — with $H(m \mid z_a)$ — the average over all
+of them — is where the sign confusion in Step 4 comes from, so it is worth writing both out once.
+
+**Step 2 — recognize the KL divergence.** Writing out the definitions,
+
+$$
+I(m; z_a) = \sum_{m, z} p(m, z)\log_2 \frac{p(m, z)}{p(m)\,p(z)} = \KL\big(p(m, z)\,\|\,p(m)p(z)\big).
+$$
+
+**Step 3 — apply Gibbs' inequality.** A KL divergence is non-negative, with equality if and only if
+its two arguments are equal — that is, if and only if the measurement is independent of the map.
+Therefore
+
+$$
+I(a) \ge 0, \qquad\text{with } I(a) = 0 \iff z_a \text{ tells you nothing about } m.
+$$
+
+Pointing a range finder at a wall you have already mapped scores exactly zero, and this is the
+formal reason why.
+
+**Step 4 — the counterexample that matters.** *Expected* entropy cannot rise. *Realized* entropy
+absolutely can, and you can compute the case by hand. Take one cell you believe is occupied,
+$p = 0.9$, so $H_b(0.9) = 0.4690$ bits. The sensor is right with probability $q = 0.9$. If it
+reports **free**, Bayes' rule gives
+
+$$
+p' = \frac{p(1-q)}{p(1-q) + (1-p)q} = \frac{0.09}{0.09 + 0.09} = 0.5,
+\qquad H_b(0.5) = 1 \text{ bit}.
+$$
+
+The entropy of that cell went *up* by 0.531 bits. It happens with probability
+$p(1-q) + (1-p)q = 0.18$. The other 82% of the time the reading is **occupied**, the posterior is
+$0.81/0.82 = 0.9878$, and the entropy falls to $0.0950$ bits. Averaging:
+
+<LinkedMath>
+$$
+\E_z[H_b] = 0.18 \cdot 1 + 0.82 \cdot 0.0950 = 0.2579,
+\qquad I = 0.4690 - 0.2579 = \htmlClass{term-measurement}{0.2111 \text{ bits}} > 0.
+$$
+</LinkedMath>
+
+So: the theorem holds, and your log will still show the map entropy jumping upward on individual
+scans. That is a *surprising measurement*, not a bug — the same event that makes the evidence term
+$\eta^{-1}$ small in [Chapter 5](/chapters/ch05-bayes-filter)'s recursion. Do not add a clamp.
+</Derivation>
+
+### The gain of a sensing pose, beam by beam
+
+The mutual information above is defined; computing it for a real LiDAR pose is the work. Two
+factorizations make it cheap enough to evaluate for a dozen candidates several times a second.
+
+**Over cells.** Chapter 13 already assumes the cells are independent, so the map entropy is a sum
+and the gain is a sum of per-cell gains. For one cell with prior $p$, observed through a binary
+symmetric channel that reports correctly with probability $q$, the gain is closed form:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{I(m_i; z_i)}
+= H_b(p) - \Big[ P(\hat{z}{=}1)\,H_b\!\big(p \mid \hat{z}{=}1\big) + P(\hat{z}{=}0)\,H_b\!\big(p \mid \hat{z}{=}0\big) \Big].
+$$
+</LinkedMath>
+
+Two limits are worth carrying in your head. At $p = \tfrac12$ this collapses to the channel
+capacity $1 - H_b(q)$ — for $q = 0.9$ that is $0.5310$ bits, and no scan of an unknown cell can
+ever be worth more. And as $p \to 0$ or $p \to 1$ it goes to zero: a cell you already know says
+nothing back.
+
+**Along a beam.** Cells on a ray are not reached independently. A beam arrives at the $k$-th cell
+only if every cell before it was empty, which gives the **reach probability**
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{R_k} \;=\; \prod_{j < k} \big(1 - p_j\big),
+$$
+</LinkedMath>
+
+a running product computed as the ray is traced. The expected gain of one beam is then each cell's
+gain, discounted by the chance the beam gets there:
+
+<LinkedMath>
+$$
+I(\text{beam}) \;=\; \sum_{k} \htmlClass{term-prediction}{R_k} \cdot \htmlClass{term-measurement}{I(m_k; z_k)}.
+$$
+</LinkedMath>
+
+<Derivation title="Beam-wise expected gain over an occupancy grid" result="I(a) \approx \sum_{\text{beams}} \sum_{k \in \text{ray}} R_k\, I(m_k; z_k)">
+**Step 1 — factor the map entropy over cells.** By Chapter 13's independence approximation,
+$H(m) = \sum_i H_b(p_i)$ and, conditioned on a scan, $H(m \mid z) = \sum_i H_b(p_i \mid z)$. So the
+gain of a scan is the sum of the per-cell gains of the cells the scan touches; cells outside the
+perceptual field contribute exactly zero, which is what makes this a local computation instead of a
+sweep over the whole map.
+
+**Step 2 — condition each cell on the beam getting there.** A range finder is an *occluded* sensor.
+Cell $k$ along a ray is measured only if the beam was not stopped earlier. Treating the cells'
+occupancies as independent (again), the probability of a clear path is the product
+$R_k = \prod_{j<k}(1 - p_j)$. If the beam is stopped before $k$, the scan says nothing about cell
+$k$ and its contribution is zero. Hence the contribution of cell $k$ is $R_k\, I(m_k; z_k)$.
+
+**Step 3 — model the per-cell measurement.** We do not carry Chapter 10's four-component beam
+mixture into the planner. The planner needs one number from the sensor: how often the inverse model
+gets a cell right. That is $q$, and the per-cell gain is the binary-symmetric-channel expression
+above. This is deliberately cruder than the forward model — a planner that is more expensive than
+the estimator it feeds is a planner nobody runs.
+
+**Step 4 — sum over beams, and admit the double count.** Summing the per-beam gains treats adjacent
+beams as independent, which they are not: two beams through the same doorway largely determine each
+other. The crudest part of the error is fixed by a visited set — score each cell at most once per
+scan, exactly as `integrateScan` does — but what remains is an over-estimate. Note also that the
+recursion runs through the *current* map, so unknown cells are assumed to behave like their prior;
+where the truth is a wall, the estimator predicts the beam will fly straight on and over-values
+everything behind it.
+
+**Step 5 — truncate.** Once $R_k$ falls below about $10^{-3}$ the remaining terms cannot matter, and
+the loop stops. A beam already stopped by three half-occupied cells will not tell you about the
+fourth.
+</Derivation>
+
+<Algorithm
+  name="expected_info_gain(m, x, sensor)"
+  inputs="the current log-odds map m, a candidate sensing pose x, the planner's sensor model (n beams, FOV, z_max, q)"
+  outputs="expected map-entropy reduction in bits"
+  complexity="O(#beams · z_max / resolution) per candidate"
+>
+1. $I \leftarrow 0$; $\mathcal{V} \leftarrow \emptyset$ &nbsp;&nbsp;*(the visited set)*
+2. for each beam bearing $\phi$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$R \leftarrow 1$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for each cell $i$ on the Bresenham ray from $x$ along $\phi$ out to $z_{\max}$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $R < R_{\min}$ then break
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$p \leftarrow 1 - 1/(1 + e^{\ell_i})$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $i \notin \mathcal{V}$ then $I \leftarrow I + R \cdot I(m_i; z_i)$; $\mathcal{V} \leftarrow \mathcal{V} \cup \{i\}$
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$R \leftarrow R \cdot (1 - p)$ &nbsp;&nbsp;*(occlusion is a property of the map, not of the bookkeeping)*
+9. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+10. endfor
+11. return $I$
+</Algorithm>
+
+### A worked example you can check by hand
+
+Take one beam, five cells long, and two situations.
+
+**Into the unknown.** Every cell sits at the prior, $p_k = 0.5$, and the sensor is right with
+$q = 0.9$. Then every cell has the same per-cell gain, the channel capacity:
+
+$$
+I(m_k; z_k) = 1 - H_b(0.9) = 1 - 0.4690 = 0.5310 \text{ bits},
+$$
+
+and the reach probability halves at every step, $R_k = (1/2)^{k-1}$. The total is a five-term
+geometric sum:
+
+| $k$ | $p_k$ | $R_k$ | $I(m_k; z_k)$ | $R_k \cdot I$ |
+|---|---|---|---|---|
+| 1 | 0.50 | 1.0000 | 0.5310 | 0.5310 |
+| 2 | 0.50 | 0.5000 | 0.5310 | 0.2655 |
+| 3 | 0.50 | 0.2500 | 0.5310 | 0.1328 |
+| 4 | 0.50 | 0.1250 | 0.5310 | 0.0664 |
+| 5 | 0.50 | 0.0625 | 0.5310 | 0.0332 |
+| | | | **total** | **1.0288** |
+
+Or in closed form, $0.5310 \times (2 - 2^{-4}) = 0.5310 \times 1.9375 = 1.0288$ bits.
+
+**Into space you have already mapped.** Two or three sweeps of Chapter 13's inverse model drive a
+free cell to about $p = 0.01$. Now the per-cell gain collapses to $0.02486$ bits, but the beam
+sails through — $R_k = 0.99^{\,k-1}$, still 0.96 at the fifth cell — so the sum is
+
+$$
+0.02486 \times \frac{1 - 0.99^5}{0.01} = 0.02486 \times 4.9010 = 0.1218 \text{ bits}.
+$$
+
+**Eight and a half times less, from the same sensor over the same five cells.** That ratio is the
+entire content of "point the sensor at the unknown," and now it is a number rather than a slogan.
+
+Notice that the mapped ray is not worth *zero*, and it never will be. A
+log-odds map with a clamp never becomes certain, so re-scanning known space always scores something,
+and an explorer with a badly tuned $w_C$ will happily spend metres collecting it. The clamp that
+keeps [Chapter 13](/chapters/ch13-occupancy-grids)'s map revisable is the same clamp that keeps this
+number off the floor.
+
+```rust title="crates/ch24_explore/src/info_gain.rs (tests)"
+#[test]
+fn worked_example_ch24_five_cell_ray() {
+    // A fresh ray into the unknown: p = 0.5, sensor reliability q = 0.9.
+    let unknown = ray_info_gain(&[0.5; 5], 0.9, 1e-3);
+    assert_relative_eq!(unknown.cells[0].mutual_info, 1.0 - binary_entropy(0.9), epsilon = 1e-12);
+    assert_relative_eq!(unknown.cells[3].reach, 0.125, epsilon = 1e-12);
+    assert_relative_eq!(unknown.total, 1.0288, epsilon = 1e-4);
+
+    // The same ray through space that two sweeps have already emptied.
+    let mapped = ray_info_gain(&[0.01; 5], 0.9, 1e-3);
+    assert_relative_eq!(mapped.total, 0.12183, epsilon = 1e-4);
+    assert!(unknown.total / mapped.total > 8.0);
+
+    // A cell that is already certain is worth nothing, whatever the sensor.
+    assert_relative_eq!(cell_mutual_information(0.0, 0.99), 0.0, epsilon = 1e-12);
+}
+```
+
+### Frontiers, and why chasing them is enough
+
+Information gain tells you what a pose is worth. It does not tell you which poses to bother
+scoring, and scoring every free cell in an 80 × 60 grid at every replan is both wasteful and
+pointless — most of them are worth nothing.
+
+Yamauchi's 1997 answer is still the right one. Define:
+
+- A **frontier cell** is a known-free cell with at least one unknown 4-neighbour.
+- A **frontier region** is a connected component of frontier cells, summarized by its centroid and
+  its size in cells.
+
+That is all. Frontier regions are the only places in the map where a sensor can convert ignorance
+into evidence, they are found in one pass plus a flood fill, and grouping them into regions matters
+more than it looks: scoring individual cells produces hundreds of near-identical candidates and a
+robot that dithers between two of them.
+
+<Algorithm
+  name="detect_frontiers(m, min_size)"
+  inputs="the log-odds map m, the smallest region worth driving to"
+  outputs="a list of frontier regions, each with cells, centroid, and a representative cell"
+  complexity="O(#cells): one marking pass, one 8-connected BFS"
+>
+1. for all cells $i$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\mathrm{mark}[i] \leftarrow \big[\, \mathrm{class}(i) = \text{free} \;\wedge\; \exists\, j \in N_4(i) : \mathrm{class}(j) = \text{unknown} \,\big]$
+3. endfor
+4. $F \leftarrow \emptyset$
+5. for all marked, unvisited cells $i$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;$R \leftarrow$ 8-connected BFS flood from $i$ over marked cells
+7. &nbsp;&nbsp;&nbsp;&nbsp;if $|R| \ge \text{min\_size}$ then append $R$ with its centroid and nearest-to-centroid member to $F$
+8. endfor
+9. return $F$
+</Algorithm>
+
+The representative cell is not a detail. The centroid of a C-shaped frontier region can land inside
+a wall, and driving to a point inside a wall is not a plan; taking the member cell nearest the
+centroid guarantees a real, occupiable target.
+
+<Derivation title="Frontier exploration is complete" result="No reachable frontier ⟹ the reachable closure is mapped">
+*Claim.* With an ideal sensor and a planner that is complete over the currently known-free space,
+repeatedly navigating to any reachable frontier until none remain maps every cell reachable from
+the start.
+
+**Step 1 — the frontier separates.** Let $K$ be the set of known-free cells and $U$ the unknown
+cells. Any 4-connected path from the robot's cell into $U$ must contain a first cell in $U$; its
+predecessor is in $K$ and is 4-adjacent to an unknown cell, so the predecessor is a frontier cell by
+definition. Every route from the known into the unknown crosses the frontier. There is no back door.
+
+**Step 2 — visiting a frontier strictly grows the known set.** Stand on a frontier cell and take a
+scan. With an ideal sensor of positive range, at least one cell that was unknown — the unknown
+neighbour that made this a frontier cell — is now classified. So $|K|$ strictly increases, or the
+cell stops being a frontier cell. Either way the number of unresolved cells strictly decreases.
+
+**Step 3 — monotone and bounded means terminating.** The grid is finite, so a strictly decreasing
+count of unresolved cells cannot go on forever. The loop terminates.
+
+**Step 4 — termination means done.** At termination there are no reachable frontiers. By Step 1,
+that means there is no path from the robot through known-free space into unknown space. Every cell
+reachable from the start has therefore been classified. $\blacksquare$
+
+**Where this fails on a real robot, and it always does.** Every hypothesis in the claim is
+load-bearing. *Ideal sensor:* glass and dark felt return $z_{\max}$, so a window is permanently a
+frontier that never resolves and Rusty will visit it forever. *Complete planner:* inflate the
+obstacle map by one cell too many and a 0.9 m doorway closes, which makes an entire wing
+"unreachable" — the map then reports completion at 60% coverage. *Positive-range guarantee:* a
+frontier cell in a corner may see nothing new at all if the beam that would resolve it grazes a
+wall. Each of these turns up in the widget above as a run that stops early with frontiers still
+drawn on the map, and the honest engineering answer is a blacklist of targets that failed to grow
+the known set, not a better theorem.
+</Derivation>
+
+### Utility: bits are not metres
+
+With a candidate set from `detect_frontiers` and a score from `expected_info_gain`, the selection
+stage is one line:
+
+<LinkedMath>
+$$
+a^\star = \arg\max_{a \in \mathcal{A}}\;
+\htmlClass{term-measurement}{w_I\, I(a)} \;+\; \htmlClass{term-posterior}{w_G\, \Delta_a} \;-\; w_C\, \htmlClass{term-truth}{C(a)}.
+$$
+</LinkedMath>
+
+Three things about that expression are worth stating plainly, because they are where deployed
+systems go wrong.
+
+**$C(a)$ is not Euclidean distance.** A frontier three metres away through a wall is not three
+metres away. The cost has to come from a planner over the *known-free* cells — in the
+implementation below, a Dijkstra expansion from the robot's cell, which doubles as the reachability
+test the completeness argument needs. Using straight-line distance produces a robot that repeatedly
+chooses a target it cannot reach.
+
+**The weights carry units, and pretending otherwise is how you get a magic constant.** $w_I$ prices
+bits, $w_C$ prices metres, $w_G$ prices nats of graph information. There is no principled universal
+setting; there is a *mission* that says what a bit is worth in metres. Saying so out loud is better
+than hiding a 0.35 in a config file.
+
+**Every classical explorer is a corner of this expression.** Set $w_I = w_G = 0$ and you have
+nearest-frontier. Set $w_C = w_G = 0$ and you have greedy maximum-information, which crosses the
+building for a big room. Set $w_G = 0$ and keep both others and you have the 2005 textbook's
+information-gain explorer. The interesting question was never which of these is right; it is what
+$w_G$ is for, and that is the next section.
+
+## Active localization: motion as a sensing action
+
+Everything so far treated the pose as known. It is not, and the coupling runs both ways: a robot
+that is unsure *where it is* cannot integrate a scan into the right cells, so pose uncertainty
+corrupts the map that the exploration objective is defined on.
+
+The narrower problem — choose motions that sharpen the *pose* belief — is **active localization**,
+and Fox, Burgard and Thrun formalized it in 1998 with a rule that is one line of decision theory:
+
+<LinkedMath>
+$$
+a^\star = \arg\max_a\;\Big[\, \htmlClass{term-prior}{H(\bel)} - \E_{z_a}\big[\, \htmlClass{term-posterior}{H(\bel')} \,\big] \Big] \;-\; w_C\,C(a),
+$$
+</LinkedMath>
+
+where $\bel'$ is the belief after pushing $\bel$ through the motion model for $a$ and then
+correcting with a hypothetical $z_a$. Both halves of the Bayes filter appear, run forwards, on a
+measurement that has not happened.
+
+<Deferred>
+  <DisambiguationDetour />
+</Deferred>
+
+The corridor in that widget is built to make one point unavoidable. Its doors repeat every 2.5 m,
+and every candidate motion except one is a whole number of door spacings — so each of them lands
+*both* hypotheses at the same offset inside a feature, and each of them scores an expected gain of
+exactly $0.000$ bits. The corridor ahead cannot tell those two futures apart, and the bars say so
+without being told. Only the alcove, 3.75 m *behind*, breaks the symmetry.
+
+Over two hundred seeded trials at the default noise, the entropy-greedy policy takes the detour and
+ends in the right place 95% of the time. The goal-greedy policy heads for the goal, arrives
+confidently, and is in the wrong place almost exactly half the time — 48%, which is what a coin
+flip looks like when a filter has no evidence and still has to produce a maximum. Nothing in that
+filter ever complains, because nothing it saw was surprising.
+
+<Derivation title="Active localization is a depth-1 POMDP backup" result="a^\star = \arg\max_a\, [H(\bel) - \E_{z_a}[H(\bel')]] - w_C C(a)">
+**Step 1 — push the belief through the motion model.** For each candidate $a$ with displacement
+$\delta_a$, form the predicted belief exactly as [Chapter 5](/chapters/ch05-bayes-filter)'s line 2
+does:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\belbar(x)} = \int p(x \mid x', a)\, \htmlClass{term-prior}{\bel(x')}\, dx'.
+$$
+</LinkedMath>
+
+Prediction is a convolution, so $H(\belbar) \ge H(\bel)$: the motion itself always costs
+information. This is why "hold still and scan" is a candidate worth including — and why a pure
+information objective, left alone, produces a robot that never goes anywhere.
+
+**Step 2 — enumerate the measurements you might get.** For each possible reading $z$, its
+probability under the predicted belief is the *evidence* term of the Bayes filter, used as a
+forecast rather than as a normalizer after the fact:
+
+<LinkedMath>
+$$
+p(z \mid a) = \int \htmlClass{term-measurement}{p(z \mid x)}\, \htmlClass{term-prediction}{\belbar(x)}\, dx.
+$$
+</LinkedMath>
+
+With a discrete belief and a finite outcome set — a door detector with three answers, say — this
+sum is exact and no sampling is needed, which is why the widget's numbers can be checked by hand.
+With a LiDAR you sample $z$ from the simulator of [Chapter 4](/chapters/ch04-rusty-and-sensors)
+instead, at a few dozen draws per candidate.
+
+**Step 3 — average the posterior entropies.** For each $z$, correct the predicted belief and
+measure what is left:
+
+$$
+\E_{z}\big[H(\bel')\big] = \sum_z p(z \mid a)\, H\big(\eta\, p(z \mid \cdot)\,\belbar(\cdot)\big).
+$$
+
+By the same KL argument as before, $H(\belbar) - \E_z[H(\bel')] = I(x; z \mid a) \ge 0$. Note
+*which* entropy this is non-negative relative to: the **predicted** one. The action's net value,
+$H(\bel) - \E_z[H(\bel')]$, can be and often is negative, because the motion smeared the belief
+faster than the scan could sharpen it. Those are two different numbers and confusing them is the
+most common bug in a first implementation.
+
+**Step 4 — recognize what has just been computed.** This is exactly one step of a POMDP value
+backup with the value function replaced by negative entropy and the horizon truncated at one. It
+inherits [Chapter 22](/chapters/ch22-pomdps)'s honest caveat: entropy is a property of the belief,
+not of the state, so an AMDP-style approximation that plans on the belief's *mean* cannot express
+this objective at all. And truncating at depth 1 has a real cost — a symmetric corridor whose only
+distinguishing feature lies two decisions away defeats any one-step lookahead, because the first
+step toward it scores zero. The last exercise in this chapter replaces the argmax with a POMCP
+search and measures when the lookahead earns its compute.
+</Derivation>
+
+<Algorithm
+  name="active_localize(bel, A, world, n_z)"
+  inputs="a belief over poses (particles or a grid), candidate motions A, a generative sensor model, n_z simulated measurements per candidate"
+  outputs="the chosen action, plus the per-candidate expected gains"
+  complexity="O(|A| · M · n_z) for M particles — trivially parallel over candidates"
+>
+1. $H_0 \leftarrow H(\bel)$
+2. for all $a \in \mathcal{A}$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\belbar \leftarrow \texttt{predict}(\bel, a)$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$\bar{H} \leftarrow 0$
+5. &nbsp;&nbsp;&nbsp;&nbsp;for each candidate measurement $z$ (enumerated, or sampled from $\belbar$) do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\bel' \leftarrow \eta\, p(z \mid \cdot)\,\belbar(\cdot)$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\bar{H} \leftarrow \bar{H} + p(z \mid a)\, H(\bel')$
+8. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+9. &nbsp;&nbsp;&nbsp;&nbsp;$U(a) \leftarrow w_I\,(H_0 - \bar{H}) - w_C\,C(a) - w_T\,T(a)$ &nbsp;&nbsp;*(T is the task cost still owed)*
+10. endfor
+11. return $\arg\max_a U(a)$, and the table of $U$ for the reader
+</Algorithm>
+
+The $w_T\,T(a)$ term is not decoration. Without a task cost, the argmax of expected entropy
+reduction is a robot that finds the most informative corner of the building and stays there. In the
+widget, $T(a)$ is the distance still owed to the goal under the MAP hypothesis, and it is what makes
+Rusty leave the alcove once the belief has collapsed.
+
+## Active SLAM: the information matrix becomes a decision variable
+
+Map entropy scores what the robot will *see*. It says nothing about whether the robot will know
+*where it was standing* when it saw it — and the map is only as trustworthy as the trajectory it
+was painted along. [Chapter 16](/chapters/ch16-scan-matching)'s rubber-band problem is what an
+un-closed loop looks like: a corridor that arrives back at its own start two metres off, and a map
+that is locally crisp and globally wrong.
+
+So the second objective is the pose graph itself. [Chapter 15](/chapters/ch15-factor-graphs) built
+the information matrix $\Omega = \sum_e A_e\T \Omega_e A_e$ and used it to solve for the MAP
+trajectory. Its inverse is (to first order) the covariance of that trajectory, so a *small*
+$\Omega^{-1}$ — equivalently, a *large* $\Omega$ — is a well-determined map. "Large" needs a
+definition, and optimal experiment design has supplied three for seventy years.
+
+<KeyIdea title="A-, D-, and E-optimality">
+Let $\lambda_1 \le \cdots \le \lambda_n$ be the eigenvalues of $\Omega$. The covariance ellipsoid
+has semi-axes $\lambda_k^{-1/2}$.
+
+**A-optimality** minimizes $\tr(\Omega^{-1}) = \sum_k \lambda_k^{-1}$ — the *sum of the squared
+semi-axes*, or equivalently the harmonic mean of $\Omega$'s eigenvalues. It needs an inverse, so
+implementations often substitute $\tr\Omega/n$ as a cheap stand-in, and neither form is invariant
+to rescaling the state: metres and radians end up being added together.
+
+**D-optimality** maximizes $\big(\prod_k \lambda_k\big)^{1/n} = \exp\!\big(\tfrac1n \log\det\Omega\big)$
+— the reciprocal *volume* of the uncertainty ellipsoid, in geometric-mean form. Monotone,
+invariant under reparameterization, and computable from a factorization you already have. This is
+where the field converged.
+
+**E-optimality** maximizes $\lambda_1$ — the *worst* direction. The conservative choice, and the
+right one when a single unconstrained direction is what will kill you.
+
+The $1/n$ in D-optimality is not cosmetic. Raw $\log\det\Omega$ grows with the number of nodes, so
+it ranks a longer trajectory above a better-constrained one purely for being longer.
+</KeyIdea>
+
+Because $\log\det$ falls straight out of a Cholesky factorization —
+$\log\det\Omega = 2\sum_k \log L_{kk}$ — evaluating it for a candidate costs one sparse solve,
+roughly $O(n^{1.5})$ for a planar graph. That is what makes scoring a dozen candidate trajectories
+per decision affordable at all.
+
+<Deferred>
+  <LoopOrPushOn />
+</Deferred>
+
+That widget hides a theorem, and the theorem is the reason active SLAM exists as a separate subject
+from exploration.
+
+<Derivation title="Odometry cannot change D-optimality" result="\det\Omega_{\text{tree}} = \prod_e \det\Omega_e">
+*Claim.* If the pose graph is a **tree** — one gauge-fixed root, and every other node reached by
+exactly one relative-pose factor — then
+
+$$
+\det \Omega = \prod_{e} \det \Omega_e,
+$$
+
+independent of the geometry of the trajectory. Consequently $\mathrm{Dopt}(\Omega)$ is *constant*
+along any odometry-only path whose factors share the same precision, no matter how far the robot
+drives or where it goes.
+
+**Step 1 — write $\Omega$ as a Gram matrix.** Chapter 15 assembles
+$\Omega = A\T \bar\Omega A$, where $A \in \R^{3m \times 3n}$ stacks the per-factor Jacobians and
+$\bar\Omega = \diag(\Omega_{e_1}, \ldots, \Omega_{e_m})$ is block diagonal. For a relative-pose
+factor between $i$ and $j$, [Chapter 16](/chapters/ch16-scan-matching) derived
+$\partial e / \partial \delta_i = -\Ad_{Z^{-1}}$ and $\partial e/\partial \delta_j = \mat{I}$.
+
+**Step 2 — a tree makes $A$ square.** With $n$ free nodes and one factor into each, $m = n$, so $A$
+is $3n \times 3n$.
+
+**Step 3 — order the nodes and read off the determinant.** Number the free nodes so that every
+node's parent precedes it (a BFS order from the gauge root). Then row-block $k$ of $A$ has
+$\mat{I}$ in column-block $k$ and $-\Ad_{Z_k^{-1}}$ in the column-block of its parent, which is
+*earlier*. So $A$ is block lower triangular with identity blocks on the diagonal, and
+$\det A = 1$.
+
+**Step 4 — conclude.**
+
+$$
+\det\Omega = \det(A\T)\,\det(\bar\Omega)\,\det(A) = \det\bar\Omega = \prod_e \det\Omega_e.
+$$
+
+Nothing about the trajectory survives. The adjoint $\Ad_T$ of a rigid motion has determinant 1, so
+even the individual blocks cannot smuggle geometry into the answer. $\blacksquare$
+
+**And now the consequence.** $\mathrm{Dopt} = \exp\big(\tfrac{1}{3n}\sum_e \log\det\Omega_e\big)$;
+with identical factors this is $(\det\Omega_e)^{1/3}$, a constant. **A robot that only drives
+learns nothing about its own trajectory that it did not already know.** Every metre adds one
+variable and one constraint, and the two cancel exactly.
+
+**What does change it.** Add one factor that closes a cycle. Now $m = n + 1$, $A$ is no longer
+square, and the matrix determinant lemma gives the increase in closed form:
+
+$$
+\log\det\big(\Omega + A_c\T \Omega_c A_c\big) - \log\det\Omega
+= \log\det\!\big(\mat{I} + \Omega_c A_c \Omega^{-1} A_c\T\big) \;>\; 0,
+$$
+
+which is large exactly when $A_c \Omega^{-1} A_c\T$ — the prior uncertainty of the *relative* pose
+being measured — is large. In words: a loop closure is worth the most when it constrains two poses
+whose relative geometry you were least sure of. Closing a loop against the node you visited ten
+steps ago is nearly worthless; closing it against the node you left twenty metres of corridor ago is
+the whole game.
+</Derivation>
+
+Numbers, so you can check it. Take a chain with $\sigma_x = \sigma_y = 0.05$ m and
+$\sigma_\theta = 0.03$ rad, giving
+$\log\det\Omega_e = 2\log(1/0.05^2) + \log(1/0.03^2) = 18.996$ nats per factor:
+
+| graph | free nodes | factors | $\log\det\Omega$ | $\mathrm{Dopt}(\Omega)$ |
+|---|---|---|---|---|
+| 2-step chain | 2 | 2 | 37.99 | 562.29 |
+| 5-step chain | 5 | 5 | 94.98 | 562.29 |
+| 12-step chain | 12 | 12 | 227.95 | 562.29 |
+| 12-step chain **+ 1 loop closure** | 12 | 13 | 236.63 | **715.51** |
+
+Three chains of wildly different length, one D-optimality. Add a single loop-closure factor with
+$\sigma_\theta = 0.02$ and $\log\det$ jumps by 8.68 nats. Note also that
+$\mathrm{Dopt} = (\det\Omega_e)^{1/3} = (400 \cdot 400 \cdot 1111.1)^{1/3} = 562.29$, which you can
+do on a calculator.
+
+```rust title="crates/ch24_explore/src/utility.rs (tests)"
+#[test]
+fn worked_example_ch24_tree_logdet_is_geometry_free() {
+    let omega = information_from_sigmas(0.05, 0.05, 0.03);
+    let per_edge = omega.determinant().ln();          // 18.996 nats
+    let mut rng = SmallRng::seed_from_u64(24);
+
+    // Three chains with completely different shapes.
+    for n in [2usize, 5, 12] {
+        let g = random_odometry_chain(n, &omega, &mut rng);
+        assert_relative_eq!(graph_log_det(&g), n as f64 * per_edge, epsilon = 1e-9);
+        // …and therefore the same D-optimality, whatever the shape.
+        assert_relative_eq!(d_optimality(&g), omega.determinant().cbrt(), epsilon = 1e-9);
+    }
+
+    // One loop closure, and only then does the criterion move.
+    let mut g = random_odometry_chain(12, &omega, &mut rng);
+    let before = graph_log_det(&g);
+    g.add_edge(0, 12, g.relative_pose(0, 12), information_from_sigmas(0.05, 0.05, 0.02), Loop);
+    assert_relative_eq!(graph_log_det(&g) - before, 8.675, epsilon = 1e-3);
+}
+```
+
+Which is exactly what the widget shows: pushing on into room E adds 646 nats of $\log\det$ and
+moves D-optimality by **zero**, while closing the loop adds 659 nats and moves D-optimality from
+1314 to 1423. The raw determinant puts the two branches within 2% of each other because it is
+mostly counting nodes; the normalized criterion separates them cleanly. And the trajectory error — the number
+neither criterion is allowed to see — falls from 0.84 m to 0.34 m.
+
+<Callout type="warn">
+The tree identity is exact for the *linearized* information matrix with the Jacobians Chapter 16
+uses. It is not a claim that dead reckoning is harmless: the trajectory *error* grows without bound
+along a chain, and the graph's covariance $\Omega^{-1}$ of any single node relative to the root
+grows with it. What is constant is the D-optimality of the whole joint distribution over increments
+— which is precisely why a criterion that scores the whole graph needs the $1/n$, and why scoring
+the marginal covariance of the *latest* pose is a defensible alternative that some systems use
+instead.
+</Callout>
+
+## When to stop
+
+Every run in this chapter ends. None of them ends for a principled reason.
+
+<Deferred>
+  <StopSign />
+</Deferred>
+
+The candidates are all defensible and all flawed. An **absolute entropy threshold** ("stop below 200
+bits") depends on the size of the map, so it does not transfer between buildings. An **entropy
+plateau detector** needs a window length that nobody can justify, and exploration's step-shaped
+progress means a genuine plateau and the pause before entering a new wing look identical. A
+**coverage percentage** requires knowing the area to be covered, which is what you were trying to
+find out.
+
+The least-bad rule with units the mission can argue about is a **gain-per-cost floor**:
+
+$$
+\text{stop when} \quad \max_{a \in \mathcal{A}} \frac{I(a)}{C(a)} < \epsilon_{\text{task}},
+$$
+
+because "a bit is worth a metre" is a statement about the job rather than about information theory.
+The chart above shows what it buys on one real run: at $\epsilon = 15$ b/m Rusty stops after 15
+metres with barely half the information; at $\epsilon = 4$ it stops at 42 metres holding 93% of it;
+and the remaining 57 metres — more than half the entire run — buy the last 7%.
+
+Placed et al. list principled stopping among active SLAM's open problems, and this chapter has
+nothing better to offer. What it does offer is the discipline of plotting the curve before choosing
+the number.
+
+## Implementation in Rust
+
+The crate is `ch24_explore`, and it is Part VI's integrator: it depends on `ch13_occgrid` for the
+map, `ch16_slam2d` for the graph, `ch20_planning` for the paths, and `ch23_mppi` for the execution.
+It adds four things of its own: frontier detection, the gain estimator, the utility, and the loop
+that ties them together.
+
+### Frontiers and the navigation field
+
+```rust title="crates/ch24_explore/src/frontier.rs"
+use std::collections::HashMap;
+
+use ch13_occgrid::{log_odds_to_prob, GridIdx, OccGrid};
+use nalgebra::Point2;
+use petgraph::unionfind::UnionFind;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CellClass { Free, Occupied, Unknown }
+
+/// Two thresholds, not one. The band in between is what "unknown" means, and
+/// the width of that band is why an explorer with a timid free-space model
+/// lags its own sensor by several scans.
+#[derive(Clone, Copy)]
+pub struct ClassThresholds { pub free_below: f64, pub occ_above: f64 }
+
+impl Default for ClassThresholds {
+    fn default() -> Self { Self { free_below: 0.3, occ_above: 0.7 } }
+}
+
+pub struct Frontier {
+    pub cells: Vec<GridIdx>,
+    pub centroid: Point2<f64>,
+    /// The member cell nearest the centroid. The centroid of a C-shaped region
+    /// can sit inside a wall; a member cell never does.
+    pub representative: GridIdx,
+    pub size: usize,
+}
+
+/// `detect_frontiers` — Yamauchi (1997), cell for cell.
+///
+/// One marking pass, then union-find over 8-connected marked pairs. Union-find
+/// rather than BFS because `petgraph` already has it, it is a single pass in
+/// scan order, and it makes the "which region is this cell in" query that the
+/// renderer wants O(α(n)).
+pub fn detect_frontiers(grid: &OccGrid, th: ClassThresholds, min_size: usize) -> Vec<Frontier> {
+    let n = grid.len();
+    let mut marked = vec![false; n];
+
+    for (idx, &l) in grid.log_odds().iter().enumerate() {
+        if classify(log_odds_to_prob(l), th) != CellClass::Free { continue; }
+        // Free, and touching the unknown: that is the whole definition.
+        marked[idx] = grid.neighbors4(idx).any(|j| {
+            classify(log_odds_to_prob(grid.log_odds()[j]), th) == CellClass::Unknown
+        });
+    }
+
+    let mut uf = UnionFind::<usize>::new(n);
+    for idx in 0..n {
+        if !marked[idx] { continue; }
+        for j in grid.neighbors8(idx) {
+            if marked[j] { uf.union(idx, j); }
+        }
+    }
+
+    let mut regions: HashMap<usize, Vec<GridIdx>> = HashMap::new();
+    for idx in 0..n {
+        if marked[idx] { regions.entry(uf.find(idx)).or_default().push(grid.to_idx2(idx)); }
+    }
+
+    regions
+        .into_values()
+        .filter(|cells| cells.len() >= min_size)
+        .map(|cells| {
+            let centroid = mean_point(grid, &cells);
+            let representative = *cells
+                .iter()
+                .min_by(|a, b| {
+                    let da = (grid.center(**a) - centroid).norm_squared();
+                    let db = (grid.center(**b) - centroid).norm_squared();
+                    da.partial_cmp(&db).unwrap()
+                })
+                .expect("regions are non-empty by construction");
+            Frontier { size: cells.len(), cells, centroid, representative }
+        })
+        .collect()
+}
+```
+
+The navigation field is the other half, and it earns its own type because two different consumers
+need it: the utility needs a *cost*, and the completeness argument needs a *reachability predicate*.
+They are the same Dijkstra expansion.
+
+```rust title="crates/ch24_explore/src/frontier.rs (continued)"
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
+use ordered_float::OrderedFloat;
+
+/// Dijkstra over known-free cells, 8-connected, in metres.
+///
+/// `cost[i] = ∞` means "not reachable through what we have mapped so far",
+/// which is exactly the predicate the completeness proof needs — and exactly
+/// the predicate an over-inflated obstacle map quietly falsifies.
+pub struct NavField<'a> {
+    grid: &'a OccGrid,
+    cost: Vec<f64>,
+    parent: Vec<Option<usize>>,
+    start: usize,
+}
+
+impl<'a> NavField<'a> {
+    pub fn new(grid: &'a OccGrid, start: GridIdx, th: ClassThresholds, inflate: usize) -> Self {
+        let blocked = inflate_obstacles(grid, th, inflate);
+        let mut cost = vec![f64::INFINITY; grid.len()];
+        let mut parent = vec![None; grid.len()];
+        let start = grid.to_flat(start);
+
+        // The robot is standing where it is standing: inflation may never
+        // strand it, so the source is seeded regardless of `blocked`.
+        cost[start] = 0.0;
+        let mut heap = BinaryHeap::new();
+        heap.push(Reverse((OrderedFloat(0.0), start)));
+
+        while let Some(Reverse((OrderedFloat(c), i))) = heap.pop() {
+            if c > cost[i] { continue; }
+            for (j, step) in grid.neighbors8_with_step(i) {
+                if blocked[j] { continue; }
+                if classify(log_odds_to_prob(grid.log_odds()[j]), th) != CellClass::Free { continue; }
+                let next = c + step;
+                if next < cost[j] - 1e-12 {
+                    cost[j] = next;
+                    parent[j] = Some(i);
+                    heap.push(Reverse((OrderedFloat(next), j)));
+                }
+            }
+        }
+        Self { grid, cost, parent, start }
+    }
+
+    /// The cheapest reachable cell within `radius` of a frontier target.
+    ///
+    /// Frontier cells sit against the unknown, so inflation often makes the
+    /// exact cell unreachable while its neighbour two cells back is fine.
+    /// Aiming at the neighbour is what keeps an explorer from declaring a
+    /// doorway impossible.
+    pub fn nearest_reachable(&self, goal: GridIdx, radius: i32) -> Option<(GridIdx, f64)> { /* … */ }
+
+    pub fn path_to(&self, goal: GridIdx) -> Vec<Point2<f64>> { /* walk `parent` back */ }
+}
+```
+
+### Expected gain
+
+```rust title="crates/ch24_explore/src/info_gain.rs"
+use ch02_prob::binary_entropy;
+use ch13_occgrid::{bresenham, log_odds_to_prob, OccGrid};
+use nalgebra::{Isometry2, Vector2};
+use rustc_hash::FxHashSet;
+
+/// The sensor as the *planner* models it. Deliberately cruder than Chapter 10's
+/// beam mixture: all the planner needs from a range finder is how many beams,
+/// how far, and how much to trust one cell's verdict.
+#[derive(Clone, Copy)]
+pub struct SensingParams {
+    pub n_beams: usize,
+    pub fov: f64,
+    pub max_range: f64,
+    /// q: the probability the inverse model calls a cell correctly. The
+    /// crossover of a binary symmetric channel, and the only sensor number
+    /// this estimator ever sees.
+    pub z_hit: f64,
+}
+
+/// I(mᵢ ; zᵢ) in bits, for one cell with prior `p` through a channel of
+/// reliability `q`.
+///
+/// At p = ½ this is the channel capacity 1 − H_b(q); as p → 0 or 1 it is zero.
+/// Both limits are worth remembering, because between them they explain every
+/// decision an information-gain explorer makes.
+pub fn cell_mutual_information(p: f64, q: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) || p <= 0.0 || p >= 1.0 { return 0.0; }
+    let p_occ = p * q + (1.0 - p) * (1.0 - q);
+    let p_free = 1.0 - p_occ;
+    let post_occ = if p_occ > 0.0 { p * q / p_occ } else { 0.0 };
+    let post_free = if p_free > 0.0 { p * (1.0 - q) / p_free } else { 0.0 };
+    let expected = p_occ * binary_entropy(post_occ) + p_free * binary_entropy(post_free);
+    (binary_entropy(p) - expected).max(0.0)
+}
+
+pub struct InfoGainEstimator<'a> {
+    pub grid: &'a OccGrid,
+    pub sensor: SensingParams,
+    /// Count each cell at most once per scan. Without it, the estimator happily
+    /// rewards standing still with its nose against a wall.
+    pub dedupe: bool,
+}
+
+impl InfoGainEstimator<'_> {
+    /// `expected_info_gain` — bits of map entropy one scan from `pose` should
+    /// remove. Equation (F.2); the reach probability is the running product.
+    pub fn expected_gain(&self, pose: &Isometry2<f64>) -> f64 {
+        let origin = self.grid.world_to_cell(pose.translation.vector.into());
+        let mut visited = FxHashSet::default();
+        let mut total = 0.0;
+
+        for phi in beam_angles(self.sensor.n_beams, self.sensor.fov) {
+            let theta = pose.rotation.angle() + phi;
+            let end = self.grid.world_to_cell(
+                pose.translation.vector + self.sensor.max_range * Vector2::new(theta.cos(), theta.sin()),
+            );
+
+            let mut reach = 1.0_f64;
+            for cell in bresenham(origin, end) {
+                if reach < 1e-3 { break; }
+                let Some(flat) = self.grid.try_flat(cell) else { break };
+                let p = log_odds_to_prob(self.grid.log_odds()[flat]);
+                if !self.dedupe || visited.insert(flat) {
+                    total += reach * cell_mutual_information(p, self.sensor.z_hit);
+                }
+                // The beam is stopped by this cell whether or not we already
+                // scored it: occlusion belongs to the map, not the bookkeeping.
+                reach *= 1.0 - p;
+            }
+        }
+        total
+    }
+}
+```
+
+### D-optimality over the pose graph
+
+```rust title="crates/ch24_explore/src/utility.rs"
+use ch13_occgrid::{GridIdx, OccGrid};
+use ch15_graph::{BlockIndex, Ordering};
+use ch16_slam2d::PoseGraph;
+use faer::linalg::solvers::Llt;
+use faer::sparse::SparseColMat;
+use nalgebra::Isometry2;
+
+use crate::frontier::{Frontier, NavField};
+use crate::info_gain::InfoGainEstimator;
+
+/// `graph_log_det` — log det Ω in nats, from a factorization we were going to
+/// compute anyway.
+///
+/// The gauge node's rows and columns are *deleted*, not damped: with them in,
+/// Ω is singular by construction and its determinant is zero however good the
+/// map is. Cost is one sparse Cholesky — about O(n^1.5) for a planar graph,
+/// which is what makes scoring a dozen candidates per decision affordable.
+pub fn graph_log_det(graph: &PoseGraph) -> f64 {
+    let (omega, _index): (SparseColMat<usize, f64>, BlockIndex) = graph.information_free();
+    let symbolic = Ordering::Amd.symbolic(&omega);
+    let llt = Llt::try_new_with_symbolic(symbolic, omega.as_ref())
+        .expect("Ω is singular — is the gauge node fixed?");
+    // log det Ω = 2 Σ log L_kk.
+    2.0 * llt.L().diagonal().column_vector().iter().map(|d| d.ln()).sum::<f64>()
+}
+
+/// D-optimality in the form the field settled on (Carrillo et al. 2012;
+/// Placed et al. 2023):  Dopt(Ω) = exp( (1/n) log det Ω ).
+///
+/// The 1/n is the whole point. Raw log det counts nodes, so it prefers the
+/// longer trajectory for being longer; the geometric-mean form is what makes
+/// two graphs of different sizes comparable at all.
+pub fn d_optimality(graph: &PoseGraph) -> f64 {
+    let n = 3 * graph.free_node_count();
+    if n == 0 { return 0.0; }
+    (graph_log_det(graph) / n as f64).exp()
+}
+
+#[derive(Clone, Copy)]
+pub struct UtilityWeights { pub w_i: f64, pub w_g: f64, pub w_c: f64 }
+
+pub struct Candidate {
+    pub target: GridIdx,
+    pub pose: Isometry2<f64>,
+    /// I(a), bits.
+    pub gain: f64,
+    /// C(a), metres of known-free path.
+    pub cost: f64,
+    /// Δ_a = log Dopt(Ω₊ₐ) − log Dopt(Ω), nats per degree of freedom.
+    pub graph_gain: f64,
+    pub utility: f64,
+}
+
+/// `score_candidates` — one utility per frontier region.
+///
+/// The sensing pose faces from the reachable target toward the region's
+/// centroid: a range finder pointed back down the corridor it just drove
+/// learns nothing, and the estimator would happily tell you so if you asked it,
+/// but only if you ask at the right heading.
+pub fn score_candidates(
+    grid: &OccGrid,
+    frontiers: &[Frontier],
+    nav: &NavField<'_>,
+    gain: &InfoGainEstimator<'_>,
+    w: UtilityWeights,
+    graph_gain: Option<&dyn Fn(GridIdx, f64) -> f64>,
+) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = frontiers
+        .iter()
+        .filter_map(|f| {
+            // Unreachable through known-free space: skip it, do not fail.
+            let (target, cost) = nav.nearest_reachable(f.representative, 4)?;
+            let t = grid.center(target);
+            let heading = (f.centroid - t).y.atan2((f.centroid - t).x);
+            let pose = Isometry2::new(t.coords, heading);
+            let i = gain.expected_gain(&pose);
+            let g = graph_gain.map_or(0.0, |f| f(target, cost));
+            Some(Candidate {
+                target, pose, gain: i, cost, graph_gain: g,
+                utility: w.w_i * i + w.w_g * g - w.w_c * cost,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.utility.partial_cmp(&a.utility).unwrap());
+    out
+}
+```
+
+### The loop
+
+```rust title="crates/ch24_explore/src/explorer.rs"
+use ch16_slam2d::Slam2d;
+use nalgebra::{Isometry2, Point2};
+
+use crate::frontier::{detect_frontiers, ClassThresholds, NavField};
+use crate::info_gain::{InfoGainEstimator, SensingParams};
+use crate::utility::{d_optimality, score_candidates, Candidate, StopRule, UtilityWeights};
+
+/// What one decision can be. `Done` carries *why*, because "the run ended" and
+/// "the run ended for a good reason" are different claims and the ablation
+/// table needs to tell them apart.
+pub enum Decision {
+    Goto { target: Isometry2<f64>, path: Vec<Point2<f64>>, candidates: Vec<Candidate> },
+    CloseLoop { node: ch16_slam2d::NodeIx },
+    Done { reason: StopReason },
+}
+
+pub enum StopReason { NoFrontiers, GainRate, Budget }
+
+pub struct Explorer {
+    pub weights: UtilityWeights,
+    pub sensing: SensingParams,
+    pub thresholds: ClassThresholds,
+    pub stop: StopRule,
+    pub min_frontier_size: usize,
+    pub inflate: usize,
+}
+
+impl Explorer {
+    /// `explore_step` — identify, select, execute. One decision.
+    ///
+    /// Placed et al. (2023) name the three stages every active-SLAM system has,
+    /// whether or not its authors drew the boxes. Notice the proportions: the
+    /// policy is the two `let` bindings in the middle, and everything else in
+    /// this crate is keeping the estimate alive while it runs. That is the
+    /// honest ratio for a real system too.
+    pub fn decide(&mut self, slam: &Slam2d) -> Decision {
+        let grid = slam.grid();
+        let here = grid.world_to_cell(slam.pose().translation.vector.into());
+
+        // ---- identify --------------------------------------------------
+        let frontiers = detect_frontiers(grid, self.thresholds, self.min_frontier_size);
+        let nav = NavField::new(grid, here, self.thresholds, self.inflate);
+        let gain = InfoGainEstimator { grid, sensor: self.sensing, dedupe: true };
+
+        // ---- select ----------------------------------------------------
+        let base = d_optimality(slam.graph()).ln();
+        let graph_gain = |target: GridIdx, cost: f64| {
+            // Predict the factors this trajectory would add: one odometry
+            // factor per step, plus a loop closure wherever it re-observes a
+            // mapped region. Then score the hypothetical graph.
+            let predicted = slam.graph().with_predicted_factors(target, cost, &self.sensing);
+            d_optimality(&predicted).ln() - base
+        };
+        let candidates =
+            score_candidates(grid, &frontiers, &nav, &gain, self.weights, Some(&graph_gain));
+
+        if let Some(reason) = self.stop.triggered(&candidates) {
+            return Decision::Done { reason };
+        }
+
+        // ---- execute ---------------------------------------------------
+        let best = &candidates[0];
+        Decision::Goto {
+            target: best.pose,
+            path: nav.path_to(best.target),   // handed to ch23_mppi to track
+            candidates,
+        }
+    }
+}
+```
+
+## Putting it together
+
+`cargo run --release --example autonomous_explore` drops Rusty into the apartment at the corridor
+midpoint with 4800 bits of ignorance and no instructions. The example prints one row per policy over
+ten seeds; the TypeScript port that drives the widgets on this page produces the same numbers,
+because it is the same algorithm.
+
+| policy | runs reaching 4000 of 4800 bits | median distance to 4000 bits | total distance | final $H(m)$ | cells resolved | bits per metre |
+|---|---|---|---|---|---|---|
+| lawnmower (scripted sweep) | 10 / 10 | 46.0 m | 92.6 m | 586 b | 96.0% | 45.5 |
+| nearest frontier ($w_I = 0$) | 2 / 10 | 75.2 m | 42.5 m | 1722 b | 72.7% | 83.2 |
+| utility ($w_I = 1$, $w_C = 0.35$) | 9 / 10 | **33.6 m** | 71.3 m | **370 b** | 94.9% | 76.8 |
+
+Read it carefully, because the interesting result is not the one you expected.
+
+The utility explorer wins the column that matters: it reaches a fixed information target in 27% less
+distance than the scripted sweep, in nine runs out of ten, and it finishes with the lowest final
+entropy of the three.
+
+The lawnmower is not embarrassing. It is *reliable* — 10/10 — because it does not depend on the map
+being right. That is exactly the trade a scripted policy makes, and it is why coverage path planning
+is still the correct answer when you already have the floorplan.
+
+Nearest-frontier is the most efficient policy per metre travelled, and it is the worst policy on
+this table. It clears 83 bits for every metre it drives; it just stops driving. Eight runs out of
+ten end below the information target, most of them with frontiers still visible on the map, because
+the argmax of $-C(a)$ is whatever boundary is nearest — including the one under the robot's own
+wheels. This is not a strawman built to lose. It is the reason every deployed frontier explorer
+carries a minimum-target-distance guard, a hysteresis term, or a blacklist, and the sixth exercise
+asks you to add one and re-run the table.
+
+<Callout type="info">
+**What this chapter left out, and where it went.** *Multi-robot exploration* and market-based task
+allocation were the centerpiece of the 2005 textbook's Chapter 17; the machinery above generalizes
+(the utility becomes an assignment problem over robots and frontiers) but the book's lab is
+single-robot, so it is a pointer, not a section — Placed et al. §VII surveys the state of it, and
+Asgharivaskasi et al. (2025) give the modern distributed formulation. *Coverage path planning* is
+one paragraph at the top of this chapter, and Choset's cellular decomposition is the reference.
+*RBPF-specific exploration utilities* (Stachniss et al., 2005) computed gain over a particle set of
+maps rather than one grid; that is a historical note now that the book's SLAM spine is the graph,
+but it is the right idea if your spine is [Chapter 17](/chapters/ch17-fastslam)'s.
+*Learned exploration policies* and neural map-completion priors — which predict what is behind the
+frontier instead of assuming it behaves like the prior — belong to
+[Chapter 25](/chapters/ch25-learning).
+</Callout>
+
+Everything the capstone needs now exists. [Chapter 26](/chapters/ch26-capstone) adds no new
+estimator, no new planner, and no new controller: what remains is orchestration and the failure
+modes that appear only when all of it runs at once.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Non-negative in expectation, and the case that is not">
+    Prove $I(a) = I(m; z_a) \ge 0$ from the KL form, stating exactly where Gibbs' inequality is
+    used and what equality would mean physically. Then construct an explicit two-cell, one-beam
+    example in which a *specific* measurement increases the map entropy, and compute both the
+    increase and the probability of that reading. Finally, confirm your example numerically with
+    `cell_mutual_information` and explain in two sentences why an entropy log that never rises
+    would be evidence of a bug rather than of a good filter.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="A worse sensor, sublinearly">
+    Redo the five-cell worked example with $q = 0.7$ instead of $0.9$. You should get 0.2300 bits
+    against the chapter's 1.0288 — a factor of 4.5 for a sensor that is only 22% less reliable.
+    Explain the nonlinearity in terms of the channel capacity $1 - H_b(q)$, and predict (before
+    computing) whether the *ratio* between the unknown ray and the mapped ray grows or shrinks as
+    $q \to 0.5$.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Where the tree identity breaks">
+    The derivation shows $\det\Omega = \prod_e \det\Omega_e$ for a tree. Two of its hypotheses can
+    fail in practice. (a) Show what happens to $\det A$ when a node is constrained by *two*
+    odometry factors — for instance because the front-end fused wheel odometry and IMU into
+    separate factors — and say whether D-optimality then depends on the trajectory. (b) The
+    derivation drops the right-Jacobian factor $J_r^{-1}(e)$ that Chapter 16 also drops. Argue why
+    that is harmless for the *ranking* of two candidates while being wrong for the absolute value
+    of $\log\det\Omega$.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict the flip, then check it">
+    In the Disambiguation Detour, read the candidate bars — do not run the policy — and predict the
+    sensor-noise level at which the *scored* argmax moves from the detour to the direct route.
+    Write down your prediction, then find it with the slider. Explain the flip in terms of $I(a)$
+    against $C(a) + T(a)$, and say what would have to change about the corridor (not the sensor)
+    to move the flip point by 0.05.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Make greed win">
+    Using the Frontier Chaser, find a seed and a cost weight $w_C$ for which nearest-frontier
+    reaches a *higher* cells-resolved percentage than the utility policy at the same distance
+    travelled. What structural property of that particular run makes greed the right answer? Then
+    state the property of the apartment as a whole that makes greed usually wrong, and connect it
+    to the shape of the bits-per-metre sparkline.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="A guard against the stall">
+    Reproduce the stall: run the nearest-frontier policy and log, per decision, the chosen
+    candidate's cost. You will find long stretches at $C(a) \approx 0$. Add a guard on the minimum
+    target distance — reject candidates whose reachable target is within $d_{\min}$ of the robot —
+    and re-run the ten-seed ablation table. Report every column for $d_{\min} \in \{0, 0.5, 1.5\}$
+    m, and say which column moves the most; then argue whether the guard is a fix or a
+    hyperparameter hiding a modelling error. *Extension:* a frontier region that wraps around a
+    large room gets one candidate at its centroid, which can be a bad place to stand — implement
+    centroid-splitting along the region's principal axis and run the table a third time.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Lookahead, and whether it pays">
+    Replace the depth-1 `active_localize` argmax with a POMCP search
+    ([Chapter 22](/chapters/ch22-pomdps)) over a three-action macro-space: detour, direct, and
+    wait-and-scan. Run both on the Disambiguation Detour world across 50 seeds and report the
+    success rate, the mean decisions per trial, and the wall-clock time per decision. Then build the
+    world where the lookahead is *necessary* — a corridor whose disambiguating feature lies two
+    macro-actions away, so that the first step toward it scores exactly zero — and show the depth-1
+    policy failing on it.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    id="yamauchi1997"
+    authors="Yamauchi, B."
+    year={1997}
+    title="A Frontier-Based Approach for Autonomous Exploration"
+    venue="Proceedings of the IEEE International Symposium on Computational Intelligence in Robotics and Automation (CIRA), Monterey, CA, 146–151"
+    doi="10.1109/CIRA.1997.613851"
+    note="The origin of the frontier, and the source of this chapter's epigraph. Older than the 2005 textbook baseline and still the structural backbone of every exploration stack in this chapter."
+  />
+  <Reference
+    id="fox1998"
+    authors="Fox, D., Burgard, W., and Thrun, S."
+    year={1998}
+    title="Active Markov Localization for Mobile Robots"
+    venue="Robotics and Autonomous Systems 25(3–4), 195–207"
+    doi="10.1016/S0921-8890(98)00049-9"
+    note="The expected-entropy-reduction rule that widget w24.2 implements, derived over a grid belief. Reading it beside Chapter 12 shows how little the idea needs beyond a Bayes filter you can run forwards."
+  />
+  <Reference
+    id="thrun2005"
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 17 is this chapter's conceptual ancestor: greedy information-gain exploration, active localization, and multi-robot coordination over occupancy grids. Note that the 1999–2000 draft this book otherwise works from has no exploration chapter at all."
+  />
+  <Reference
+    id="stachniss2005"
+    authors="Stachniss, C., Grisetti, G., and Burgard, W."
+    year={2005}
+    title="Information Gain-based Exploration Using Rao-Blackwellized Particle Filters"
+    venue="Proceedings of Robotics: Science and Systems (RSS), Cambridge, MA"
+    doi="10.15607/RSS.2005.I.009"
+    note="The first system to score exploration actions by their effect on the joint map-and-trajectory posterior rather than the map alone — the idea this chapter re-expresses over a pose graph instead of a particle set."
+  />
+  <Reference
+    id="carrillo2012"
+    authors="Carrillo, H., Reid, I., and Castellanos, J. A."
+    year={2012}
+    title="On the Comparison of Uncertainty Criteria for Active SLAM"
+    venue="Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), St. Paul, MN, 2080–2087"
+    doi="10.1109/ICRA.2012.6224890"
+    note="The paper that settled A- versus D- versus E-optimality for robotics, and the source of the normalized D-opt form used in this chapter's utility."
+  />
+  <Reference
+    id="placed2023survey"
+    authors="Placed, J. A., Strader, J., Carrillo, H., Atanasov, N., Indelman, V., Carlone, L., and Castellanos, J. A."
+    year={2023}
+    title="A Survey on Active Simultaneous Localization and Mapping: State of the Art and New Frontiers"
+    venue="IEEE Transactions on Robotics 39(3), 1686–1705"
+    doi="10.1109/TRO.2023.3248510"
+    note="The chapter's map of the field: active SLAM as an intractable POMDP approached by an identify–select–execute pipeline, with a unified treatment of optimality criteria and an open-problems section that includes stopping."
+  />
+  <Reference
+    id="placed2023dopt"
+    authors="Placed, J. A. and Castellanos, J. A."
+    year={2023}
+    title="A General Relationship Between Optimality Criteria and Connectivity Indices for Active Graph-SLAM"
+    venue="IEEE Robotics and Automation Letters 8(2), 816–823"
+    doi="10.1109/LRA.2022.3233230"
+    note="Relates the graph Laplacian's connectivity indices to the optimality criteria of the information matrix, which is what makes the tree-versus-cycle argument of this chapter's derivation into a usable surrogate on graphs too large to factor per candidate."
+  />
+  <Reference
+    id="zhou2021fuel"
+    authors="Zhou, B., Zhang, Y., Chen, X., and Shen, S."
+    year={2021}
+    title="FUEL: Fast UAV Exploration Using Incremental Frontier Structure and Hierarchical Planning"
+    venue="IEEE Robotics and Automation Letters 6(2), 779–786"
+    doi="10.1109/LRA.2021.3051563"
+    note="Frontier detection maintained incrementally rather than recomputed, plus a hierarchical tour over frontier clusters — the two engineering moves that take this chapter's O(#cells) rescan to real-time on a drone."
+  />
+  <Reference
+    id="cao2021tare"
+    authors="Cao, C., Zhu, H., Choset, H., and Zhang, J."
+    year={2021}
+    title="TARE: A Hierarchical Framework for Efficiently Exploring Complex 3D Environments"
+    venue="Proceedings of Robotics: Science and Systems (RSS), Virtual"
+    doi="10.15607/RSS.2021.XVII.018"
+    note="The strongest counterargument to greedy selection: plan a detailed local path and a coarse global tour, and the myopia that produces this chapter's nearest-frontier stall disappears. Best paper at RSS 2021."
+  />
+  <Reference
+    id="asgharivaskasi2025"
+    authors="Asgharivaskasi, A., Girke, F., and Atanasov, N."
+    year={2025}
+    title="Riemannian Optimization for Active Mapping With Robot Teams"
+    venue="IEEE Transactions on Robotics 41, 1077–1097"
+    doi="10.1109/TRO.2025.3526295"
+    note="The modern multi-robot form of this chapter's utility: distributed optimization of a mutual-information objective over trajectories on a manifold, with consensus and optimality guarantees. The pointer for the multi-robot material this chapter drops."
+  />
+</References>

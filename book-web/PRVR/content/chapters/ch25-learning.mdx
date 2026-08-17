@@ -1,0 +1,1423 @@
+---
+title: Learning in the Loop
+description: Where machine learning belongs in a probabilistic robot — learned models inside an unchanged Bayes filter, calibration as the admission test, and the filter itself as a differentiable program you can train without ground truth.
+chapter: 25
+part: PART VII
+partTitle: Frontiers and Integration
+difficulty: Advanced
+readingTime: 60 min
+quote: "As this book is being written, the issue of learning inverse sensor models from data remains relatively unexplored."
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 9 (§9.3.4)
+---
+
+import { CalibrationClinic } from '@/components/ch/ch25/calibration-clinic';
+import { TemperingLab } from '@/components/ch/ch25/tempering-lab';
+import { DifferentiableFilterTrainer } from '@/components/ch/ch25/differentiable-filter-trainer';
+import { ResamplingGradientMicroscope } from '@/components/ch/ch25/resampling-gradient-microscope';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Say precisely where learning belongs in a probabilistic robot: inside the boxes of the Bayes filter, never in place of the filter',
+    'Define calibration for a density forecast, measure it with PIT histograms, reliability diagrams and ECE, and repair it with a single scalar',
+    'Prove that the log score is the honest training loss, and that a sharper model is not automatically a better one',
+    'Quantify what overconfidence costs: posterior precision that grows linearly in κ while effective sample size dies exponentially',
+    'Train a Kalman filter’s noise parameters by gradient descent on the evidence — with no ground truth anywhere in the loss',
+    'Repair the one step of a particle filter that has no gradient, and state the price soft resampling charges',
+    'Read the honesty ledger: which learned components of 2026 compose with Bayes rule, and which only look like they do',
+  ]}
+  prerequisites={[
+    'Entropy, KL divergence, and expectation (Chapter 2)',
+    'The Bayes filter and its measurement update (Chapter 5)',
+    'The Kalman filter’s five equations and the innovation covariance S_t (Chapter 6)',
+    'Particle filters: importance weights, resampling, effective sample size (Chapters 8 and 12)',
+    'The beam model, learn_intrinsic_parameters, and the lie of independence (Chapter 10)',
+  ]}
+>
+Every model in this book so far was written by hand. The beam mixture's four densities, the six
+$\alpha$ parameters of the odometry model, the likelihood field's smoothing kernel — someone chose
+those functional forms, and someone tuned their constants. This chapter asks the 2026 question
+honestly: where does machine learning belong in a probabilistic robot?
+
+The answer that organizes everything else is a restriction, not a permission. **Learning replaces
+the boxes inside the Bayes filter; it does not replace the filter.** A learned $p(z_t \mid x_t, m)$
+is admissible exactly when it is a *calibrated* density, because the Bayes filter is a machine that
+turns stated confidence into decisions: it multiplies likelihoods together, normalizes, and acts on
+the result. Feed it a model that overstates its own certainty and it will not merely be wrong — it
+will be *confidently* wrong, and it will stop listening.
+
+Two things follow, and they are the chapter's two "aha"s. First, a model can be more accurate and
+still poison a filter, because accuracy and calibration are different properties and only one of
+them is what the filter consumes. Calibration is measurable, it is repairable, and by the end of
+the chapter you will have measured and repaired it. Second, the Bayes filter is itself a
+differentiable program: "tuning $R_t$ and $Q_t$" and "training a network" are the same act —
+gradient descent on a proper scoring rule, straight through the filter equations. The
+[capstone](/chapters/ch26-capstone) ships a calibrated learned sensor model as a toggle, and cites
+the benchmark at the end of this chapter as its justification.
+</Overview>
+
+## The problem: an accurate model that lies
+
+An engineer wires up Rusty's new LiDAR on a Tuesday afternoon. The datasheet says ranging accuracy
+$\pm 5$ cm, so the beam model of [Chapter 10](/chapters/ch10-sensor-models) gets
+$\sigma_{hit} = 0.05$ m, a small spike at $z_{max}$ for dropouts, and a thin uniform floor for
+whatever else happens. No unexpected-obstacle component: the room is empty, the model has no reason
+to expect anything in front of the wall.
+
+The model is *accurate*. Its peak sits on the correct range. Ask it for the most likely reading and
+it is right more often than the model the robot shipped with. Then Monte Carlo localization is
+switched on and the robot loses itself inside twenty seconds — not by drifting, but by committing,
+hard, to a pose that is 30 cm wrong and refusing every subsequent scan that disagrees.
+
+<Deferred>
+  <CalibrationClinic />
+</Deferred>
+
+Watch one full sweep of the slider before reading on. Three things are happening, and each one has
+a piece of mathematics later in this chapter.
+
+**The reliability curve sags below the diagonal.** The diagonal is the promise: of all the
+observations for which the model claimed "at most this far out", that fraction really should land
+at most that far out. A curve below the diagonal means every interval the model quotes catches
+fewer observations than advertised. At $\sigma_{hit} = 5$ cm the expected calibration error is
+$0.107$ — the model's 50% interval is closer to a 30% interval — and the $\chi^2$ statistic of its
+PIT histogram is over 1400 on 14 degrees of freedom. That is not a borderline call; that is a model
+that is lying in a way you could detect from a hundred readings.
+
+**The PIT histogram is a U.** Readings keep landing in the tails the model declared empty. The
+shape of the miscalibration tells you its cause: a U means too narrow, a hump means too wide, a
+tilt means biased. This is a *diagnostic instrument*, not a score, and it is the single most useful
+plot in this chapter.
+
+**The filter downstream cares, and it does not care about what you expected.** The two right-hand
+tiles come from a real importance-weighting step over twelve particle clouds in the Apartment. As
+the claimed width shrinks, the effective sample size collapses — at $\sigma_{hit} = 3$ cm a
+150-particle cloud is doing the work of one particle — and the posterior error *rises* even as the
+model looks sharper and more confident.
+
+<KeyIdea title="The one sentence version">
+Learning belongs inside the boxes of the Bayes filter, and a learned box earns its place by being
+calibrated, not by being sharp: the filter consumes stated confidence, so a model that overstates
+its confidence corrupts every decision downstream, no matter how accurate its point predictions are.
+</KeyIdea>
+
+## Building intuition
+
+### Learning, 1999 style — and what it cannot fix
+
+Learning is not something modern practice grafted onto Thrun, Burgard and Fox. The 1999–2000 draft
+already fits the beam model's intrinsic parameters by expectation-maximization
+(`learn_intrinsic_parameters`, Table 6.2, derived in
+[Chapter 10](/chapters/ch10-sensor-models)); it already trains a neural network to *invert* the
+measurement model by sampling triplets from the forward model (§9.3.2); it learns maps with EM, and
+it learns POMDP value functions by nearest-neighbor function approximation. The epigraph to this
+chapter is that book noticing its own frontier.
+
+So run it. Take 4000 range readings drawn from the true sensor in the Apartment and hand them to
+`learn_intrinsic_parameters`, initialized at the engineer's hand-tuned guess. EM does its job: the
+mean log-likelihood climbs from $-0.923$ to $-0.224$ nats per beam in forty iterations and
+$\sigma_{hit}$ moves from $0.050$ m to $0.112$ m, essentially the truth. And yet the fitted model is
+*still* measurably miscalibrated, with an ECE of $0.029$ against the true model's $0.021$ — because
+EM inherited a defect from its initialization that no amount of iterating can repair.
+
+The engineer's model set $z_{short} = 0$: no unexpected-obstacle component at all. In EM, a
+component's responsibility is proportional to its weight, so a weight of exactly zero produces zero
+responsibility, which produces a new weight of exactly zero. **A component initialized at zero can
+never come back.** EM did the only thing left to it and inflated $z_{rand}$ from $0.05$ to $0.142$,
+smearing a uniform floor across the whole range to absorb readings that came from an exponential
+concentrated in front of the wall.
+
+That is the first honest lesson about learning in a robot. Maximum likelihood inside a family only
+searches that family. When the family is wrong — and it always is, a little — the fit will spend its
+freedom compensating in whatever direction the parameterization allows, and the result can be an
+excellent likelihood attached to a badly shaped uncertainty.
+
+### The question is not "how accurate", it is "how honest"
+
+Point accuracy asks: is the model's best guess close to the truth? Calibration asks something the
+filter cares about far more: **when the model says 70%, does it happen 70% of the time?**
+
+Gneiting, Balabdaoui and Raftery gave the field the sentence that settles the priority. The goal of
+probabilistic forecasting, they argue, is to *maximize the sharpness of the predictive distributions
+subject to calibration* — sharpness being how concentrated the forecast is, a property of the
+forecast alone, and calibration being the statistical consistency between forecasts and what
+actually happens, a joint property of the forecast and the world. Sharpness is what you want.
+Calibration is what you are allowed. Take them in the wrong order and you get exactly the widget
+above: a model that wins on confidence and loses on reality.
+
+### Overconfidence is a filter-killer, not an aesthetic complaint
+
+Here is the mechanism, before the algebra. A particle filter weights each particle by
+$w^{[i]} \propto p(z_t \mid x_t^{[i]}, m)$. Sharpen the likelihood and you sharpen the *weights*:
+one particle takes almost all the mass, the effective sample size collapses, and resampling clones
+that single particle four hundred times. The cloud now has one hypothesis. If the truth is not
+underneath it, there is nothing left to re-weight and no recovery is possible — the particle
+deprivation of [Chapter 12](/chapters/ch12-localization-global), arriving not from bad luck but from
+an overconfident model.
+
+<Deferred>
+  <TemperingLab />
+</Deferred>
+
+The knob in that widget, $\kappa$, is the honest way to talk about this. It does not change *what*
+the model says, only how loudly: $p(z \mid x, m)^\kappa$. And it is not an artificial device —
+[Chapter 10](/chapters/ch10-sensor-models) showed that treating $K$ correlated beams as independent
+multiplies every log-odds by roughly $K / K_{\text{eff}}$, which is *exactly* a tempering exponent
+greater than one that nobody chose and nobody wrote down.
+
+## The mathematics
+
+### Notation for this chapter
+
+<NotationTable
+  rows={[
+    { sym: '\\theta', meaning: 'Learnable parameters: network weights, log r and log q, a temperature — anything gradient descent may move.' },
+    { sym: '\\hat p_\\theta(z_t \\mid x_t, m)', meaning: 'A learned observation model. Must be a proper density in z_t: non-negative and integrating to one.' },
+    { sym: 'F_\\theta(z \\mid x)', meaning: 'Its predictive CDF. v = F_θ(z \\mid x) is the probability integral transform (PIT) of an observation.' },
+    { sym: 'S(q, z)', meaning: 'A scoring rule: the penalty a forecast density q pays when z materializes. Negatively oriented — lower is better.' },
+    { sym: '\\mathrm{ECE}', meaning: 'Expected calibration error: mean absolute distance between claimed and observed coverage, over B = 15 bins.' },
+    { sym: '\\kappa', meaning: 'Likelihood tempering exponent. Deliberately not γ, which is reserved for the discount factor.' },
+    { sym: '\\lambda', meaning: 'Soft-resampling mixture weight. Deliberately not α, which is reserved for motion-model noise.' },
+    { sym: '\\mathcal{L}(\\theta)', meaning: 'Training loss. The negative log score unless stated otherwise.' },
+    { sym: 's', meaning: 'Spread (sample standard deviation) of the per-particle log-likelihoods within a cloud.' },
+  ]}
+/>
+
+<Callout type="warn">
+One bridging note on $\kappa$. [Chapter 10](/chapters/ch10-sensor-models) writes the tempered
+likelihood as $p^{1/\kappa}$, with $\kappa \ge 1$ counting how many raw beams it takes to make one
+independent beam — a *discount*. This chapter writes $p^{\kappa}$, so that a single slider can pass
+continuously through $\kappa = 1$ from underconfident to overconfident. The two are reciprocals of
+each other: Chapter 10's $\kappa = 10$ is this chapter's $\kappa = 0.1$. Nothing else changes.
+</Callout>
+
+### Proper scoring rules
+
+You cannot train a model without a loss, and not every loss is safe. A scoring rule that a
+forecaster can improve by *misreporting* its beliefs is a machine for producing liars.
+
+<KeyIdea title="D25.1 — Proper scoring rule">
+A scoring rule $S(q, z)$ assigns a penalty to a forecast density $q$ when the value $z$
+materializes. It is **proper** if for every pair of densities $p$ and $q$,
+
+$$
+\E_{z \sim p}\!\left[S(p, z)\right] \;\le\; \E_{z \sim p}\!\left[S(q, z)\right],
+$$
+
+that is: honestly reporting your true belief $p$ is never worse than reporting anything else. It is
+**strictly proper** if equality holds only when $q = p$. The **log score**
+$S(q, z) = -\log q(z)$ is strictly proper.
+</KeyIdea>
+
+Strict propriety is what makes the negative log-likelihood the default training loss for anything
+that will live inside a Bayes filter: it is the loss whose unique optimum is *the truth*, so a model
+that minimizes it has no incentive left to shade its uncertainty in either direction.
+
+<Derivation title="F1 — Why the log score is strictly proper" result="E_p[−log q] = H(p) + KL(p ‖ q) ≥ H(p)">
+**Step 1 — write the expected score.** For a forecast $q$ evaluated on data drawn from the true
+density $p$,
+
+$$
+\E_{z \sim p}\!\left[-\log q(z)\right] = -\int p(z) \log q(z)\, dz .
+$$
+
+**Step 2 — add and subtract the entropy.** Insert $\log p(z) - \log p(z)$:
+
+<LinkedMath>
+$$
+-\int p \log q
+= \underbrace{-\int p \log p}_{\htmlClass{term-truth}{H(p)}}
++ \underbrace{\int p \log \frac{p}{q}}_{\htmlClass{term-measurement}{\KL(p \,\|\, q)}} .
+$$
+</LinkedMath>
+
+**Step 3 — Gibbs' inequality.** $\KL(p \,\|\, q) \ge 0$, by Jensen's inequality applied to the
+convex function $-\log$:
+
+$$
+\KL(p \,\|\, q) = \E_p\!\left[-\log \frac{q}{p}\right] \ge -\log \E_p\!\left[\frac{q}{p}\right] = -\log \int q = 0 .
+$$
+
+**Step 4 — the equality condition.** $-\log$ is *strictly* convex, so Jensen holds with equality
+only if $q/p$ is constant $p$-almost everywhere; since both integrate to one, that constant is one
+and $q = p$ almost everywhere. Hence the expected log score is uniquely minimized at the truth, with
+minimum value the entropy $H(p)$ — the irreducible part, which no model can score below.
+
+Two caveats worth stating. For continuous densities the score is a *differential* log score, so its
+absolute value carries an arbitrary unit convention (change metres to centimetres and every NLL in
+this chapter shifts by $\log 100$); only differences between models on the same data are meaningful.
+And the argument assumes $q > 0$ wherever $p > 0$ — a model that assigns zero density to something
+that happens takes an infinite penalty, which is the correct behavior and the reason every
+implementation in this book floors its densities before taking a logarithm. $\blacksquare$
+</Derivation>
+
+### Calibration, PIT, and ECE
+
+<KeyIdea title="D25.2 — Calibration of a density forecast">
+Let $F_\theta(\cdot \mid x)$ be the model's predictive CDF and let $(x_i, z_i)$ be observations from
+the world. The **probability integral transform** of observation $i$ is $v_i = F_\theta(z_i \mid x_i)$.
+The model is **calibrated** if the PIT values are uniformly distributed on $[0, 1]$:
+
+$$
+v_i \sim \mathcal{U}(0, 1) .
+$$
+
+Equivalently, for every level $p$, a fraction $p$ of observations fall at or below the model's
+$p$-quantile. The binary special case is the familiar one: among all events the model calls $70\%$
+likely, $70\%$ occur.
+</KeyIdea>
+
+The PIT is the whole diagnostic in one line, and it is worth seeing why it works. If $z$ really is
+drawn from the density the model claims, then $F(z)$ is uniform — the classic inverse-transform
+argument run backwards. So any structure in the histogram of PIT values is *evidence of
+misspecification*, and its shape names the defect:
+
+<NotationTable
+  rows={[
+    { sym: '\\text{flat}', meaning: 'Calibrated. Nothing to fix — improve it by making it sharper, if you can do so without bending this.' },
+    { sym: '\\text{U-shaped}', meaning: 'Forecast too narrow (overconfident). Observations keep landing in tails the model called empty.' },
+    { sym: '\\text{hump-shaped}', meaning: 'Forecast too wide (underconfident). The model hedges; it is honest but wasteful.' },
+    { sym: '\\text{tilted}', meaning: 'Biased. The predicted mean is systematically off — a modelling error, not an uncertainty error.' },
+  ]}
+/>
+
+One technical repair matters for range sensors. The beam model has an **atom**: a lump of
+probability mass $z_{max}$ sitting exactly on the maximum range. For a discontinuous CDF the plain
+PIT is not uniform even for a perfect model — every dropout beam would pile up at $v = 1$. The
+standard fix is the *randomized* PIT, which spreads each atom uniformly across the jump it makes:
+
+$$
+v = F_\theta(z^-) + u \cdot \left[F_\theta(z) - F_\theta(z^-)\right], \qquad u \sim \mathcal{U}(0,1) .
+$$
+
+For a continuous forecast $F(z^-) = F(z)$ and this reduces to the plain PIT, so it costs nothing to
+always use it. Skip it and you will spend an afternoon "fixing" the calibration of a model whose
+only sin was reporting dropouts honestly.
+
+<KeyIdea title="D25.3 — Expected calibration error">
+Bin the claims into $B$ bins. With $\mathrm{acc}(b)$ the observed frequency in bin $b$ and
+$\mathrm{conf}(b)$ the claimed probability,
+
+$$
+\mathrm{ECE} = \sum_{b=1}^{B} \frac{n_b}{N}\,\left|\,\mathrm{acc}(b) - \mathrm{conf}(b)\,\right| .
+$$
+
+This book uses $B = 15$ everywhere, following Guo et al. For a density forecast the natural binning
+is by nominal quantile level, $p_b = b/B$: every bin then holds the same number of claims,
+$n_b / N = 1/B$, and the ECE collapses to the mean absolute distance between the reliability curve
+and the diagonal. The **reliability diagram** is the plot of $\mathrm{acc}(b)$ against
+$\mathrm{conf}(b)$; ECE is its average vertical gap.
+</KeyIdea>
+
+<Algorithm
+  name="calibrate(model, D, B)"
+  inputs="a model with a predictive CDF, an evaluation set D = {(x_i, z_i)}, bin count B"
+  outputs="reliability bins, ECE, mean NLL, PIT histogram and its χ²"
+  complexity="O(N log N + B) — one CDF evaluation per observation, then a sort"
+>
+1. for all $(x_i, z_i) \in D$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$v_i = F_\theta(z_i^- \mid x_i) + u_i \left[F_\theta(z_i \mid x_i) - F_\theta(z_i^- \mid x_i)\right]$, $u_i \sim \mathcal{U}(0,1)$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\ell_i = -\log \hat p_\theta(z_i \mid x_i)$
+4. endfor
+5. for $b = 1$ to $B$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\mathrm{conf}(b) = b / B$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\mathrm{acc}(b) = \frac{1}{N}\left|\{\, i : v_i \le b/B \,\}\right|$
+8. endfor
+9. $\mathrm{ECE} = \frac{1}{B}\sum_b \left|\mathrm{acc}(b) - \mathrm{conf}(b)\right|$
+10. return bins, $\mathrm{ECE}$, $\frac{1}{N}\sum_i \ell_i$, histogram of $v$, $\chi^2$
+</Algorithm>
+
+The two numbers this returns are not redundant, and it is important to hold both:
+the **mean NLL** measures accuracy *and* sharpness together, and the **ECE** measures honesty alone.
+A model can win one and lose the other. The benchmark at the end of this chapter is a table in which
+exactly that happens.
+
+### Calibration and sharpness are different axes
+
+<Derivation title="F2 — Murphy's decomposition: reliability, resolution, uncertainty" result="BS = reliability − resolution + uncertainty">
+The clean version of the calibration/sharpness split lives on the Brier score, the squared-error
+scoring rule for a binary outcome: $\mathrm{BS} = \frac{1}{N}\sum_i (f_i - y_i)^2$ with
+$f_i \in [0,1]$ the forecast and $y_i \in \{0,1\}$ the outcome. It is strictly proper, and it
+decomposes exactly.
+
+**Step 1 — bin the forecasts.** Group the $N$ forecasts into $B$ bins, bin $b$ holding $n_b$ of
+them. Write $\bar f_b$ for the mean forecast in bin $b$, $\bar y_b$ for the observed frequency in
+bin $b$, and $\bar y$ for the overall base rate.
+
+**Step 2 — replace each forecast by its bin mean.** Within a bin, $f_i \approx \bar f_b$ (this is
+the estimator's only approximation, and the source of its binning bias). Then
+
+$$
+\mathrm{BS} \approx \frac{1}{N}\sum_b \sum_{i \in b} (\bar f_b - y_i)^2 .
+$$
+
+**Step 3 — add and subtract $\bar y_b$, then $\bar y$.** Inside bin $b$,
+
+$$
+(\bar f_b - y_i)^2 = (\bar f_b - \bar y_b)^2 + 2(\bar f_b - \bar y_b)(\bar y_b - y_i) + (\bar y_b - y_i)^2 ,
+$$
+
+and the cross term vanishes on summing over the bin, because $\sum_{i \in b}(\bar y_b - y_i) = 0$ by
+the definition of $\bar y_b$.
+
+**Step 4 — expand the last term the same way,** now around the base rate:
+$\frac{1}{n_b}\sum_{i \in b}(\bar y_b - y_i)^2 = \bar y_b(1 - \bar y_b)$, and
+$\sum_b \frac{n_b}{N}\bar y_b(1-\bar y_b) = \bar y(1-\bar y) - \sum_b \frac{n_b}{N}(\bar y_b - \bar y)^2$.
+
+**Step 5 — collect.**
+
+<LinkedMath>
+$$
+\mathrm{BS} =
+\underbrace{\sum_b \tfrac{n_b}{N} (\bar f_b - \bar y_b)^2}_{\htmlClass{term-measurement}{\text{reliability}}}
+- \underbrace{\sum_b \tfrac{n_b}{N} (\bar y_b - \bar y)^2}_{\htmlClass{term-posterior}{\text{resolution}}}
++ \underbrace{\bar y (1 - \bar y)}_{\htmlClass{term-truth}{\text{uncertainty}}} .
+$$
+</LinkedMath>
+
+**Reliability** is exactly what the reliability diagram plots — squared distance from the diagonal,
+lower is better. **Resolution** is sharpness that pays: how far the model's conditional frequencies
+move away from the base rate, higher is better. **Uncertainty** is the problem's own difficulty and
+no model changes it.
+
+The moral is the one Gneiting states as a principle. You may buy a better score with sharpness, but
+only while reliability stays near zero; a model that buys score by shrinking its intervals past what
+the data supports pays for it in reliability, and — this is the part the score itself hides — pays
+again downstream, where a Bayes filter compounds the overstatement across every update.
+$\blacksquare$
+</Derivation>
+
+### The tempered update, and what it costs
+
+<KeyIdea title="D25.4 — Tempered measurement update">
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)} = \eta\;
+\htmlClass{term-measurement}{p(z_t \mid x_t, m)^{\kappa}}\;
+\htmlClass{term-prediction}{\belbar(x_t)}
+$$
+</LinkedMath>
+
+$\kappa = 1$ is Bayes' rule. $\kappa > 1$ is overconfidence — the regime an independence-violating
+scan product and an overconfident learned model both land in. $\kappa < 1$ is the deliberate
+discount that buys honesty back.
+</KeyIdea>
+
+<Derivation title="F3 — Overconfidence poisons the filter, in two exact statements" result="Ω_t = Ω̄_t + κ HᵀQ⁻¹H   and   ESS/M ≈ e^(−κ²s²)">
+**Step 1 — tempering a Gaussian scales its precision.** For
+$p(z \mid x) = \Normal(z; H x, Q)$, raising to the power $\kappa$ gives
+
+$$
+p(z \mid x)^\kappa \propto \exp\left(-\tfrac{\kappa}{2}(z - Hx)\T Q^{-1} (z - Hx)\right),
+$$
+
+which is the same Gaussian in $x$ with $Q$ replaced by $Q/\kappa$. So in the information form of
+[Chapter 6](/chapters/ch06-kalman-filters), the update adds
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\Omega_t} = \htmlClass{term-prediction}{\bar\Omega_t} + \kappa\, H_t\T Q_t^{-1} H_t .
+$$
+</LinkedMath>
+
+**Step 2 — read what that means.** Claimed information grows *linearly* in $\kappa$ while the
+measurement carries exactly as much information as it did before. Ten correlated beams treated as
+independent produce a covariance $\sqrt{10}$ times too tight around an estimate that has not
+improved at all. Nothing in the filter's own output reveals this: the residuals shrink together with
+the covariance, which is precisely why [Chapter 11](/chapters/ch11-localization-gaussian) grades
+filters by NEES against ground truth and NIS against the innovations.
+
+**Step 3 — the particle-filter version is worse, because it is exponential.** Let $\ell_i$ be the
+per-particle log-likelihood within a cloud, with mean $\mu_\ell$ and spread $s$. Tempered weights
+are $w_i \propto e^{\kappa \ell_i}$, and
+
+$$
+\frac{\mathrm{ESS}}{M} = \frac{\left(\sum_i w_i\right)^2}{M \sum_i w_i^2}
+\;\xrightarrow[\;M \to \infty\;]{}\;
+\frac{\E\!\left[e^{\kappa \ell}\right]^2}{\E\!\left[e^{2\kappa \ell}\right]} .
+$$
+
+**Step 4 — evaluate with the Gaussian moment generating function.** If $\ell \sim \Normal(\mu_\ell, s^2)$
+then $\E[e^{t\ell}] = e^{t\mu_\ell + t^2 s^2/2}$, so the numerator is $e^{2\kappa\mu_\ell + \kappa^2 s^2}$,
+the denominator is $e^{2\kappa\mu_\ell + 2\kappa^2 s^2}$, and
+
+$$
+\boxed{\;\frac{\mathrm{ESS}}{M} \;\approx\; e^{-\kappa^2 s^2}\;}
+$$
+
+The mean cancels — only the *spread* of the log-likelihoods matters — and $\kappa$ enters squared,
+inside an exponential. With a spread of $s = 2$ nats across the cloud, $\kappa = 1$ leaves 1.8% of
+the population alive and $\kappa = 2$ leaves $3 \times 10^{-5}$ of it. This is the closed form the
+Tempering Lab's "predicted ESS" tile evaluates live, and the library's self-checks confirm it to
+within $0.016$ across $\kappa \in [0.5, 2]$.
+
+**Step 5 — connect it to the failure you can see.** An overconfident model widens $s$ just as surely
+as raising $\kappa$ does, because both scale the log-likelihood. Once $\mathrm{ESS}$ approaches one,
+resampling clones a single hypothesis and the filter's diversity is gone; the kidnapped-robot
+recovery of [Chapter 12](/chapters/ch12-localization-global) becomes impossible, not unlikely.
+$\blacksquare$
+</Derivation>
+
+The repair is one scalar, fitted on data the model has never seen.
+
+<Algorithm
+  name="fit_temperature(model, V)"
+  inputs="a trained model, a held-out validation set V"
+  outputs="the scale s minimizing validation loss"
+  complexity="O(|V|) per objective evaluation; ~50 evaluations for golden-section search"
+>
+1. define $\mathcal{L}(s) = \frac{1}{|V|}\sum_{(x,z) \in V} -\log \hat p_{\theta, s}(z \mid x)$
+2. &nbsp;&nbsp;&nbsp;&nbsp;where $\hat p_{\theta,s}$ is the model with its scale parameter multiplied by $s$
+3. $s^\star = \arg\min_s \mathcal{L}(s)$ by golden-section search on $\log s$
+4. return $s^\star$
+</Algorithm>
+
+Three properties make this the first thing to try and the last thing to skip. It has **one
+parameter**, so it cannot overfit a validation set of any reasonable size. It is fitted on
+**held-out** data, so it corrects the model rather than memorizing the training set. And for a
+density it does not reorder hypotheses at all — raising a Gaussian likelihood to the power $\kappa$
+is identical to scaling its width by $s = 1/\sqrt{\kappa}$, and neither operation moves the mode. It
+buys calibration without costing accuracy. That is why Guo et al.'s temperature scaling took over
+the classification literature, and it transposes to a range density without modification.
+
+### Learning the model from the model you already have
+
+Thrun et al.'s §9.3.2 recipe is still the right one, and it is worth stating in its modern form
+because it explains where a learned sensor model's training data comes from when the robot has no
+labels: **sample the forward model, fit the inverse.** You have a simulator, a map, and a physical
+model of the sensor; that is a generator of $(x, z)$ pairs at any volume you like.
+
+<Algorithm
+  name="learn_observation_model(sim, cfg)"
+  inputs="a forward simulator, a map, a model family p̂_θ, sample count N"
+  outputs="θ fitted by NLL descent, plus a fitted temperature"
+  complexity="O(N) per epoch; O(N log N) for the calibration pass"
+>
+1. $D = \emptyset$
+2. for $k = 1$ to $N$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;sample a pose $x^{[k]} \sim p(x)$ over the free space of $m$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$z^{*[k]} = \texttt{ray\_cast}(m, x^{[k]})$ &nbsp;&nbsp; // the noise-free expected range
+5. &nbsp;&nbsp;&nbsp;&nbsp;$z^{[k]} \sim p(z \mid z^{*[k]})$ &nbsp;&nbsp; // the forward model, §9.3.2
+6. &nbsp;&nbsp;&nbsp;&nbsp;$D = D \cup \{(z^{*[k]}, z^{[k]})\}$
+7. endfor
+8. split $D$ into $D_{\text{train}}, D_{\text{val}}, D_{\text{test}}$
+9. $\theta = \arg\min_\theta \sum_{D_{\text{train}}} -\log \hat p_\theta(z \mid z^*)$ &nbsp;&nbsp; // strictly proper, by F1
+10. $s = \texttt{fit\_temperature}(\hat p_\theta, D_{\text{val}})$
+11. return $\theta$, $s$, and $\texttt{calibrate}(\hat p_{\theta,s}, D_{\text{test}})$
+</Algorithm>
+
+<Callout type="warn">
+Line 5 is where the circularity lives, and this chapter will not pretend otherwise. A model trained
+on samples from a simulator and then evaluated against samples from the same simulator is calibrated
+*with respect to the simulator*. Everything measured in this chapter's widgets is of that kind. The
+only honest transfer test is the one the 1999 draft already describes in §9.3.4 — localize a real
+robot in a known environment and assemble training pairs from its recorded measurements — and it is
+still the expensive, correct answer in 2026.
+</Callout>
+
+### The filter is a differentiable program
+
+<KeyIdea title="D25.5 — Differentiable filter">
+A Bayes filter whose motion model, measurement model, and noise parameters are differentiable
+functions of $\theta$, trained by gradient descent on a loss over logged trajectories, with the
+gradient propagated *through the filter recursion itself*. The filter's structure is kept as an
+algorithmic prior; only the contents of its boxes are learned.
+</KeyIdea>
+
+The reason to care is not that gradient descent is fashionable. It is that hand-tuning $R_t$ and
+$Q_t$ is the single most common and least principled activity in applied estimation, and there is a
+loss function that does it properly — one that does not require ground truth.
+
+<Derivation title="F4 — Evidence via innovations: training without ground truth" result="log p(z_{1:T} | u_{1:T}, θ) = Σ_t log N(z_t; H_tµ̄_t, S_t)">
+**Step 1 — chain rule over time.** The joint likelihood of the whole measurement sequence
+factorizes with no approximation:
+
+$$
+p(z_{1:T} \mid u_{1:T}, \theta) = \prod_{t=1}^{T} p(z_t \mid z_{1:t-1}, u_{1:t}, \theta) .
+$$
+
+**Step 2 — recognize each factor.** $p(z_t \mid z_{1:t-1}, u_{1:t})$ is the one-step-ahead
+predictive density of the measurement — precisely the normalizer $\eta^{-1}$ that
+[Chapter 5](/chapters/ch05-bayes-filter) named the *evidence* and threw away.
+
+**Step 3 — in the linear-Gaussian case it is available in closed form.** The filter has already
+computed the predicted state $\bar\mu_t, \bar\Sigma_t$; pushing it through the measurement model
+gives
+
+<LinkedMath>
+$$
+z_t \mid z_{1:t-1} \;\sim\; \Normal\!\left(\htmlClass{term-prediction}{H_t \bar\mu_t},\;
+\htmlClass{term-measurement}{S_t}\right), \qquad
+S_t = H_t \bar\Sigma_t H_t\T + Q_t .
+$$
+</LinkedMath>
+
+**Step 4 — sum the logs.** With the innovation $\nu_t = z_t - H_t\bar\mu_t$,
+
+$$
+\mathcal{L}(\theta) = -\log p(z_{1:T} \mid u_{1:T}, \theta)
+= \frac{1}{2}\sum_{t=1}^{T}\left[\log \left|2\pi S_t\right| + \nu_t\T S_t^{-1} \nu_t\right] .
+$$
+
+Every quantity in that expression is something the filter already computes, and **not one of them is
+a state**. The loss is a function of measurements the robot actually took and predictions it
+actually made. Minimizing it is exactly *prediction-error identification* in the sense of classical
+system identification, and it is the reason a robot can learn its own noise parameters from an
+afternoon of driving with no motion-capture rig in sight.
+
+Two failure modes are worth naming. The loss is invariant to anything that leaves the predictive
+distribution unchanged, so parameters that only ever appear inside $S_t$ as a sum are not separately
+identifiable from a single measurement (see the worked example below). And a model that is
+*structurally* wrong can still minimize this loss by inflating $S_t$ until nothing is surprising —
+evidence training will happily hand you an honest, useless filter, which is a much better failure
+than a dishonest, useless one. $\blacksquare$
+</Derivation>
+
+<Derivation title="F5 — The gradient of the Kalman filter" result="∂K/∂θ = (∂σ̄² − K ∂S) / S">
+Take the scalar filter of [Chapter 6](/chapters/ch06-kalman-filters), with $x_t = a x_{t-1} + b u_t + w_t$,
+$w_t \sim \Normal(0, r)$, and $z_t = x_t + v_t$, $v_t \sim \Normal(0, q)$. Parameterize by
+$\theta = (\log r, \log q)$: the logs are not cosmetic, they enforce positivity through the
+parameterization, so gradient descent can never propose a negative variance.
+
+**Step 1 — the filter, as a composed map.** Five equations, all smooth in $\theta$:
+
+$$
+\bar\mu_t = a\mu_{t-1} + b u_t, \quad
+\bar\sigma^2_t = a^2\sigma^2_{t-1} + r, \quad
+S_t = \bar\sigma^2_t + q, \quad
+K_t = \frac{\bar\sigma^2_t}{S_t},
+$$
+$$
+\mu_t = \bar\mu_t + K_t \nu_t, \qquad \sigma^2_t = (1 - K_t)\,\bar\sigma^2_t .
+$$
+
+**Step 2 — differentiate the prediction.** Writing $\partial$ for $\partial/\partial\theta_p$ and
+using $\partial r/\partial \log r = r$:
+
+$$
+\partial\bar\mu_t = a\,\partial\mu_{t-1}, \qquad
+\partial\bar\sigma^2_t = a^2\,\partial\sigma^2_{t-1} + r\,[\theta_p = \log r] .
+$$
+
+**Step 3 — differentiate the innovation and the gain.** $\partial \nu_t = -\partial\bar\mu_t$ and
+$\partial S_t = \partial\bar\sigma^2_t + q\,[\theta_p = \log q]$, hence by the quotient rule
+
+$$
+\partial K_t = \frac{\partial\bar\sigma^2_t - K_t\, \partial S_t}{S_t} .
+$$
+
+This is the scalar instance of the matrix identity $\mathrm{d}S^{-1} = -S^{-1}(\mathrm{d}S)S^{-1}$,
+which is where the gradient of any Kalman gain comes from.
+
+**Step 4 — differentiate the update, and notice the recursion.**
+
+$$
+\partial\mu_t = \partial\bar\mu_t + \nu_t\,\partial K_t + K_t\,\partial\nu_t, \qquad
+\partial\sigma^2_t = (1-K_t)\,\partial\bar\sigma^2_t - \bar\sigma^2_t\,\partial K_t .
+$$
+
+The right-hand sides depend on $\partial\mu_{t-1}, \partial\sigma^2_{t-1}$: the sensitivities are
+carried forward alongside the state, one extra pair of numbers per parameter. With two parameters,
+this *forward-mode* recursion is cheaper than reverse-mode backpropagation through time and gives
+bit-identical gradients; with a network in the loop, reverse mode wins and an autodiff framework
+does exactly this bookkeeping for you.
+
+**Step 5 — differentiate the loss.** For the evidence loss of F4, each term contributes
+
+$$
+\partial\mathcal{L}_t = \frac{1}{2}\left[\left(1 - \frac{\nu_t^2}{S_t}\right)\frac{\partial S_t}{S_t}
++ \frac{2\nu_t\,\partial\nu_t}{S_t}\right] .
+$$
+
+Read the first bracket: when the squared innovation exceeds the claimed innovation variance
+($\nu_t^2 > S_t$, the filter was surprised), the coefficient is negative and descent *increases*
+$S_t$. When the filter is consistently unsurprised, it shrinks. Gradient descent on the evidence is
+a feedback controller whose set point is $\E[\nu_t^2] = S_t$ — the NIS consistency criterion of
+[Chapter 11](/chapters/ch11-localization-gaussian), arrived at from an entirely different direction.
+$\blacksquare$
+</Derivation>
+
+### A worked example you can check by hand
+
+Take the shortest possible trajectory: one step, $a = 1$, $b = 0$, a known initial state
+($\mu_0 = 0$, $\sigma_0 = 0$), and unit noise parameters $r = q = 1$, so $\theta = (\log r, \log q) = (0, 0)$.
+The robot reads $z_1 = 2$.
+
+Run the filter:
+
+$$
+\bar\mu_1 = 0, \qquad \bar\sigma_1^2 = 0 + r = 1, \qquad
+\nu_1 = 2 - 0 = 2, \qquad S_1 = 1 + 1 = 2, \qquad K_1 = \tfrac{1}{2} .
+$$
+
+The evidence loss is one Gaussian term:
+
+$$
+\mathcal{L} = \tfrac{1}{2}\left[\log(2\pi S_1) + \frac{\nu_1^2}{S_1}\right]
+= \tfrac{1}{2}\left[\log 4\pi + 2\right] = 2.265512\ \text{nats}.
+$$
+
+Now the gradients. Since $\sigma_0 = 0$, the prediction $\bar\mu_1$ does not depend on $\theta$ at
+all, so $\partial \nu_1 = 0$ and only the first bracket of F5 Step 5 survives. With
+$\partial S_1/\partial \log r = r = 1$ and $\partial S_1/\partial \log q = q = 1$:
+
+$$
+\frac{\partial \mathcal{L}}{\partial \log r}
+= \tfrac{1}{2}\left(1 - \frac{4}{2}\right)\cdot\frac{1}{2} = -\tfrac{1}{4},
+\qquad
+\frac{\partial \mathcal{L}}{\partial \log q} = -\tfrac{1}{4} .
+$$
+
+Both gradients are negative, so descent grows both variances: the filter was surprised — a
+$\nu = 2$ innovation against a claimed $S = 2$ is a $1.41\sigma$ event whose square is twice the
+claimed variance — and the honest response is to admit more uncertainty.
+
+And the two gradients are *equal*, which is the lesson hiding in the arithmetic. After one step from
+a known initial state, the loss depends on $\theta$ only through the sum $S_1 = r + q$: no single
+measurement can tell process noise from measurement noise. What separates them is **time**. Process
+noise accumulates across steps and measurement noise does not, so the autocorrelation of the
+innovation sequence carries the information that identifies the split — which is why the trainer
+below needs a few hundred steps of trajectory, not a few.
+
+<Algorithm
+  name="train_dkf(traj_log, loss, lr, epochs)"
+  inputs="a logged trajectory (u_{1:T}, z_{1:T}), a loss ∈ {evidence, state-NLL}, learning rate, epochs"
+  outputs="θ = (log r, log q)"
+  complexity="O(T(n³ + m³)) per epoch per trajectory; O(T) for the scalar filter"
+>
+1. initialize $\theta$
+2. for epoch $= 1$ to epochs do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{L} = 0$, $\;\partial\mu = 0$, $\;\partial\sigma^2 = 0$, $\;g = 0$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for $t = 1$ to $T$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;run one filter step, propagating $(\partial\mu, \partial\sigma^2)$ by F5
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{L} \mathrel{+}= \frac{1}{2}\left[\log 2\pi S_t + \nu_t^2/S_t\right]$ &nbsp;&nbsp; // evidence: no ground truth
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$g \mathrel{+}= \partial \mathcal{L}_t$ &nbsp;&nbsp; // F5, Step 5
+8. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+9. &nbsp;&nbsp;&nbsp;&nbsp;$\theta \leftarrow \theta - \text{lr} \cdot g$
+10. endfor
+11. return $\theta$
+</Algorithm>
+
+<Deferred>
+  <DifferentiableFilterTrainer />
+</Deferred>
+
+Two things in that widget deserve more than a glance. The trainer starts with a filter that believes
+the cart is wildly unpredictable and the sensor is nearly perfect — the classic tuning mistake, in
+both directions at once — and the purple band is far too tight for it. As the loss falls, the band
+breathes out to a width that *contains the truth about 95% of the time*, and the mean NEES walks to
+1. Nobody told it what 1 was. The evidence loss never saw the gray dashed line.
+
+And the "cheat" toggle is there to make the alternative concrete. With ground truth you can minimize
+the state NLL directly, which is what a differentiable filter trained in simulation usually does. It
+converges faster and to a slightly different place, and it is unavailable on any robot that is not
+in a motion-capture room. When someone reports a learned filter that was trained on state
+supervision and deployed without it, this toggle is the question to ask them.
+
+### Where the gradient dies
+
+Everything above differentiates cleanly because the Kalman filter is a chain of smooth functions.
+Particle filters are not: they contain a categorical draw, and a categorical draw has no useful
+derivative.
+
+<Derivation title="F6 — Soft resampling carries gradient, and λ is exactly what it costs" result="q(i) = λwᵢ + (1−λ)/M,  w′ᵢ = wᵢ / q(i)">
+**Step 1 — why resampling has no gradient.** Multinomial or low-variance resampling maps weights to
+a multiset of surviving indices, then sets every surviving weight to $1/M$. Nudge one weight by
+$\epsilon$ and, almost surely, the same indices survive with the same new weights: the map is
+piecewise constant, so its derivative is zero almost everywhere and undefined on a measure-zero set
+of ties. A gradient travelling backwards from the loss reaches the first resample node and stops.
+
+**Step 2 — why the reparameterization trick does not save you.** For a Gaussian you can write
+$x = \mu + \sigma\epsilon$ and push the gradient through the sample. A categorical distribution has
+no such smooth reparameterization: the outcome is an index, and indices do not interpolate.
+
+**Step 3 — move the dependence into the weight instead.** Draw indices from a *mixture* of the
+weights and the uniform,
+
+<LinkedMath>
+$$
+q(i) = \lambda\, \htmlClass{term-measurement}{w^{[i]}} + \frac{1 - \lambda}{M},
+$$
+</LinkedMath>
+
+and correct with the importance ratio $w'^{[i]} = w^{[i]} / q(i)$. Unbiasedness is one line: for any
+test function $f$,
+
+$$
+\E_{i \sim q}\!\left[w'^{[i]} f(x^{[i]})\right]
+= \sum_i q(i)\,\frac{w^{[i]}}{q(i)}\, f(x^{[i]})
+= \sum_i w^{[i]} f(x^{[i]}) ,
+$$
+
+which is the pre-resampling estimator, exactly, for every $\lambda \in (0, 1]$.
+
+**Step 4 — measure the gradient that survives.** Differentiating the log of $w'$ with respect to the
+log of $w$,
+
+$$
+\frac{\partial \log w'^{[i]}}{\partial \log w^{[i]}}
+= 1 - \frac{\lambda w^{[i]}}{q(i)} = \frac{(1-\lambda)/M}{q(i)} ,
+$$
+
+and averaging under the proposal that actually draws the indices, the $q(i)$ cancels:
+
+$$
+\E_{i \sim q}\!\left[\frac{\partial \log w'^{[i]}}{\partial \log w^{[i]}}\right]
+= \sum_i q(i) \cdot \frac{(1-\lambda)/M}{q(i)} = 1 - \lambda .
+$$
+
+So $\lambda$ is not merely *related* to how much gradient crosses a resample node — in expectation it
+**is** the fraction that dies, whatever the weights are. At $\lambda = 1$ (the classical resampler)
+nothing survives; at $\lambda = 0$ everything does, and the "resampler" has become plain importance
+sampling that never concentrates its particles at all. A filter unrolled over $T$ resamples
+transmits $(1-\lambda)^T$: gradients from the distant past are gone regardless, which is one honest
+reason differentiable particle filters are trained on short windows. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="soft_resample(X_t, λ, rng)"
+  inputs="a weighted particle set, mixture weight λ ∈ [0,1], a seeded RNG"
+  outputs="M particles with importance weights w′ that depend smoothly on w"
+  complexity="O(M) — the low-variance comb of Table 4.4, stepped through q instead of w"
+>
+1. normalize $w^{[i]}$ so that $\sum_i w^{[i]} = 1$
+2. $q(i) = \lambda w^{[i]} + (1-\lambda)/M$ for all $i$
+3. $r \sim \mathcal{U}(0; M^{-1})$, $\;c = q(1)$, $\;i = 1$
+4. for $m = 1$ to $M$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;$U = r + (m-1)\cdot M^{-1}$
+6. &nbsp;&nbsp;&nbsp;&nbsp;while $U > c$ do $i = i + 1$; $c = c + q(i)$ endwhile
+7. &nbsp;&nbsp;&nbsp;&nbsp;add $x^{[i]}$ to $\bar{\mathcal{X}}_t$ with weight $w'^{[i]} = w^{[i]} / q(i)$
+8. endfor
+9. return $\bar{\mathcal{X}}_t$
+</Algorithm>
+
+<Deferred>
+  <ResamplingGradientMicroscope />
+</Deferred>
+
+### Learning to act: distributions over actions
+
+The chapter's thesis has a control-side sibling. [Chapter 23](/chapters/ch23-mppi) already samples
+action sequences and weights them; a **diffusion policy** learns the sampler.
+
+<KeyIdea title="D25.6 — Diffusion policy">
+An action model $\pi_\theta(u_{t:t+H} \mid o_t)$ represented as a learned reverse-diffusion process.
+Forward noising is fixed,
+$q(u^{k} \mid u^{k-1}) = \Normal(\sqrt{1-\beta_k}\,u^{k-1},\, \beta_k I)$; training minimizes the
+denoising objective
+
+$$
+\mathcal{L}(\theta) = \E_{k,\,\epsilon}\!\left[\left\|\epsilon - \epsilon_\theta(u^{k}, k, o_t)\right\|^2\right],
+$$
+
+a bound on the negative log-likelihood of the demonstrated actions. Sampling an action sequence
+means iteratively denoising Gaussian noise conditioned on the observation.
+</KeyIdea>
+
+The argument for it is the argument for particle filters, transposed. Suppose an obstacle can be
+passed on the left or on the right, and the demonstrations show both. A policy trained to regress
+the mean action drives straight into the obstacle — the average of two good plans is not a plan.
+Learning a *sampler* preserves the two modes, and the robot commits to one of them.
+
+That is genuinely in the spirit of this book: represent what you cannot summarize. But note the
+asymmetry, because it is the reason this section is short and has no widget. A diffusion policy is a
+sampler, not a density: you can draw actions from it, but you cannot cheaply evaluate the
+probability of an action, so it does not compose with Bayes' rule the way a calibrated sensor model
+does. Everything else in this chapter can be multiplied into a belief. This cannot. The full
+derivation of the diffusion ELBO is out of scope here, and the honest reference is
+[Chi et al.](#references), whose IJRR version is the standard treatment.
+
+## Implementation in Rust
+
+Three modules carry the chapter: the instrument, the learned model, and the trainer.
+
+### The instrument
+
+Calibration is model-agnostic on purpose. Grading consumes PIT values and log scores, never a model,
+so the same code grades a hand-tuned mixture, a network, and a Kalman filter's innovation sequence.
+
+```rust title="crates/ch25_learning/src/calib.rs" {14-19,55-63}
+use rand::Rng;
+
+/// Anything that can serve the Bayes filter as p(z | x, m).
+///
+/// Chapter 10's `BeamModel` and `LikelihoodField` implement it, and so does
+/// this chapter's `LearnedBeamModel`. The second and third methods are what
+/// make a model *auditable*: a density you cannot integrate is a density you
+/// cannot grade, and an atom you do not declare will masquerade as a defect.
+pub trait ObservationModel {
+    /// log p(z | x, m) for a whole scan — what the filter multiplies in.
+    fn log_likelihood(&self, z: &Scan, x: &Se2, m: &OccGrid) -> f64;
+
+    /// Per-beam predictive CDF F(z_k | z*), needed for the PIT.
+    fn beam_cdf(&self, z_k: f64, z_star: f64) -> f64;
+
+    /// Mass of the atom at `z_k`, if the model has one. The beam mixture's
+    /// max-range spike is an atom; a likelihood field has none.
+    fn beam_atom(&self, _z_k: f64) -> f64 {
+        0.0
+    }
+}
+
+pub const N_BINS: usize = 15;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReliabilityBin {
+    pub nominal: f64,
+    pub empirical: f64,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CalibrationReport {
+    pub bins: [ReliabilityBin; N_BINS],
+    /// D25.3, in the quantile-binned form: mean |observed − claimed|.
+    pub ece: f64,
+    /// Largest gap from the diagonal — the Kolmogorov statistic.
+    pub max_calibration_error: f64,
+    /// Mean negative log score, nats per beam. Accuracy *and* sharpness.
+    pub mean_nll: f64,
+    /// Pearson χ² of the PIT histogram against uniform, N_BINS − 1 d.o.f.
+    pub pit_chi2: f64,
+}
+
+/// Randomized PIT: spread each atom uniformly across the jump it makes, so a
+/// dropout beam does not pile up at v = 1 and look like miscalibration.
+pub fn randomized_pit<M: ObservationModel>(
+    model: &M,
+    z_k: f64,
+    z_star: f64,
+    rng: &mut impl Rng,
+) -> f64 {
+    let upper = model.beam_cdf(z_k, z_star);
+    let lower = upper - model.beam_atom(z_k);
+    (lower + rng.random::<f64>() * (upper - lower)).clamp(0.0, 1.0)
+}
+
+pub fn calibrate<M: ObservationModel>(
+    model: &M,
+    eval: &[(f64, f64)], // (z*, z) pairs from a held-out set
+    log_density: impl Fn(f64, f64) -> f64,
+    rng: &mut impl Rng,
+) -> CalibrationReport {
+    let mut pit: Vec<f64> = eval
+        .iter()
+        .map(|&(z_star, z)| randomized_pit(model, z, z_star, rng))
+        .collect();
+    let mean_nll = -eval
+        .iter()
+        .map(|&(z_star, z)| log_density(z, z_star))
+        .sum::<f64>()
+        / eval.len() as f64;
+
+    // Sorting turns every empirical-CDF query into an O(1) index lookup.
+    pit.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = pit.len() as f64;
+
+    let mut bins = [ReliabilityBin { nominal: 0.0, empirical: 0.0, count: 0 }; N_BINS];
+    let (mut ece, mut worst) = (0.0, 0.0_f64);
+    for b in 0..N_BINS {
+        let nominal = (b + 1) as f64 / N_BINS as f64;
+        let count = pit.partition_point(|&v| v <= nominal);
+        let empirical = count as f64 / n;
+        let gap = (empirical - nominal).abs();
+        ece += gap / N_BINS as f64;
+        worst = worst.max(gap);
+        bins[b] = ReliabilityBin { nominal, empirical, count };
+    }
+
+    // χ² of the histogram (not the CDF) against a uniform expectation.
+    let expected = n / N_BINS as f64;
+    let mut counts = [0usize; N_BINS];
+    for &v in &pit {
+        counts[((v * N_BINS as f64) as usize).min(N_BINS - 1)] += 1;
+    }
+    let pit_chi2 = counts
+        .iter()
+        .map(|&c| (c as f64 - expected).powi(2) / expected)
+        .sum();
+
+    CalibrationReport { bins, ece, max_calibration_error: worst, mean_nll, pit_chi2 }
+}
+```
+
+### The learned model
+
+The hand-tuned beam model claims one $\sigma_{hit}$ for every range, which is false on every real
+LiDAR: a beam returning from 7 m is not the beam returning from 70 cm. The learned model makes the
+mixture parameters *functions of the expected range* — a two-layer MLP that emits four mixture
+logits and a log-width, trained by the NLL that F1 licensed.
+
+The design decision worth recording: training happens natively with `candle`; the browser never
+trains a net. Inference is a dependency-free forward pass — two matrix multiplies and a GELU — so the
+same weights run in the WASM widget with no framework attached.
+
+```rust title="crates/ch25_learning/src/learned_beam.rs" {30-45}
+use candle_core::{DType, Device, Result, Tensor};
+use candle_nn::{loss, AdamW, Linear, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap};
+
+/// Learned per-beam range density: MLP(z*) -> (mixture logits, log σ_hit).
+///
+/// The *shape* of the mixture is kept from Chapter 10 — hit, short, max, rand —
+/// because that structure is physics and the network has nothing better to
+/// offer. What is learned is how the four weights and the hit width vary with
+/// range, which is exactly the part the hand-tuned model got wrong.
+pub struct BeamNet {
+    l1: Linear,
+    l2: Linear,
+    max_range: f64,
+}
+
+impl BeamNet {
+    pub fn new(vb: VarBuilder, hidden: usize) -> Result<Self> {
+        Ok(Self {
+            l1: candle_nn::linear(2, hidden, vb.pp("l1"))?,
+            l2: candle_nn::linear(hidden, 5, vb.pp("l2"))?,
+            max_range: 8.0,
+        })
+    }
+
+    /// Features are deliberately dimensionless: a network trained on metres and
+    /// deployed on a sensor with a different range would otherwise extrapolate.
+    fn features(&self, z_star: &Tensor) -> Result<Tensor> {
+        let u = (z_star / self.max_range)?;
+        Tensor::cat(&[&u, &u.sqrt()?], 1)
+    }
+
+    /// Negative log-likelihood of a batch under the predicted mixture. This is
+    /// the strictly proper log score of D25.1 — nothing else is trained.
+    pub fn nll(&self, z_star: &Tensor, z: &Tensor) -> Result<Tensor> {
+        let out = self.l2.forward(&self.l1.forward(&self.features(z_star)?)?.gelu()?)?;
+        let logits = out.narrow(1, 0, 4)?;
+        let log_w = candle_nn::ops::log_softmax(&logits, 1)?; // weights on the simplex
+        let sigma = (out.narrow(1, 4, 1)?.exp()? + 1e-3)?; // positivity by construction
+
+        // log of each component density, then log-sum-exp against the weights.
+        let comps = Tensor::cat(
+            &[
+                self.log_hit(z, z_star, &sigma)?,
+                self.log_short(z, z_star)?,
+                self.log_max(z)?,
+                self.log_rand(z)?,
+            ],
+            1,
+        )?;
+        let log_mix = (comps + log_w)?.log_sum_exp(1)?;
+        log_mix.neg()?.mean_all()
+    }
+}
+
+/// One epoch of `learn_observation_model`, lines 8–9.
+pub fn train(pairs: &[(f64, f64)], epochs: usize, dev: &Device) -> Result<VarMap> {
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F64, dev);
+    let net = BeamNet::new(vb, 64)?;
+    let mut opt = AdamW::new(varmap.all_vars(), ParamsAdamW { lr: 1e-3, ..Default::default() })?;
+
+    let z_star = Tensor::from_iter(pairs.iter().map(|p| p.0), dev)?.reshape((pairs.len(), 1))?;
+    let z = Tensor::from_iter(pairs.iter().map(|p| p.1), dev)?.reshape((pairs.len(), 1))?;
+
+    for _ in 0..epochs {
+        let loss = net.nll(&z_star, &z)?;
+        opt.backward_step(&loss)?;
+    }
+    Ok(varmap)
+}
+```
+
+### The trainer
+
+`DiffKf1d` is the whole of F5, transcribed. It is about forty lines, it has no dependencies, and it
+is the engine the trainer widget runs in the browser — the derivation *is* the source code.
+
+```rust title="crates/ch25_learning/src/diff_kf.rs" {33-38,46-52}
+/// A scalar Kalman filter with θ = (log r, log q) exposed and differentiated.
+///
+/// Logs, not variances, so that descent cannot propose a negative variance:
+/// the constraint lives in the parameterization rather than in a clamp.
+pub struct DiffKf1d {
+    pub log_r: f64,
+    pub log_q: f64,
+}
+
+pub enum DkfLoss {
+    /// F4. Scored on one-step-ahead predictions of measurements the robot took.
+    Evidence,
+    /// The supervised alternative: available in simulation and motion capture,
+    /// and nowhere else.
+    StateNll,
+}
+
+impl DiffKf1d {
+    /// Loss and its exact gradient in a single forward pass (F5).
+    pub fn loss_and_grad(&self, log: &TrajLog1d, loss: DkfLoss) -> (f64, f64, f64) {
+        let (r, q) = (self.log_r.exp(), self.log_q.exp());
+        let (a, b) = (log.a, log.b);
+
+        let (mut mu, mut sigma2) = (log.mu0, log.sigma0 * log.sigma0);
+        // Sensitivities ∂(μ, σ²)/∂θ. The initial belief is given, not learned.
+        let (mut d_mu, mut d_sig) = ([0.0_f64; 2], [0.0_f64; 2]);
+        let (mut total, mut grad) = (0.0, [0.0_f64; 2]);
+
+        for t in 0..log.z.len() {
+            let u = log.u.get(t).copied().unwrap_or(0.0);
+
+            let mu_bar = a * mu + b * u;
+            let sigma2_bar = a * a * sigma2 + r;
+            let d_mu_bar = [a * d_mu[0], a * d_mu[1]];
+            // ∂r/∂log r = r, ∂r/∂log q = 0.
+            let d_sig_bar = [a * a * d_sig[0] + r, a * a * d_sig[1]];
+
+            let nu = log.z[t] - mu_bar;
+            let s = sigma2_bar + q;
+            let d_nu = [-d_mu_bar[0], -d_mu_bar[1]];
+            let d_s = [d_sig_bar[0], d_sig_bar[1] + q];
+
+            let k = sigma2_bar / s;
+            let d_k = [
+                (d_sig_bar[0] - k * d_s[0]) / s,
+                (d_sig_bar[1] - k * d_s[1]) / s,
+            ];
+
+            let mu_new = mu_bar + k * nu;
+            let sigma2_new = (1.0 - k) * sigma2_bar;
+
+            match loss {
+                DkfLoss::Evidence => {
+                    total += 0.5 * ((core::f64::consts::TAU * s).ln() + nu * nu / s);
+                    for p in 0..2 {
+                        // Negative when ν² > S: descent widens a surprised filter.
+                        grad[p] += 0.5 * ((1.0 - nu * nu / s) * (d_s[p] / s) + 2.0 * nu * d_nu[p] / s);
+                    }
+                }
+                DkfLoss::StateNll => {
+                    let e = log.x[t] - mu_new;
+                    total += 0.5 * ((core::f64::consts::TAU * sigma2_new).ln() + e * e / sigma2_new);
+                    for p in 0..2 {
+                        let d_mu_new = d_mu_bar[p] + d_k[p] * nu + k * d_nu[p];
+                        let d_sig_new = (1.0 - k) * d_sig_bar[p] - d_k[p] * sigma2_bar;
+                        grad[p] += 0.5
+                            * ((1.0 - e * e / sigma2_new) * (d_sig_new / sigma2_new)
+                                - 2.0 * e * d_mu_new / sigma2_new);
+                    }
+                }
+            }
+
+            d_mu = [
+                d_mu_bar[0] + d_k[0] * nu + k * d_nu[0],
+                d_mu_bar[1] + d_k[1] * nu + k * d_nu[1],
+            ];
+            d_sig = [
+                (1.0 - k) * d_sig_bar[0] - d_k[0] * sigma2_bar,
+                (1.0 - k) * d_sig_bar[1] - d_k[1] * sigma2_bar,
+            ];
+            mu = mu_new;
+            sigma2 = sigma2_new;
+        }
+
+        (total, grad[0], grad[1])
+    }
+}
+```
+
+Soft resampling is the same low-variance comb as Thrun's Table 4.4, walked through $q$ instead of
+$w$, with the importance ratio attached to each survivor:
+
+```rust title="crates/ch25_learning/src/soft_resample.rs"
+use rand::Rng;
+
+/// `soft_resample(X_t, λ, rng)` — F6. Additive: `ParticleFilter` opts in by
+/// calling this instead of `low_variance_sampler`, and nothing else changes.
+pub fn soft_resample<S: Clone>(
+    particles: &mut Vec<Particle<S>>,
+    lambda: f64,
+    rng: &mut impl Rng,
+) -> f64 {
+    let m = particles.len();
+    let total: f64 = particles.iter().map(|p| p.weight).sum();
+    let w: Vec<f64> = particles.iter().map(|p| p.weight / total).collect();
+    let lambda = lambda.clamp(0.0, 1.0);
+    let q: Vec<f64> = w.iter().map(|wi| lambda * wi + (1.0 - lambda) / m as f64).collect();
+
+    let step = 1.0 / m as f64;
+    let start = rng.random_range(0.0..step);
+    let (mut out, mut acc, mut i, mut transmission) = (Vec::with_capacity(m), q[0], 0usize, 0.0);
+
+    for k in 0..m {
+        let u = start + k as f64 * step;
+        while u > acc && i < m - 1 {
+            i += 1;
+            acc += q[i];
+        }
+        out.push(Particle { state: particles[i].state.clone(), weight: w[i] / q[i] });
+        // ∂ log w′ᵢ / ∂ log wᵢ — the fraction of the gradient this survivor passes.
+        transmission += ((1.0 - lambda) / m as f64) / q[i];
+    }
+
+    *particles = out;
+    transmission / m as f64 // ≈ 1 − λ, exactly, in expectation
+}
+```
+
+### The tests that pin it
+
+```rust title="crates/ch25_learning/src/diff_kf.rs (tests)"
+#[test]
+fn worked_example_ch25_one_step_evidence() {
+    // One step, r = q = 1, σ₀ = 0, z₁ = 2 — the example derived in the text.
+    let log = TrajLog1d { a: 1.0, b: 0.0, u: vec![0.0], z: vec![2.0], x: vec![0.0],
+                          mu0: 0.0, sigma0: 0.0 };
+    let kf = DiffKf1d { log_r: 0.0, log_q: 0.0 };
+
+    let (loss, d_log_r, d_log_q) = kf.loss_and_grad(&log, DkfLoss::Evidence);
+
+    // L = ½(ln 4π + 2) = 2.265512…
+    assert_relative_eq!(loss, 0.5 * ((4.0 * PI).ln() + 2.0), epsilon = 1e-12);
+    // Equal and negative: the filter was surprised, and one measurement cannot
+    // separate process noise from measurement noise.
+    assert_relative_eq!(d_log_r, -0.25, epsilon = 1e-12);
+    assert_relative_eq!(d_log_q, -0.25, epsilon = 1e-12);
+}
+
+#[test]
+fn analytic_gradient_matches_central_differences() {
+    let log = simulate_traj_1d(120, 0.96, 0.1, 0.05, 0.4, &mut SmallRng::seed_from_u64(2025));
+    for loss in [DkfLoss::Evidence, DkfLoss::StateNll] {
+        for theta in [(-1.5, 0.4), (0.3, -0.8), (-3.0, -3.0)] {
+            let kf = DiffKf1d { log_r: theta.0, log_q: theta.1 };
+            let (_, g_r, g_q) = kf.loss_and_grad(&log, loss);
+            let (fd_r, fd_q) = finite_diff_grad(&kf, &log, loss, 1e-5);
+            assert_relative_eq!(g_r, fd_r, max_relative = 1e-5);
+            assert_relative_eq!(g_q, fd_q, max_relative = 1e-5);
+        }
+    }
+}
+
+#[test]
+fn evidence_training_recovers_the_noises_without_ground_truth() {
+    // 1500 steps generated with r = 0.08, q = 0.25; start deliberately wrong
+    // in both directions and never look at `log.x`.
+    let log = simulate_traj_1d(1500, 1.0, 0.05, 0.08, 0.25, &mut SmallRng::seed_from_u64(1234));
+    let mut kf = DiffKf1d { log_r: 0.4_f64.ln(), log_q: 0.02_f64.ln() };
+    for _ in 0..12_000 {
+        kf.sgd_step(&log, DkfLoss::Evidence, 0.05 / log.z.len() as f64);
+    }
+    assert!((kf.log_r.exp() / 0.08).ln().abs() < 0.2); // r → 0.085
+    assert!((kf.log_q.exp() / 0.25).ln().abs() < 0.1); // q → 0.250
+}
+```
+
+<Callout type="info">
+All three tests have twins in the TypeScript port that drives the widgets on this page
+(`lib/learn/__checks_ch25__.ts`, eleven invariants, all passing). The last one is the chapter's real
+claim in executable form: starting from $r$ five times too large and $q$ twelve times too small, and
+using nothing but the measurements, the trainer lands on $r = 0.0848$ against a true $0.08$ and
+$q = 0.2497$ against a true $0.25$.
+</Callout>
+
+## Putting it together: the clinic benchmark
+
+The chapter's empirical thesis needs a table, and the table is generated by `cargo run --example clinic`
+— the same computation the Calibration Clinic runs live in your browser, so every number here is one
+you can reproduce by clicking a button in the widget above.
+
+The setup: the true sensor is a beam mixture with $\sigma_{hit} = 0.11$ m and a real
+unexpected-obstacle component ($z_{short} = 0.08$). The model family available to the engineer is
+mis-specified — it has no $z_{short}$ at all. Held-out evaluation is 1200 beams from random poses in
+the Apartment; downstream is one importance-weighting step over twelve 150-particle clouds, each
+displaced about 42 cm from the truth.
+
+| model | claimed $\sigma_{hit}$ | held-out NLL | ECE | ESS after one update | posterior error |
+|---|---|---|---|---|---|
+| hand-tuned (the Tuesday afternoon) | 0.050 m | 0.937 | 0.1074 | 0.99% | 0.292 m |
+| EM, `learn_intrinsic_parameters` | 0.112 m | **0.290** | 0.0286 | 1.20% | 0.170 m |
+| best held-out NLL, width only | 0.113 m | 0.352 | 0.0248 | 1.20% | 0.172 m |
+| + fitted temperature (held-out NLL) | 0.115 m | 0.352 | 0.0226 | 1.23% | 0.171 m |
+| + temperature fitted for calibration | 0.142 m | 0.381 | **0.0143** | **1.62%** | **0.162 m** |
+| the true sensor (unavailable in practice) | 0.110 m | 0.223 | 0.0209 | 1.18% | 0.157 m |
+
+Read the last three rows against each other, because that is the entire chapter in six numbers.
+
+**The best likelihood is not the best filter.** EM wins the NLL column decisively — it is the only
+model here that fits the mixture weights as well as the width — and it still loses the posterior-error
+column to a model with a *worse* NLL by 0.09 nats. The widened, best-calibrated model gives up
+score in exchange for honesty, and honesty is what the filter downstream converts into accuracy: a
+60% larger effective sample size and 5% less error, from a model that any leaderboard would rank
+below the one it beats.
+
+**Overconfidence is expensive and calibration is cheap.** The hand-tuned model is not subtly worse.
+It is 4.5× the ECE of anything fitted, and it leaves the posterior 0.292 m from the truth when the
+prior was already only 0.424 m away — it converts a scan into a third of the correction it should
+have bought. Fixing it required no retraining and no new data: one scalar, fitted on 800 held-out
+beams, in about fifty function evaluations.
+
+**And the honest model still wins on score.** The true sensor's NLL of 0.223 is far below everything
+else, and no amount of temperature scaling closes that gap, because tempering cannot invent the
+$z_{short}$ component the family is missing. Calibration is a repair, not a substitute for getting
+the structure right. That is worth saying loudly in a chapter about learning: the largest single
+improvement available in this table comes from *the model family*, not from the fitting procedure.
+
+### The honesty ledger
+
+The chapter closes where it should — with a line drawn between what is principled and what is
+alchemy, as of 2026.
+
+**Principled.** A learned component that emits a *calibrated density* and is dropped into an
+unchanged Bayes filter: this is just a better $p(z_t \mid x_t, m)$, and every theorem in Parts II
+through V still holds. Training noise parameters by maximizing evidence, which is prediction-error
+identification with a fifty-year pedigree and needs no ground truth. Post-hoc calibration on
+held-out data, which has one parameter and cannot lie to you in any interesting way. Differentiable
+filters that keep the filter's structure as an algorithmic prior and learn only its contents.
+
+**Still alchemy.** End-to-end "filters" whose belief is a vector of activations that nobody has
+graded — if you cannot draw its reliability diagram, do not call it a posterior. Learned resampling
+heuristics published without a variance analysis. Sim-to-real transfer of learned sensor models: our
+own learned model was trained in the simulator that also evaluates it, which is exactly the
+circularity flagged after `learn_observation_model`, and no reliability diagram computed inside the
+simulator says anything about the building. And diffusion policies' uncertainty: they are samplers,
+not densities, so they do not compose with Bayes' rule, and a policy that produces diverse actions is
+not thereby a policy that knows what it does not know.
+
+A useful sanity check before adopting any of this: Greenberg, Yannay and Mannor (NeurIPS 2023) showed
+that a Kalman filter *optimized as carefully as the network it is compared against* closes much of
+the reported gap in the differentiable-filtering literature. The technique in this chapter — train
+the classical filter's parameters properly — is also the baseline that most learned filters should
+have been compared against.
+
+[Chapter 26](/chapters/ch26-capstone) puts this to work: its stack exposes a calibrated learned
+sensor model as a toggle, and its retrospective quotes this table.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Propriety, and a score you can game">
+    Prove D25.1 for the log score without looking at derivation F1 — expected score equals entropy
+    plus KL, and Gibbs' inequality does the rest. Then construct a scoring rule that a beam model
+    could game: find $S$ and two densities $p \ne q$ with
+    $\E_{z\sim p}[S(q,z)] < \E_{z \sim p}[S(p,z)]$, and say in one sentence what a model trained on
+    it would do to $\sigma_{hit}$. (Hint: reward the density at the observation's *mode* rather than
+    at the observation.)
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Differentiate the filter yourself">
+    Derive $\partial \mathcal{L} / \partial \log q$ for the scalar Kalman filter under the evidence
+    loss, carrying the sensitivity recursion of F5 over two steps rather than one. Verify your
+    expression against `DiffKf1d::loss_and_grad` by central differences at
+    $\theta = (-1.5,\, 0.4)$; the test skeleton is
+    `analytic_gradient_matches_central_differences` above. Then explain why the one-step worked
+    example has $\partial\mathcal{L}/\partial\log r = \partial\mathcal{L}/\partial\log q$ and the
+    two-step version does not.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="The ESS lemma">
+    Derive $\mathrm{ESS}/M \approx e^{-\kappa^2 s^2}$ from the Gaussian moment generating function
+    (F3, Steps 3–4), stating precisely where you used the assumption that the per-particle
+    log-likelihoods are Gaussian. Then compute how large a spread $s$ your particle filter can
+    tolerate before $\kappa = 1$ leaves fewer than 5% of $M = 1000$ particles effective, and compare
+    with the spread the Tempering Lab reports for a 16-beam likelihood-field scan.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then temper">
+    Before touching the Tempering Lab: predict what happens to the kidnap-recovery percentage at
+    $\kappa = 3$, and predict whether $\kappa = 0.5$ helps or hurts *tracking* accuracy between
+    kidnaps. Run both for at least three kidnap cycles each. Explain both outcomes using F3, and say
+    which of the two effects — precision growth or ESS collapse — dominates the failure you saw.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the two optima">
+    In the Calibration Clinic, use the slider to locate the width that minimizes the mean NLL and
+    the width that minimizes the ECE. They are different. Before reading the two right-hand tiles,
+    predict which of those two models gives the lower posterior error — then check. Now explain the
+    gap using the reliability diagram: which end of the PIT histogram is the NLL optimum trading
+    away, and what is it buying with it?
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Grade the likelihood field">
+    Implement `ObservationModel` and `calibrate` for Chapter 10's `LikelihoodField`. Its per-beam
+    density is a Gaussian on the distance to the nearest occupied cell plus a uniform floor, so its
+    CDF is available in closed form. Is it calibrated? Produce its PIT histogram over 1200 beams in
+    the Apartment and identify where it bulges — then explain the bulge from the model's structure
+    (hint: what does the likelihood field do with a max-range beam, and with a beam that hits an
+    unmapped obstacle?).
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Train through the resampler">
+    Wire `soft_resample` into Chapter 8's `ParticleFilter` and train a single parameter — the
+    sensor model's width — end-to-end through three steps of 1-D hallway MCL, using the state NLL of
+    the filter mean as the loss. Sweep $\lambda \in \{0, 0.25, 0.5, 0.75, 1\}$ and plot both the
+    gradient magnitude reaching the parameter and the variance of the resulting estimate. Does the
+    learned width agree with the post-hoc temperature from `fit_temperature`? If it does not, say
+    which loss each one is optimizing and which of the two you would ship.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="The ancestor of this chapter, twice over: learn_intrinsic_parameters (Table 6.2) fits the beam model by EM, and the section on learning inverse measurement models trains a function approximator on triplets sampled from the forward model — self-supervised sim-to-model learning, in 1999. The epigraph is that section noticing its own frontier."
+  />
+  <Reference
+    authors="Gneiting, T. and Raftery, A. E."
+    year={2007}
+    title="Strictly Proper Scoring Rules, Prediction, and Estimation"
+    venue="Journal of the American Statistical Association 102(477), 359–378"
+    doi="10.1198/016214506000001437"
+    note="The reference treatment of D25.1. Everything this chapter trains, it trains on a strictly proper score, and this paper is why that phrase has content."
+  />
+  <Reference
+    authors="Gneiting, T., Balabdaoui, F., and Raftery, A. E."
+    year={2007}
+    title="Probabilistic Forecasts, Calibration and Sharpness"
+    venue="Journal of the Royal Statistical Society Series B 69(2), 243–268"
+    doi="10.1111/j.1467-9868.2007.00587.x"
+    note="The source of the principle this chapter is organized around — maximize sharpness subject to calibration — and of the PIT-histogram diagnostic that the Calibration Clinic plots."
+  />
+  <Reference
+    authors="Abbeel, P., Coates, A., Montemerlo, M., Ng, A. Y., and Thrun, S."
+    year={2005}
+    title="Discriminative Training of Kalman Filters"
+    venue="Robotics: Science and Systems I"
+    doi="10.15607/RSS.2005.I.038"
+    note="The robotics ancestor of the Differentiable Filter Trainer: learn the noise covariances instead of hand-designing them, and beat a carefully hand-tuned filter on a real rover."
+  />
+  <Reference
+    authors="Guo, C., Pleiss, G., Sun, Y., and Weinberger, K. Q."
+    year={2017}
+    title="On Calibration of Modern Neural Networks"
+    venue="ICML 2017"
+    url="https://arxiv.org/abs/1706.04599"
+    note="Established that accuracy and calibration diverge in modern networks, and that a single temperature fixes most of it. This chapter's B = 15 bins, its ECE definition, and its post-hoc scaling all come from here."
+  />
+  <Reference
+    authors="Karkus, P., Hsu, D., and Lee, W. S."
+    year={2018}
+    title="Particle Filter Networks with Application to Visual Localization"
+    venue="Conference on Robot Learning (CoRL) 2018"
+    url="https://arxiv.org/abs/1805.08975"
+    note="Section 3 introduces soft resampling — the mixture proposal and importance correction of derivation F6, with the trade-off parameter written α where this book writes λ."
+  />
+  <Reference
+    authors="Chen, X. and Li, Y."
+    year={2024}
+    title="An Overview of Differentiable Particle Filters for Data-Adaptive Sequential Bayesian Inference"
+    venue="Foundations of Data Science (AIMS); arXiv:2302.09639"
+    url="https://arxiv.org/abs/2302.09639"
+    note="The current map of the differentiable-filtering field, from Jonschkowski et al.'s RSS 2018 differentiable particle filters onward: which components get learned, which resampling relaxations exist, and what each objective actually optimizes."
+  />
+  <Reference
+    authors="Chi, C., Xu, Z., Feng, S., Cousineau, E., Du, Y., Burchfiel, B., Tedrake, R., and Song, S."
+    year={2025}
+    title="Diffusion Policy: Visuomotor Policy Learning via Action Diffusion"
+    venue="The International Journal of Robotics Research 44(10–11), 1684–1704"
+    doi="10.1177/02783649241273668"
+    note="The extended version of the RSS 2023 paper, and the standard treatment of D25.6. Read it for the multimodality argument: a learned sampler keeps the two ways around an obstacle that a regressed mean averages into the obstacle."
+  />
+</References>

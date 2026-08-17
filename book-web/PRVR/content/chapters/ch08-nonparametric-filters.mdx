@@ -1,0 +1,1296 @@
+---
+title: Nonparametric Filters
+description: Histograms, importance sampling, particle filters, and the art of resampling — how a belief stops being a formula and becomes a population.
+chapter: 8
+part: PART II
+partTitle: The Bayes Filter Family
+difficulty: Intermediate
+readingTime: 60 min
+quote: Each particle is a concrete instantiation of the state at time t, that is, a hypothesis as to what the true world state may be at time t.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 4
+---
+
+import { ParticleSurvivalArena } from '@/components/ch/ch08/particle-survival-arena';
+import { ResamplingWheel } from '@/components/ch/ch08/resampling-wheel';
+import { GridResolutionLadder } from '@/components/ch/ch08/grid-resolution-ladder';
+import { LogOddsFlipFlop } from '@/components/ch/ch08/log-odds-flip-flop';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Instantiate the Bayes filter on a finite decomposition and say exactly where the approximation enters',
+    'Derive the binary static-state filter in log odds, and recognize it as the occupancy-grid update',
+    'Derive importance sampling from first principles, and the particle filter from importance sampling',
+    'Explain why the low-variance comb beats the roulette wheel without being any less unbiased',
+    'Diagnose degeneracy with the effective sample size, and particle deprivation from its symptoms',
+    'Adapt the particle count to the belief with the KLD bound, and implement all of it in Rust',
+  ]}
+  prerequisites={[
+    'The Bayes filter recursion and the Markov assumption (Chapter 5)',
+    'Sampling, expectation, and seeded RNG discipline (Chapter 2)',
+    'Why Gaussian filters are unimodal by construction (Chapters 6–7)',
+  ]}
+>
+Every filter so far has bought speed by betting on a shape. The Kalman filter bets the posterior is
+a Gaussian; the EKF bets it stays one after a nonlinearity; the UKF bets a handful of sigma points
+can carry it through. Those bets pay in microseconds — and they are unpayable in the corridor this
+book opened with, because a robot that has just seen *a* door genuinely believes it is at one of
+three places, and no single ellipse can say that.
+
+This chapter drops the parametric bet entirely. Two representations do it. The first chops the
+state space into cells and stores one number per cell: exact on finite spaces, honest about its
+error on continuous ones, and hopelessly expensive past three dimensions. The second lets the
+samples go where the probability is — a bag of weighted hypotheses that costs $O(M)$ per step and
+does not care about dimension at all. That second one, the particle filter, is the algorithm that
+still ships in production localization stacks in 2026, and by the end of this chapter you will have
+derived it, broken it on purpose, and written it in Rust.
+
+Two smaller things get planted here and harvested later. A five-line special case — the binary
+static-state filter in log odds — grows into occupancy grid mapping in
+[Chapter 13](/chapters/ch13-occupancy-grids). And the trick of sampling from the wrong distribution
+on purpose reappears as a *control* algorithm in [Chapter 23](/chapters/ch23-mppi).
+</Overview>
+
+## The problem with one ellipse
+
+Rusty is in the Hallway. Three identical doors, one binary door detector, no idea where it started.
+The detector fires.
+
+The true posterior is trimodal: three peaks of equal mass, and a lot of nearly-zero corridor
+between them. Hand that posterior to a Gaussian filter and it must answer with a mean and a
+covariance. Moment-match it honestly and the mean lands at the centroid of three separated
+hypotheses — a location the evidence never argued for, and one the robot is at most a third likely
+to be near — while the covariance inflates until it spans the corridor, reporting an uncertainty
+that is technically correct and operationally useless. Let the filter track a single mode instead,
+as an EKF started near one door will, and it becomes *confidently wrong* two times out of three
+with nothing in its state to record that a choice was ever made.
+
+This is not a tuning problem. A Gaussian has one mode; the posterior has three; the mismatch is
+structural. So represent the belief with something that can hold three answers at once.
+
+<Deferred>
+  <ParticleSurvivalArena />
+</Deferred>
+
+Watch a few full cycles before reading on. Three things are happening, and each is a section of
+this chapter.
+
+**The cloud is a distribution, not a list of guesses.** The dashed purple line is the weighted
+mean, and during the multimodal phase it wanders across the corridor tracking the *centroid* of the
+surviving hypotheses rather than any one of them. That is not a bug in the readout — it is the
+correct expectation of a genuinely multimodal belief, and it is exactly the number a Gaussian
+filter would have been forced to report. The particles are the answer; the mean is a lossy summary
+of them, and in this corridor it is the worst summary available.
+
+**Weighting and resampling are different operations, and only one of them destroys anything.**
+During the green phase nothing moves: the ticks change size because their weights changed. During
+the purple phase nothing changes size: the ticks *move*, because low-weight hypotheses were
+deleted and high-weight ones were cloned. Weighting is reversible bookkeeping. Resampling is
+selection, and selection is irreversible.
+
+**Diversity is a finite resource.** Press *Deprivation preset* — 30 particles, a razor-sharp
+sensor — and re-roll the seed a few times. In a sizeable fraction of runs every particle near
+Rusty dies in one unlucky weighting, and from then on the filter converges tightly and confidently
+onto the wrong door and never recovers. It cannot recover: resampling only ever redistributes
+hypotheses that already exist, and the motion noise is far too small to walk one back.
+
+<KeyIdea title="The one sentence version">
+A weighted set of samples is a legitimate representation of a posterior; importance sampling is the
+license to draw those samples from the wrong distribution and fix it with a weight; and resampling
+is the price you pay for that license, in units of diversity.
+</KeyIdea>
+
+## Building intuition
+
+Both representations in this chapter answer the same question — *how do you write down a
+distribution you cannot write down?* — and they answer it in opposite ways.
+
+The **histogram filter** partitions the state space in advance and stores the probability mass of
+each region. It commits to a resolution before seeing any data. Everything the belief could ever
+want to say must be expressible as "this much mass in this box", so a fine grid can say a lot and
+costs a lot. Nothing is adaptive; the same arithmetic runs whether the robot is lost or perfectly
+localized.
+
+The **particle filter** stores nothing in advance. It carries $M$ hypotheses, each a complete state
+vector, each with a weight, and the *hypotheses themselves move* — they follow the mass rather than
+waiting for it. Resolution is not a parameter; it is wherever the particles happen to be. That is
+the whole trade: the grid pays for the region it might need, the particle set pays for the region
+it currently believes in.
+
+The particle filter's rhythm has three beats, and it is worth naming them before formalizing them.
+
+<NotationTable
+  rows={[
+    { sym: '\\text{propagate}', meaning: 'Push every particle through the motion model, sampling its noise independently. The cloud spreads. Nothing about the measurement has been used.', note: 'Cost: M motion samples.' },
+    { sym: '\\text{weight}', meaning: 'Multiply each particle by the likelihood of the actual measurement at that particle. The cloud does not move; the particles change importance.', note: 'Cost: M likelihood evaluations.' },
+    { sym: '\\text{resample}', meaning: 'Draw a new population of M particles from the old one with probability proportional to weight. Heavy particles are cloned; light ones vanish.', note: 'Cost: O(M), one random number.' },
+  ]}
+/>
+
+Thrun's metaphor for the third beat is a roulette wheel whose arcs are the weights, spun $M$ times.
+It is the right picture and the wrong algorithm, and the next few pages are about why.
+
+## The mathematics
+
+### Notation this chapter adds
+
+<NotationTable
+  rows={[
+    { sym: '\\mathbf{x}_k,\\ \\hat{x}_k', meaning: 'Cell k of a decomposition of the state space, and its representative point (usually its centroid).' },
+    { sym: 'p_{k,t}', meaning: 'Probability mass the grid belief assigns to cell k at time t.' },
+    { sym: '\\ell_t = \\log \\frac{p}{1-p}', meaning: 'Log odds of a binary state. Chapter 13 writes the per-cell form as ℓ_{t,i}.' },
+    { sym: '\\mathcal{X}_t = \\{x_t^{[i]}, w_t^{[i]}\\}_{i=1}^{M}', meaning: 'The particle set: M hypotheses with their importance weights.' },
+    { sym: 'f,\\ g', meaning: 'Target and proposal density in importance sampling. Weights are the ratio f/g.' },
+    { sym: 'M_{\\mathrm{eff}}', meaning: 'Effective sample size, 1/Σ(w^{[i]})². The resampling trigger.' },
+    { sym: '(\\varepsilon, \\delta, k)', meaning: 'KLD bound parameters: tolerated divergence, failure probability, number of occupied bins.' },
+  ]}
+/>
+
+### Chopping the space
+
+Start with the easy half. If the state space is *finite* — the robot is in one of $K$ rooms, the
+door is open or closed — then [Chapter 5](/chapters/ch05-bayes-filter)'s integral is a sum, and the
+Bayes filter is implementable exactly as written, with no approximation of any kind.
+
+<Algorithm
+  name="Discrete_Bayes_filter({p_{k,t-1}}, u_t, z_t)"
+  inputs="the previous discrete belief, the control, the measurement"
+  outputs="{p_{k,t}}"
+  complexity="O(K²) for prediction in general, O(K·W) when the motion kernel has bandwidth W; O(K) for correction"
+>
+1. for all $k$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\htmlClass{term-prediction}{\bar p_{k,t}} = \sum_i p(\mathbf{x}_k \mid u_t, \mathbf{x}_i)\; \htmlClass{term-prior}{p_{i,t-1}}$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\htmlClass{term-posterior}{p_{k,t}} = \eta\; \htmlClass{term-measurement}{p(z_t \mid \mathbf{x}_k)}\; \htmlClass{term-prediction}{\bar p_{k,t}}$
+4. endfor
+5. return $\{p_{k,t}\}$
+</Algorithm>
+
+This is Thrun's Table 4.1, and it is the same two lines as the Bayes filter with $\int$ replaced by
+$\sum$. Line 2 is $O(K^2)$ because in principle every cell can reach every other; in practice a
+robot moving a bounded distance per step has a *banded* kernel — only $W$ neighbours are reachable
+— and the cost drops to $O(K \cdot W)$. Line 3 is $O(K)$ always.
+
+The interesting case is a *continuous* state space chopped into cells, which is where the word
+"histogram filter" applies and where approximation finally enters.
+
+<Derivation title="Why the grid version is an approximation, and how big the error is" result="p(z_t \mid \mathbf{x}_k) \approx p(z_t \mid \hat{x}_k)">
+Decompose $\mathrm{range}(X_t) = \mathbf{x}_1 \cup \dots \cup \mathbf{x}_K$ into disjoint convex
+regions. The grid belief stores one number $p_{k,t}$ per region, which means it is committed to a
+**piecewise-constant** density:
+
+$$
+p(x_t) = \frac{p_{k,t}}{|\mathbf{x}_k|} \qquad \text{for } x_t \in \mathbf{x}_k
+$$
+
+where $|\mathbf{x}_k|$ is the region's volume. Everything else follows from that one commitment.
+
+**Step 1 — the region-conditioned likelihood is an average, exactly.** Under the piecewise-uniform
+model,
+
+$$
+p(z_t \mid \mathbf{x}_k) = \frac{\int_{\mathbf{x}_k} p(z_t \mid x_t)\, p(x_t)\, dx_t}{\int_{\mathbf{x}_k} p(x_t)\, dx_t}
+= |\mathbf{x}_k|^{-1} \int_{\mathbf{x}_k} p(z_t \mid x_t)\, dx_t
+$$
+
+because the constant $p_{k,t}/|\mathbf{x}_k|$ cancels top and bottom. No approximation yet: this is
+the *exact* likelihood of the region under the model the grid has assumed.
+
+**Step 2 — replace the average by a probe.** Evaluating that integral for every cell at every step
+is exactly the computation we were trying to avoid. So substitute the representative point
+$\hat{x}_k$ (Thrun's eq. 4.3 takes the centroid):
+
+$$
+p(z_t \mid \mathbf{x}_k) \;\approx\; p(z_t \mid \hat{x}_k),
+\qquad
+p(\mathbf{x}_k \mid u_t, \mathbf{x}_i) \;\approx\; \eta\, p(\hat{x}_k \mid u_t, \hat{x}_i)\, |\mathbf{x}_k|
+$$
+
+**Step 3 — bound the damage.** Expanding $p(z_t \mid x_t)$ about $\hat x_k$, the first-order term
+integrates to zero over a centroid-probed region, so the leading error is second order in the cell
+diameter $h$:
+
+$$
+\left| p(z_t \mid \mathbf{x}_k) - p(z_t \mid \hat x_k) \right| \;=\; O(h^2)\,\sup_{\mathbf{x}_k}\norm{\nabla^2_x\, p(z_t \mid x)}
+$$
+
+So halving the cell size quarters the modelling error — and, in $d$ dimensions, multiplies the cell
+count by $2^d$. That exchange rate is the entire argument of the next widget.
+
+**Step 4 — note what is *not* approximated.** The recursion itself is still exact for the
+piecewise-constant model. The histogram filter's error is a *representation* error, not an
+inference error, which is what separates it from the EKF: the EKF is exactly right about an
+approximate distribution *and* approximately right about the update. $\blacksquare$
+</Derivation>
+
+<Deferred>
+  <GridResolutionLadder />
+</Deferred>
+
+The ladder is where the curse of dimensionality stops being a slogan. A 1-D corridor at 2 cm
+resolution is 500 cells and a rounding error of a computation. The *same* resolution over
+$(x, y, \theta)$ — the state that [Chapter 12](/chapters/ch12-localization-global) actually needs —
+is $500^3 \approx 1.3 \times 10^8$ cells, and the naive prediction sum over ordered pairs of cells
+is $10^{16}$ operations per step. Banding rescues the exponent on the *pair* count but not on the
+cell count itself: you still have to store, touch, and normalize $r^d$ numbers. Grids survive in
+robotics exactly where $d \le 2$ and the map is static — which is to say, in
+[Chapter 13](/chapters/ch13-occupancy-grids), and essentially nowhere else.
+
+### The binary Bayes filter, and why it deserves its own box
+
+Before leaving grids, one special case earns disproportionate attention: a state that is **binary**
+and **static**. Is this cell occupied? Is that door open? The state does not change, so there is no
+prediction step at all — the filter is pure evidence accumulation.
+
+Write the belief in **log odds**:
+
+<LinkedMath>
+$$
+\ell_t \;=\; \log \frac{\bel_t(x)}{1 - \bel_t(x)}
+\qquad\Longleftrightarrow\qquad
+\htmlClass{term-posterior}{\bel_t(x)} \;=\; 1 - \frac{1}{1 + \exp \ell_t}
+$$
+</LinkedMath>
+
+Log odds run from $-\infty$ to $+\infty$, which means no amount of confidence can numerically round
+to exactly 0 or 1 — the truncation problem that kills naive product-of-probabilities updates.
+
+<Algorithm
+  name="binary_Bayes_filter(ℓ_{t-1}, z_t)"
+  inputs="previous log odds, measurement"
+  outputs="ℓ_t"
+  complexity="O(1) — one logarithm and two additions"
+>
+1. $\htmlClass{term-posterior}{\ell_t} = \htmlClass{term-prior}{\ell_{t-1}} + \log\dfrac{\htmlClass{term-measurement}{p(x \mid z_t)}}{1 - \htmlClass{term-measurement}{p(x \mid z_t)}} - \ell_0$
+2. return $\ell_t$
+</Algorithm>
+
+Two features of that line are worth staring at. First, the update is an **addition** — the entire
+filter is `+=`. Second, the measurement enters through the **inverse** model $p(x \mid z_t)$, not
+the familiar forward model $p(z_t \mid x)$. That inversion is not laziness: when the state is one
+bit and the measurement is a 1080p image or a 1080-beam scan, it is far easier to write down "how
+likely is occupancy given this reading" than to describe the distribution over all readings that a
+wall produces.
+
+<Derivation title="Deriving the log-odds recursion, and where η goes" result="\ell_t = \ell_{t-1} + \operatorname{logit} p(x \mid z_t) - \ell_0">
+**Step 1 — Bayes rule with the normalizer made explicit.** For a static $x$,
+
+$$
+p(x \mid z_{1:t}) = \frac{p(z_t \mid x)\, p(x \mid z_{1:t-1})}{p(z_t \mid z_{1:t-1})}
+$$
+
+**Step 2 — flip the measurement model.** Apply Bayes rule once more to $p(z_t \mid x)$ so that the
+inverse model appears:
+
+$$
+p(z_t \mid x) = \frac{p(x \mid z_t)\, p(z_t)}{p(x)}
+\quad\Longrightarrow\quad
+p(x \mid z_{1:t}) = \frac{p(x \mid z_t)\, p(z_t)\, p(x \mid z_{1:t-1})}{p(x)\, p(z_t \mid z_{1:t-1})}
+$$
+
+**Step 3 — write the same thing for $\lnot x$ and divide.** This is the trick the whole derivation
+turns on. The opposite event gives
+
+$$
+p(\lnot x \mid z_{1:t}) = \frac{p(\lnot x \mid z_t)\, p(z_t)\, p(\lnot x \mid z_{1:t-1})}{p(\lnot x)\, p(z_t \mid z_{1:t-1})}
+$$
+
+and dividing the two kills every term that does not depend on the hypothesis — $p(z_t)$, and the
+evidence $p(z_t \mid z_{1:t-1})$, which is precisely the $\eta$ that a probability-space
+implementation has to compute:
+
+$$
+\frac{p(x \mid z_{1:t})}{p(\lnot x \mid z_{1:t})}
+= \frac{p(x \mid z_t)}{1 - p(x \mid z_t)} \cdot
+  \frac{p(x \mid z_{1:t-1})}{1 - p(x \mid z_{1:t-1})} \cdot
+  \frac{1 - p(x)}{p(x)}
+$$
+
+**Step 4 — take logarithms.** Products become sums, and with $\ell_0 = \log\frac{p(x)}{1-p(x)}$
+denoting the prior in log odds,
+
+$$
+\ell_t = \underbrace{\log\frac{p(x \mid z_t)}{1 - p(x \mid z_t)}}_{\text{what this reading says}}
+\;+\; \underbrace{\ell_{t-1}}_{\text{what we already believed}}
+\;-\; \underbrace{\ell_0}_{\text{don't count the prior twice}}
+$$
+
+The $-\ell_0$ correction is the step readers most often drop, and there is a clean test for whether
+it belongs. Feed the filter a completely uninformative reading — one for which
+$p(x \mid z_t) = p(x)$ — and the increment must be zero. With the correction it is exactly zero.
+Without it, every uninformative reading would add the prior again, and a robot with a slightly
+pessimistic occupancy prior would map an empty room as solid just by staring at it. The inverse
+model *is already a posterior*; subtracting $\ell_0$ is what strips the prior back out and leaves
+only the evidence that reading actually contributed.
+
+**Consequence — order does not matter.** Telescoping the recursion gives
+
+$$
+\ell_t = \ell_0 + \sum_{s=1}^{t} \left( \log\frac{p(x \mid z_s)}{1 - p(x \mid z_s)} - \ell_0 \right)
+$$
+
+a sum, and sums commute. For a genuinely static state, the order the evidence arrived in is
+irrelevant. Exercise 3 asks what breaks the moment the state can change. $\blacksquare$
+</Derivation>
+
+<Deferred>
+  <LogOddsFlipFlop />
+</Deferred>
+
+<Callout type="info">
+Run one of these per grid cell and you have occupancy grid mapping.
+[Chapter 13](/chapters/ch13-occupancy-grids) is this box, tiled — including the clamping guard,
+which exists for exactly the reason the widget demonstrates: an unclamped cell that has seen a
+hundred consistent readings needs a hundred contradicting ones to change its mind, and a door that
+opens does not get a hundred.
+</Callout>
+
+### Importance sampling, from first principles
+
+Now the other branch. We want samples from the posterior $f$. We cannot draw them, because we
+cannot even evaluate $f$ without the normalizer. What we *can* do is draw from something else.
+
+Let $g$ be any density we can sample, with the single condition that it covers $f$'s support:
+$f(x) > 0 \Rightarrow g(x) > 0$. Then for any statistic $\phi$,
+
+<LinkedMath>
+$$
+\E_f[\phi(x)] = \int \phi(x)\, f(x)\, dx
+= \int \phi(x)\, \frac{f(x)}{g(x)}\, g(x)\, dx
+= \E_g\!\left[ \htmlClass{term-measurement}{w(x)}\, \phi(x) \right],
+\qquad w(x) = \frac{f(x)}{g(x)}
+$$
+</LinkedMath>
+
+Multiply and divide by $g$; recognize an expectation under $g$. That is the entire idea, and it is
+worth appreciating how much it buys: *you may sample from the wrong distribution on purpose,
+provided you carry a weight that records how wrong it was.*
+
+<Derivation title="Why weighted g-samples converge to f, and what the weights cost" result="\hat{\E}_f[\phi] = \sum_i \tilde w^{[i]} \phi(x^{[i]}) \to \E_f[\phi]">
+**Step 1 — the self-normalized estimator.** In practice $f$ is known only up to a constant (it is a
+posterior; the normalizer is the thing we cannot compute). So use unnormalized $w$ and divide by
+their sum:
+
+$$
+\hat{\E}_f[\phi] = \frac{\sum_{i=1}^{M} w^{[i]}\, \phi(x^{[i]})}{\sum_{i=1}^{M} w^{[i]}}
+= \sum_{i=1}^{M} \tilde w^{[i]}\, \phi(x^{[i]}),
+\qquad x^{[i]} \sim g
+$$
+
+Numerator and denominator are each ordinary Monte Carlo averages under $g$, converging by the law
+of large numbers to $c\,\E_f[\phi]$ and $c$ respectively, where $c$ is the unknown constant. The
+ratio converges to $\E_f[\phi]$ and the constant never has to be known. Thrun's eq. 4.27 states
+this for indicator functions $\phi = \mathbf{1}_A$, which is the statement that the weighted
+empirical CDF converges to $F$.
+
+**Step 2 — the support condition is not a technicality.** If $g(x) = 0$ somewhere $f(x) > 0$, no
+sample ever lands there and the estimator converges — confidently — to the wrong answer. In a
+particle filter this is *particle deprivation*, and it is the failure mode of the whole chapter.
+
+**Step 3 — the price of a bad proposal.** The estimator's variance is governed by the variance of
+the weights. Write $\tilde w$ scaled to mean 1; then the classic result (Kong, Liu and Wong) is
+that the estimator behaves like an unweighted sample of size
+
+$$
+M_{\mathrm{eff}} = \frac{M}{1 + \Var_g[\tilde w]}
+$$
+
+Substituting $\tilde w^{[i]} = M w^{[i]}$ for normalized weights summing to one,
+
+$$
+\Var[\tilde w] = \frac{1}{M}\sum_i (M w^{[i]} - 1)^2 = M \sum_i (w^{[i]})^2 - 1
+\quad\Longrightarrow\quad
+M_{\mathrm{eff}} = \frac{1}{\sum_i (w^{[i]})^2}
+$$
+
+which is the number every practical implementation watches. It is $M$ when the weights are uniform
+and $1$ when a single particle owns all the mass. Convergence of the estimator itself is
+$O(1/\sqrt{M})$ — *independent of the dimension of $x$*, which is the property that makes particles
+beat grids the moment $d > 2$. The constant, however, depends on how badly $g$ mismatches $f$, and
+that constant is where all the engineering lives. $\blacksquare$
+</Derivation>
+
+### The particle filter targets the posterior
+
+Now specialize. Take the target to be the posterior over the whole trajectory,
+$\bel(x_{0:t}) = p(x_{0:t} \mid z_{1:t}, u_{1:t})$ — not because we want trajectories, but because
+in that space the algebra has no integrals in it.
+
+<Derivation title="The particle filter as importance sampling on trajectories" result="w_t^{[i]} = \eta\, p(z_t \mid x_t^{[i]})">
+**Step 1 — factor the target.** Applying Bayes rule and the Markov assumption exactly as in
+[Chapter 5](/chapters/ch05-bayes-filter), but keeping every state instead of marginalizing:
+
+<LinkedMath>
+$$
+p(x_{0:t} \mid z_{1:t}, u_{1:t}) = \eta\;
+\htmlClass{term-measurement}{p(z_t \mid x_t)}\;
+\htmlClass{term-prediction}{p(x_t \mid x_{t-1}, u_t)}\;
+\htmlClass{term-prior}{p(x_{0:t-1} \mid z_{1:t-1}, u_{1:t-1})}
+$$
+</LinkedMath>
+
+Note the absence of integral signs. That is the payoff of working in trajectory space.
+
+**Step 2 — name the proposal.** Assume inductively that the particles at $t-1$ are distributed
+according to $\bel(x_{0:t-1})$. Line 4 of the algorithm draws
+$x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t)$, so the density the new particles actually follow
+is
+
+<LinkedMath>
+$$
+g = \htmlClass{term-prediction}{p(x_t \mid x_{t-1}, u_t)}\; \htmlClass{term-prior}{\bel(x_{0:t-1})}
+$$
+</LinkedMath>
+
+This is the **proposal distribution**: the motion model applied to the previous belief. It is the
+easiest thing in the world to sample and it completely ignores $z_t$.
+
+**Step 3 — take the ratio and watch it collapse.** The target from Step 1 has the proposal from
+Step 2 sitting inside it as a factor, so the division is almost total:
+
+<LinkedMath>
+$$
+w_t^{[i]} = \frac{\text{target}}{\text{proposal}}
+= \frac{\eta\; p(z_t \mid x_t)\; \overbrace{p(x_t \mid x_{t-1}, u_t)\; \bel(x_{0:t-1})}^{\text{exactly the proposal}}}
+       {p(x_t \mid x_{t-1}, u_t)\; \bel(x_{0:t-1})}
+= \eta\; \htmlClass{term-measurement}{p(z_t \mid x_t^{[i]})}
+$$
+</LinkedMath>
+
+Everything cancels except the measurement likelihood. *That* is why a particle filter is fifteen
+lines: choosing the motion model as the proposal makes the importance weight equal to the thing you
+were going to compute anyway. And $\eta$ never has to be evaluated, because resampling only needs
+weights up to a constant — normalize after the fact and it disappears.
+
+**Step 4 — resample, then marginalize.** Drawing with probability proportional to $w_t^{[i]}$
+produces particles distributed as proposal $\times$ weight $= \bel(x_{0:t})$. And if $x_{0:t}^{[i]}$
+is distributed according to $\bel(x_{0:t})$, then its last component $x_t^{[i]}$ is trivially
+distributed according to $\bel(x_t)$ — marginalization of a sample set is *deleting a column*.
+
+**The honest caveats.** This argument is exact only as $M \to \infty$. For finite $M$ the
+self-normalization in Step 1 of the previous derivation introduces a bias of order $1/M$: the
+weights are drawn in an $M$-dimensional space but live, after normalization, in an
+$(M{-}1)$-dimensional one. With $M = 1$ the pathology is total — the single weight normalizes to 1
+regardless of $z_t$, and the "filter" ignores its sensor completely. In practice the bias is
+negligible for $M \ge 100$; the *variance* discussed next is what actually hurts. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="Particle_filter(𝒳_{t-1}, u_t, z_t)"
+  inputs="the previous particle set, the control, the measurement"
+  outputs="𝒳_t"
+  complexity="O(M), given O(1) motion sampling and likelihood evaluation"
+>
+1. $\bar{\mathcal{X}}_t = \mathcal{X}_t = \emptyset$
+2. for $m = 1$ to $M$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;sample $\htmlClass{term-prediction}{x_t^{[m]} \sim p(x_t \mid u_t,\, x_{t-1}^{[m]})}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$\htmlClass{term-measurement}{w_t^{[m]} = p(z_t \mid x_t^{[m]})}$
+5. &nbsp;&nbsp;&nbsp;&nbsp;$\bar{\mathcal{X}}_t = \bar{\mathcal{X}}_t + \langle x_t^{[m]},\, w_t^{[m]} \rangle$
+6. endfor
+7. for $m = 1$ to $M$ do
+8. &nbsp;&nbsp;&nbsp;&nbsp;draw $i$ with probability $\propto w_t^{[i]}$
+9. &nbsp;&nbsp;&nbsp;&nbsp;add $\htmlClass{term-posterior}{x_t^{[i]}}$ to $\mathcal{X}_t$
+10. endfor
+11. return $\mathcal{X}_t$
+</Algorithm>
+
+That is Thrun's Table 4.3, unchanged since 1999, and it is still the core of the localizer that
+ships as the ROS 2 navigation default in 2026. What has changed is lines 7–10, which modern
+implementations do not run every step and do not run this way.
+
+### Resampling, and the variance nobody mentions
+
+Lines 8–9 as written are **multinomial resampling**: $M$ independent draws from the categorical
+distribution defined by the weights. Thrun's roulette wheel, spun $M$ times.
+
+It is unbiased. It is also needlessly noisy, and the noise is not free — it is added directly to
+the estimator the filter is trying to compute.
+
+<Derivation title="Offspring variance: roulette versus comb" result="\Var[N_i] = M w_i(1-w_i) \;\text{vs.}\; f_i(1-f_i)">
+Let $N_i$ be the number of offspring particle $i$ receives.
+
+**Step 1 — both schemes are unbiased.** For multinomial resampling, $N_i \sim \mathrm{Bin}(M, w_i)$
+directly, so $\E[N_i] = M w_i$. For the comb, the $M$ pointers $u_m = r + (m-1)/M$ form a lattice of
+spacing $1/M$ with a uniformly random offset $r \sim U[0, 1/M)$; the expected number of lattice
+points falling in an interval of length $w_i$ is $M w_i$ regardless of where the interval sits.
+Same expectation. Unbiasedness is not what distinguishes them.
+
+**Step 2 — multinomial variance.** From the binomial,
+
+$$
+\Var[N_i] = M\, w_i (1 - w_i)
+$$
+
+For a particle carrying its fair share $w_i = 1/M$, this is $\approx 1$: the standard deviation of
+its offspring count is as large as the count itself. Concretely, $P(N_i = 0) = (1 - 1/M)^M \to
+e^{-1} \approx 0.37$. **A perfectly healthy particle has a 37% chance of being deleted, every
+step.**
+
+**Step 3 — comb variance.** Write $M w_i = n_i + f_i$ with $n_i = \lfloor M w_i \rfloor$ integer and
+$f_i \in [0,1)$. An interval of length $w_i$ contains either $n_i$ or $n_i + 1$ points of a
+spacing-$1/M$ lattice, and by Step 1 the expectation must be $n_i + f_i$, so
+
+$$
+N_i = \begin{cases} n_i + 1 & \text{with probability } f_i \\ n_i & \text{with probability } 1 - f_i \end{cases}
+\qquad\Longrightarrow\qquad
+\Var[N_i] = f_i(1 - f_i) \;\le\; \tfrac14
+$$
+
+Every offspring count is within one of its expectation, always. When $M w_i$ is an integer the
+count is *deterministic*. A particle with $w_i \ge 1/M$ cannot be deleted at all.
+
+**Step 4 — and it is cheaper.** Multinomial resampling needs $M$ random numbers and, done naively,
+an $O(\log M)$ search per draw: $O(M \log M)$. The comb needs one random number and one monotone
+sweep: $O(M)$, with a memory access pattern that is purely sequential. It is faster, quieter, and
+strictly easier to write.
+
+**The intermediate scheme.** Stratified resampling draws one uniform *per* comb interval —
+$u_m \sim U[(m-1)/M,\, m/M)$ — trading the comb's determinism for a little independence. Its
+variance sits between the two, and Exercise 6 asks you to measure it. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="Low_variance_sampler(𝒳_t, 𝒲_t)"
+  inputs="the weighted particle set"
+  outputs="a resampled set of M particles with uniform weights"
+  complexity="O(M) time, exactly one random number"
+>
+1. $\bar{\mathcal{X}}_t = \emptyset$
+2. $r = \mathrm{rand}(0;\, M^{-1})$
+3. $c = w_t^{[1]}$
+4. $i = 1$
+5. for $m = 1$ to $M$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;$u = r + (m-1) \cdot M^{-1}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;while $u > c$
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$i = i + 1$
+9. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$c = c + w_t^{[i]}$
+10. &nbsp;&nbsp;&nbsp;&nbsp;endwhile
+11. &nbsp;&nbsp;&nbsp;&nbsp;add $x_t^{[i]}$ to $\bar{\mathcal{X}}_t$
+12. endfor
+13. return $\bar{\mathcal{X}}_t$
+</Algorithm>
+
+<Deferred>
+  <ResamplingWheel />
+</Deferred>
+
+### Degeneracy, deprivation, and when not to resample
+
+Two failure modes wear similar names and have opposite cures.
+
+**Weight degeneracy** is what happens if you *never* resample. The weights are products of
+likelihoods, and a product of many terms concentrates: after a few dozen steps one particle holds
+essentially all the mass, $M_{\mathrm{eff}} \to 1$, and the other $M-1$ particles are consuming CPU
+to represent nothing. The cure is to resample.
+
+**Particle deprivation** is what happens if you resample *too much*. Every resample deletes
+hypotheses, and only the motion model's noise creates new ones. Thrun's thought experiment makes it
+vivid: a robot that is not moving and has no sensors. The state transition is deterministic, so no
+new states are ever introduced; the resampling step is pure random deletion. With probability one,
+the population collapses to $M$ identical copies of a single state — and to an outside observer the
+robot appears to have determined its position exactly, despite having no sensors at all. The cure is
+to resample less.
+
+The standard reconciliation is to make resampling conditional on the diagnostic we already derived:
+
+$$
+\text{resample} \iff M_{\mathrm{eff}} = \frac{1}{\sum_i (w_t^{[i]})^2} \;<\; \tfrac{M}{2}
+$$
+
+with the weights carried multiplicatively across steps when no resample happens
+($w_t^{[i]} = p(z_t \mid x_t^{[i]})\, w_{t-1}^{[i]}$, resetting to $1/M$ when one does). The
+threshold $M/2$ is a convention, not a theorem; Exercise 7 sweeps it and reports where the optimum
+actually sits for the Hallway.
+
+Three further defences, in increasing order of honesty:
+
+1. **Use the low-variance sampler.** Free, and it removes the single largest source of unnecessary
+   deletion — the 37% figure above.
+2. **More particles.** Effective, and expensive, and it treats the symptom: if the proposal is bad,
+   more samples from it are still bad samples.
+3. **Inject fresh hypotheses when the evidence says you are lost.** This is Augmented MCL, and
+   [Chapter 12](/chapters/ch12-localization-global) derives it properly, using the average
+   measurement likelihood as the "am I lost?" detector.
+
+<KeyIdea title="Degeneracy and deprivation are the same knob at two ends">
+Resampling converts weight variance into sample diversity loss. Do it too rarely and the weights
+degenerate; do it too often and the population does. The effective sample size is the instrument
+that tells you which side of the knob you are on, and it costs one pass over the weights.
+</KeyIdea>
+
+### KLD-adaptive sample size
+
+There is a better answer than a fixed $M$, and it comes from asking what $M$ is *for*.
+
+During global localization the belief covers the whole map and needs thousands of particles to
+represent it. Ten seconds later it is a 20 cm blob and thirty particles would do. A fixed $M$ must
+be sized for the worst case and then wastes 99% of its work for the rest of the run. Fox's
+KLD-sampling makes $M$ a function of the belief's *spread*, measured as the number of histogram
+bins the samples actually occupy.
+
+<Derivation title="The KLD bound, via Wilson–Hilferty" result="M = χ²_{k-1,1-δ} / 2ε">
+Suppose the true posterior is a discrete distribution over $k$ bins, and we draw $M$ samples from
+it. Let $\hat p$ be the resulting maximum-likelihood estimate — the empirical bin frequencies.
+
+**Step 1 — the likelihood ratio statistic.** The quantity
+$2M\,\KL(\hat p \,\|\, p)$ is the log-likelihood-ratio statistic for the multinomial, and it
+converges in distribution to $\chi^2_{k-1}$ as $M$ grows. So
+
+$$
+P\!\left(\KL(\hat p \,\|\, p) \le \varepsilon\right) \;\approx\; P\!\left(\chi^2_{k-1} \le 2 M \varepsilon\right)
+$$
+
+**Step 2 — impose the confidence.** We want that probability to be $1 - \delta$, so we need
+$2M\varepsilon$ to be the $(1-\delta)$ quantile of $\chi^2_{k-1}$:
+
+$$
+M = \frac{1}{2\varepsilon}\, \chi^2_{k-1,\,1-\delta}
+$$
+
+**Step 3 — approximate the quantile.** The Wilson–Hilferty transformation says that
+$(\chi^2_{k-1}/(k-1))^{1/3}$ is approximately normal with mean $1 - \frac{2}{9(k-1)}$ and variance
+$\frac{2}{9(k-1)}$. Inverting,
+
+$$
+\chi^2_{k-1,\,1-\delta} \approx (k-1)\left[1 - \frac{2}{9(k-1)} + \sqrt{\frac{2}{9(k-1)}}\; z_{1-\delta}\right]^3
+$$
+
+**Step 4 — read off $M$.** Substituting into Step 2,
+
+$$
+M \;\ge\; \frac{k-1}{2\varepsilon}\left[1 - \frac{2}{9(k-1)} + \sqrt{\frac{2}{9(k-1)}}\; z_{1-\delta}\right]^3
+$$
+
+Everything on the right is $O(1)$ to evaluate, and the only thing that depends on the belief is
+$k$. **Crucially, $k$ counts *occupied* bins, not grid bins** — an empty bin costs nothing — so the
+bound falls automatically as the cloud condenses. $\blacksquare$
+</Derivation>
+
+At $\varepsilon = 0.05$ and $\delta = 0.01$ (so $z_{0.99} = 2.3263$), the bound reads:
+
+| occupied bins $k$ | required $M$ |
+|---|---|
+| 3 | 93 |
+| 10 | 217 |
+| 100 | 1,347 |
+| 500 | 5,755 |
+
+<Algorithm
+  name="KLD_sample_size(k, ε, δ)"
+  inputs="number of occupied bins, tolerated KL divergence, failure probability"
+  outputs="the number of particles that suffices"
+  complexity="O(1); folded into the resampling loop as an adaptive stopping rule"
+>
+1. if $k \le 1$ then return $M_{\min}$
+2. $z = \Phi^{-1}(1 - \delta)$
+3. $a = \dfrac{2}{9(k-1)}$
+4. $M = \dfrac{k-1}{2\varepsilon}\left(1 - a + \sqrt{a}\, z\right)^3$
+5. return $\max(M_{\min},\, \min(M_{\max},\, \lceil M \rceil))$
+</Algorithm>
+
+In practice this is not called once per step but *inside* the resampling loop: draw a particle,
+check whether it landed in a bin nothing has landed in yet, and if so recompute the bound. Stop as
+soon as the number drawn meets it. The loop discovers how many particles it needs while it is
+filling the set. Toggle **KLD-adaptive M** in the arena at the top of this chapter and watch the
+population fall from the ceiling to a few dozen as the three clouds become one.
+
+## A worked example you can check by hand
+
+Five particles, weights already normalized:
+
+$$
+w = (\,0.10,\; 0.30,\; 0.05,\; 0.40,\; 0.15\,), \qquad M = 5
+$$
+
+**Effective sample size.** $\sum_i w_i^2 = 0.01 + 0.09 + 0.0025 + 0.16 + 0.0225 = 0.285$, so
+
+$$
+M_{\mathrm{eff}} = \frac{1}{0.285} = 3.5088
+$$
+
+That is above the $M/2 = 2.5$ threshold, so a well-behaved filter would **not** resample here. We
+will do it anyway, to have something to check.
+
+**The comb.** Take $r = 0.15$, which is a legal draw from $U[0,\, 1/5)$. The pointers are
+$u_m = r + (m-1)/5 = 0.15,\, 0.35,\, 0.55,\, 0.75,\, 0.95$, and we walk them against the cumulative
+weights:
+
+| $i$ | $w_i$ | cumulative | $M w_i$ | pointers landing in $i$ | offspring $N_i$ |
+|---|---|---|---|---|---|
+| 1 | 0.10 | 0.10 | 0.50 | — | **0** |
+| 2 | 0.30 | 0.40 | 1.50 | 0.15, 0.35 | **2** |
+| 3 | 0.05 | 0.45 | 0.25 | — | **0** |
+| 4 | 0.40 | 0.85 | 2.00 | 0.55, 0.75 | **2** |
+| 5 | 0.15 | 1.00 | 0.75 | 0.95 | **1** |
+
+Offspring counts $(0, 2, 0, 2, 1)$. Particles 1 and 3 die; nobody is drawn more than
+$\lceil M w_i \rceil$ times; the total is 5, as it must be. Notice particle 4: $M w_4 = 2$ exactly,
+and it gets exactly 2 offspring for *every* legal value of $r$ — the comb is deterministic wherever
+the expectation is a whole number.
+
+**The variance gap.** Multinomial gives $\Var[N_i] = M w_i(1-w_i)$; the comb gives $f_i(1-f_i)$
+with $f_i = M w_i - \lfloor M w_i \rfloor$:
+
+| $i$ | multinomial $\Var$ | comb $f_i$ | comb $\Var$ |
+|---|---|---|---|
+| 1 | 0.4500 | 0.50 | 0.2500 |
+| 2 | 1.0500 | 0.50 | 0.2500 |
+| 3 | 0.2375 | 0.25 | 0.1875 |
+| 4 | 1.2000 | 0.00 | 0.0000 |
+| 5 | 0.6375 | 0.75 | 0.1875 |
+| **Σ** | **3.5750** | | **0.8750** |
+
+Same expectation, one quarter the variance. Set the wheel widget above back to its defaults, press
+*Spin ×1000*, and the measured bars converge on exactly these two columns.
+
+## Implementation in Rust
+
+The library is `crates/ch08_particles`. It depends on `bayes_core` (the `BayesFilter` trait from
+[Chapter 5](/chapters/ch05-bayes-filter)) and `sim` (the Hallway from
+[Chapter 4](/chapters/ch04-rusty-and-sensors)), and it is consumed later by `localize` (Ch. 12),
+`ch13_occgrid`, and `ch17_fastslam`. Two design decisions drive the whole module.
+
+**Weights live in log space.** A likelihood is a product over beams; in a 360-beam scan that
+product underflows `f64` long before it becomes uninteresting. Every weight in this crate is a log
+weight, normalized by log-sum-exp, and exponentiated only at the boundary where a resampler needs
+actual probabilities.
+
+**The proposal and the likelihood are traits, not functions.**
+[Chapter 9](/chapters/ch09-motion-models)'s motion samplers and
+[Chapter 10](/chapters/ch10-sensor-models)'s sensor models plug into these two slots unchanged,
+which is what makes [Chapter 12](/chapters/ch12-localization-global)'s MCL a fifty-line file rather
+than a rewrite.
+
+```rust title="crates/ch08_particles/src/set.rs"
+use rand::rngs::SmallRng;
+
+/// A weighted particle set. Weights are **log** weights, always.
+///
+/// `S` is deliberately unconstrained: the Hallway filter instantiates it with
+/// `f64`, Chapter 12 with `Se2`, Chapter 17 with a pose *and* a map. Nothing in
+/// this file cares.
+pub struct ParticleSet<S> {
+    pub states: Vec<S>,
+    pub log_w: Vec<f64>,
+}
+
+impl<S> ParticleSet<S> {
+    /// A fresh set with uniform weights: log(1/M) each.
+    pub fn uniform(states: Vec<S>) -> Self {
+        let m = states.len();
+        Self { log_w: vec![-(m as f64).ln(); m], states }
+    }
+
+    pub fn len(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Subtract the log-sum-exp so the weights sum to one in probability space.
+    ///
+    /// Shifting by the maximum first is the whole trick: it makes the largest
+    /// exponential exactly 1, so nothing overflows and the smallest terms
+    /// underflow to 0 harmlessly instead of poisoning the sum with NaN.
+    pub fn normalize(&mut self) {
+        let max = self.log_w.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        if !max.is_finite() {
+            // Every particle is impossible. Refuse to invent information:
+            // fall back to ignorance rather than propagate NaN.
+            let uniform = -(self.len() as f64).ln();
+            self.log_w.iter_mut().for_each(|l| *l = uniform);
+            return;
+        }
+        let log_z = max + self.log_w.iter().map(|l| (l - max).exp()).sum::<f64>().ln();
+        self.log_w.iter_mut().for_each(|l| *l -= log_z);
+    }
+
+    /// Weights in probability space. Assumes `normalize` has been called.
+    pub fn weights(&self) -> Vec<f64> {
+        self.log_w.iter().map(|l| l.exp()).collect()
+    }
+
+    /// M_eff = 1 / Σ wᵢ².  M when uniform, 1 when one particle owns everything.
+    pub fn ess(&self) -> f64 {
+        let s: f64 = self.log_w.iter().map(|l| (2.0 * l).exp()).sum();
+        if s > 0.0 { 1.0 / s } else { 0.0 }
+    }
+}
+
+/// The proposal slot. Chapter 9's `sample_motion_model_odometry` implements it.
+pub trait Proposal<S> {
+    type Control;
+    fn sample(&self, x: &S, u: &Self::Control, rng: &mut SmallRng) -> S;
+}
+
+/// The likelihood slot. Chapter 10's beam and likelihood-field models implement it.
+pub trait Likelihood<S> {
+    type Measurement;
+    /// Log p(z | x). Log, because a 360-beam product is not representable otherwise.
+    fn log_lik(&self, z: &Self::Measurement, x: &S) -> f64;
+}
+
+/// The occupancy seed: one static binary cell, in log odds. Chapter 13 tiles this.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogOdds(pub f64);
+
+impl LogOdds {
+    /// ℓ = log(p / (1 − p)); ℓ = 0 is "no idea", which is p = 0.5.
+    pub fn from_prob(p: f64) -> Self {
+        LogOdds((p / (1.0 - p)).ln())
+    }
+
+    pub fn prob(self) -> f64 {
+        1.0 - 1.0 / (1.0 + self.0.exp())
+    }
+
+    /// `binary_Bayes_filter` — Thrun et al., Table 4.2.
+    ///
+    /// `inverse_model` is p(x | z), *not* p(z | x): with a one-bit state and a
+    /// megapixel measurement, the inverse is the only one anyone can write down.
+    /// Subtracting the prior is what stops repeated readings from double-counting it.
+    pub fn update(&mut self, inverse_model: f64, prior: LogOdds) {
+        self.0 += (inverse_model / (1.0 - inverse_model)).ln() - prior.0;
+    }
+
+    /// The guard Chapter 13 inherits: bound how certain a cell may become, so
+    /// that a world which changes can still change the robot's mind.
+    pub fn clamp_to(&mut self, bound: f64) {
+        self.0 = self.0.clamp(-bound, bound);
+    }
+}
+```
+
+The resampler is the fifteen-line listing the chapter has been building toward, and it is a direct
+transcription of Table 4.4.
+
+```rust title="crates/ch08_particles/src/resample.rs" {14-27}
+use rand::{Rng, rngs::SmallRng};
+
+/// `Low_variance_sampler(𝒳ₜ, 𝒲ₜ)` — Thrun et al., Table 4.4.
+///
+/// One random number and one monotone sweep. Two consequences make this the
+/// default everywhere: any particle with wᵢ ≥ 1/M is guaranteed at least one
+/// offspring, and the pass is O(M) with a purely sequential access pattern
+/// instead of O(M log M) with a binary search per draw.
+pub fn low_variance_resample<S: Clone>(
+    states: &[S],
+    weights: &[f64],
+    rng: &mut SmallRng,
+) -> Vec<S> {
+    let m = states.len();
+    let step = 1.0 / m as f64;
+    let r: f64 = rng.random_range(0.0..step); // the *only* randomness in here
+    let mut out = Vec::with_capacity(m);
+    let mut c = weights[0];
+    let mut i = 0usize;
+    for k in 0..m {
+        let u = r + k as f64 * step;
+        // The comb tooth walks forward; `i` never goes back, which is why the
+        // whole sweep is linear rather than M independent searches.
+        while u > c && i + 1 < m {
+            i += 1;
+            c += weights[i];
+        }
+        out.push(states[i].clone());
+    }
+    out
+}
+
+/// The same sweep, reporting offspring counts instead of particles.
+///
+/// This is what the chapter's worked example asserts on and what the in-page
+/// wheel widget draws — the test and the figure share one implementation.
+pub fn offspring_counts(weights: &[f64], r: f64) -> Vec<usize> {
+    let m = weights.len();
+    let step = 1.0 / m as f64;
+    let mut counts = vec![0usize; m];
+    let mut c = weights[0];
+    let mut i = 0usize;
+    for k in 0..m {
+        let u = r + k as f64 * step;
+        while u > c && i + 1 < m {
+            i += 1;
+            c += weights[i];
+        }
+        counts[i] += 1;
+    }
+    counts
+}
+
+/// Multinomial resampling — M independent draws. Kept for the comparison in
+/// §"Resampling, and the variance nobody mentions", never used in anger.
+pub fn multinomial_resample<S: Clone>(
+    states: &[S],
+    weights: &[f64],
+    rng: &mut SmallRng,
+) -> Vec<S> {
+    let cdf: Vec<f64> = weights
+        .iter()
+        .scan(0.0, |acc, w| {
+            *acc += w;
+            Some(*acc)
+        })
+        .collect();
+    (0..states.len())
+        .map(|_| {
+            let u: f64 = rng.random_range(0.0..*cdf.last().unwrap());
+            let i = cdf.partition_point(|&c| c < u);
+            states[i.min(states.len() - 1)].clone()
+        })
+        .collect()
+}
+```
+
+The filter itself is then almost anticlimactic: propagate, add log-likelihoods, normalize,
+conditionally resample.
+
+```rust title="crates/ch08_particles/src/filter.rs" {26-38,47-56}
+use bayes_core::BayesFilter;
+use rand::{Rng, SeedableRng, rngs::SmallRng};
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::prelude::*;
+
+use crate::set::{Likelihood, ParticleSet, Proposal};
+use crate::resample::low_variance_resample;
+
+pub struct ParticleFilter<S, P: Proposal<S>, L: Likelihood<S>> {
+    pub set: ParticleSet<S>,
+    pub proposal: P,
+    pub likelihood: L,
+    /// Resample iff M_eff < threshold · M. 0.5 is the usual convention.
+    pub resample_threshold: f64,
+    pub rng: SmallRng,
+}
+
+impl<S, P, L> BayesFilter for ParticleFilter<S, P, L>
+where
+    S: Clone + Send + Sync,
+    P: Proposal<S> + Sync,
+    L: Likelihood<S> + Sync,
+{
+    type Belief = ParticleSet<S>;
+    type Control = P::Control;
+    type Measurement = L::Measurement;
+
+    fn predict(&mut self, u: &Self::Control) {
+        let Self { set, proposal, rng, .. } = self;
+        // Reborrow immutably: a `&mut P` captured by a closure is a unique
+        // borrow and would not be shareable across rayon's threads.
+        let proposal: &P = proposal;
+        // One seed per particle, drawn *serially* from the filter's generator.
+        // This is what buys reproducibility under rayon: the seeds are a
+        // function of the filter's seed alone, so thread scheduling cannot
+        // change the result. `thread_rng()` here would silently destroy it.
+        let seeds: Vec<u64> = (0..set.len()).map(|_| rng.random()).collect();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let states = set.states.par_iter_mut().zip(seeds.par_iter());
+        #[cfg(target_arch = "wasm32")]
+        let states = set.states.iter_mut().zip(seeds.iter());
+
+        states.for_each(|(x, &seed)| {
+            let mut r = SmallRng::seed_from_u64(seed);
+            *x = proposal.sample(x, u, &mut r);
+        });
+    }
+
+    fn correct(&mut self, z: &Self::Measurement) -> f64 {
+        let Self { set, likelihood, .. } = self;
+        // w ← w · p(z | x), in logs: the importance weight *is* the likelihood,
+        // because the proposal was the motion model. See the derivation above.
+        for (w, x) in set.log_w.iter_mut().zip(set.states.iter()) {
+            *w += likelihood.log_lik(z, x);
+        }
+        // Before normalizing, the sum of weights is the evidence p(z | z₁:ₜ₋₁).
+        // Chapter 12 uses a running average of it to notice it has been kidnapped.
+        let evidence = set.log_w.iter().map(|l| l.exp()).sum::<f64>();
+        set.normalize();
+
+        if set.ess() < self.resample_threshold * set.len() as f64 {
+            let w = set.weights();
+            set.states = low_variance_resample(&set.states, &w, &mut self.rng);
+            let uniform = -(set.len() as f64).ln();
+            set.log_w.iter_mut().for_each(|l| *l = uniform);
+        }
+        evidence
+    }
+
+    fn belief(&self) -> &ParticleSet<S> {
+        &self.set
+    }
+}
+```
+
+<Callout type="warn">
+The `#[cfg]` pair is not decoration. `rayon` does not build for `wasm32-unknown-unknown` without
+threads, so the WASM demos on this page compile the *same source* single-threaded. Because the
+per-particle seeds are drawn serially, a run with seed 8 produces byte-identical particles in the
+browser and on a 64-core workstation — which is the only reason the numbers in this chapter can be
+trusted at all.
+</Callout>
+
+Finally, the KLD bound and the tests that pin the chapter's worked example.
+
+```rust title="crates/ch08_particles/src/kld.rs"
+use statrs::distribution::{ContinuousCDF, Normal};
+
+/// `KLD_sample_size(k, ε, δ)` — Fox (2003), eq. 7.
+///
+/// `k_bins` counts the bins the particles *occupy*, not the bins in the grid.
+/// An empty bin costs nothing, which is precisely why this number collapses as
+/// the belief condenses.
+///
+/// This returns the raw bound. Clamping it to `[M_min, M_max]` is the caller's
+/// job — the draw loop in `filter.rs` owns those limits because they are a
+/// budget, not a statistical claim.
+pub fn kld_sample_size(k_bins: usize, epsilon: f64, delta: f64) -> usize {
+    if k_bins <= 1 {
+        return 0;
+    }
+    let z = Normal::standard().inverse_cdf(1.0 - delta);
+    let k1 = (k_bins - 1) as f64;
+    let a = 2.0 / (9.0 * k1);
+    let inner = 1.0 - a + a.sqrt() * z;
+    ((k1 / (2.0 * epsilon)) * inner.powi(3)).ceil() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resample::offspring_counts;
+    use approx::assert_relative_eq;
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
+
+    /// The chapter's worked example, exactly: r = 0.15 on the five weights.
+    #[test]
+    fn worked_example_offspring_counts() {
+        let w = [0.10, 0.30, 0.05, 0.40, 0.15];
+        assert_eq!(offspring_counts(&w, 0.15), vec![0, 2, 0, 2, 1]);
+    }
+
+    #[test]
+    fn worked_example_effective_sample_size() {
+        let w = [0.10, 0.30, 0.05, 0.40, 0.15];
+        let ess = 1.0 / w.iter().map(|x| x * x).sum::<f64>();
+        assert_relative_eq!(ess, 3.508_771_929_824_56, epsilon = 1e-9);
+        assert!(ess > 5.0 / 2.0, "above M/2 — a sane filter would not resample here");
+    }
+
+    /// Unbiasedness is a claim about a mean, so test it as one — and tightness
+    /// is a claim about every single draw, so test that per draw.
+    #[test]
+    fn comb_is_unbiased_and_within_one() {
+        let w = [0.10, 0.30, 0.05, 0.40, 0.15];
+        let expected: Vec<f64> = w.iter().map(|x| 5.0 * x).collect();
+        let mut rng = SmallRng::seed_from_u64(8);
+        let trials = 100_000;
+        let mut sums = [0.0f64; 5];
+
+        for _ in 0..trials {
+            let r: f64 = rng.random_range(0.0..0.2);
+            let counts = offspring_counts(&w, r);
+            for i in 0..5 {
+                // Never more than one away from M·wᵢ — the comb's whole point.
+                assert!((counts[i] as f64 - expected[i]).abs() < 1.0);
+                sums[i] += counts[i] as f64;
+            }
+        }
+
+        for i in 0..5 {
+            assert_relative_eq!(sums[i] / trials as f64, expected[i], epsilon = 0.02);
+        }
+    }
+
+    /// Three rows of the table printed in the KLD section.
+    #[test]
+    fn kld_sample_size_matches_the_chapter_table() {
+        assert_eq!(kld_sample_size(3, 0.05, 0.01), 93);
+        assert_eq!(kld_sample_size(10, 0.05, 0.01), 217);
+        assert_eq!(kld_sample_size(100, 0.05, 0.01), 1347);
+    }
+}
+```
+
+## Putting it together: the Hallway duel
+
+The crate ships one example that settles the chapter's argument empirically:
+
+```text
+$ cargo run --release --example hallway_duel -p ch08_particles
+
+seed 8 · hallway 10.0 m · 3 doors · sensor p(hit) = 0.90 · motion σ = 0.14 m
+
+ t   histogram(K=128)      particles(M=1000)     M_eff    resampled
+ 1   modes=3  MAP=2.02     modes=3  MAP=1.98     612.4    no
+ 2   modes=3  MAP=4.51     modes=3  MAP=4.55     318.7    yes
+ …
+12   modes=1  MAP=7.48     modes=1  MAP=7.51      41.2    yes
+     |MAP − truth| = 0.04 m                0.01 m
+
+ predict cost/step:  16 384 mul-add        1 000 motion samples
+ weights/step:          128 evals            1 000 evals
+ wall clock/step:      0.31 ms              0.12 ms  (8 threads)
+                                            0.74 ms  (wasm32, 1 thread)
+
+deprivation sweep, M = 50, 10 seeds: 3 / 10 runs converged to the wrong door
+                   M = 200, 10 seeds: 0 / 10
+```
+
+Three things in that output are worth more than the rest of this chapter's prose.
+
+**Both filters agree.** The histogram filter is the reference — its only approximation is the
+grid — and the particle filter tracks it to within a cell. That agreement is not decoration; it is
+how you know a stochastic implementation is correct.
+
+**The particle filter is cheaper and gets cheaper faster.** 1,000 particles beat 128 cells in a
+*one*-dimensional problem, and the gap becomes absurd in three. The histogram's cost is fixed by
+the grid whether the robot is lost or not; the particle filter's is fixed by $M$, and KLD sampling
+drops $M$ by an order of magnitude the moment the belief collapses to a single mode.
+
+**The failure rate is not zero and the honest number is printed.** At $M = 50$, three runs in ten
+converge to the wrong door and stay there. This is particle deprivation, measured. It is the same
+phenomenon the arena's preset dramatizes, and the reason [Chapter 12](/chapters/ch12-localization-global)
+adds recovery particles rather than trusting the filter to notice on its own.
+
+Where this goes next: [Chapter 12](/chapters/ch12-localization-global) turns this machinery into
+Monte Carlo localization by plugging in [Chapter 9](/chapters/ch09-motion-models)'s samplers and
+[Chapter 10](/chapters/ch10-sensor-models)'s likelihood fields;
+[Chapter 13](/chapters/ch13-occupancy-grids) tiles the log-odds box across a map;
+[Chapter 17](/chapters/ch17-fastslam) shows that a particle can carry a *map* as well as a pose if
+you Rao-Blackwellize the rest; [Chapter 22](/chapters/ch22-pomdps) plans directly over particle
+beliefs; and [Chapter 23](/chapters/ch23-mppi) runs importance sampling over control sequences
+instead of states, which is the same derivation with the arrows turned around.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The effective sample size, derived">
+    Starting from $M_{\mathrm{eff}} = M / (1 + \Var_g[\tilde w])$ with $\tilde w$ the weights
+    scaled to mean one, show that for normalized weights summing to one,
+    $M_{\mathrm{eff}} = 1/\sum_i (w^{[i]})^2$. Then verify the two extremes analytically: it equals
+    $M$ exactly when all weights are $1/M$, and equals 1 exactly when one particle holds all the
+    mass. Finally compute it for the chapter's five weights and confirm the value 3.5088.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Both schemes are unbiased; only one is tight">
+    Prove that $\E[N_i] = M w_i$ for both multinomial and comb resampling. Then prove that the
+    comb's offspring count is always $\lfloor M w_i \rfloor$ or $\lceil M w_i \rceil$, and use that
+    to derive $\Var[N_i] = f_i(1-f_i)$ where $f_i$ is the fractional part of $M w_i$. Compare with
+    the multinomial's $M w_i (1 - w_i)$, and state the condition under which the comb's variance is
+    exactly zero. Which of the two facts — same mean, smaller variance — is the reason the comb is
+    preferred?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Order does not matter, until it does">
+    Telescope the log-odds recursion to show that $\ell_t$ depends on the multiset of measurements
+    but not on their order. Now suppose the binary state can flip with probability $q$ per step
+    (a door someone opens). Write the prediction step for that case, show that it is *not* additive
+    in log odds, and explain in one sentence why this is the assumption
+    [Chapter 13](/chapters/ch13-occupancy-grids) makes when it declares the map static — and what
+    it costs when a person walks through the room.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then spin">
+    In <a href="#w8.2">w8.2</a>, press <em>Degenerate</em> to set the weights to
+    $(0.96, 0.01, 0.01, 0.01, 0.01)$ with $M = 5$. Before pressing <em>Spin ×1000</em>, predict both
+    offspring histograms. Specifically: under each scheme, what is the probability that particle 1
+    receives fewer than four offspring, and can particle 1 ever receive zero? Then run it and check.
+    (Hint for the comb: what is $M w_1$, and what does Exercise 2 say about offspring counts when
+    that number is not an integer?)
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the deprivation cliff">
+    In <a href="#w8.1">w8.1</a>, load the deprivation preset and bisect on the $M$ slider to find
+    the smallest particle count for which fewer than 2 of 20 re-rolled seeds converge to the wrong
+    door. Now switch on KLD mode and read the steady-state population once the belief has a single
+    mode. The two numbers will disagree — KLD's will be smaller. Explain why, in terms of what each
+    number is protecting against. (One is sizing for *representing* a converged belief; the other is
+    sizing for *surviving* the transient.)
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Stratified resampling, and a variance ranking">
+    Implement `stratified_resample` — one uniform draw per comb interval,
+    $u_m \sim U[(m-1)/M,\ m/M)$ — beside the two schemes in `resample.rs`. Derive its per-particle
+    offspring variance, then measure all three over $10^5$ trials on the chapter's weights and rank
+    them. Does the measured ranking match your derivation? Add the measurement as a test with a
+    tolerance wide enough to be seed-stable but tight enough to fail if someone swaps the schemes.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="When not to resample, measured">
+    Sweep `resample_threshold` from 0.0 (never resample) to 1.0 (resample every step) in steps of
+    0.1. For each value, run the Hallway filter at $M = 100$ across 50 seeds and record two numbers:
+    the deprivation rate (fraction of runs whose final MAP is at the wrong door) and the mean
+    $M_{\mathrm{eff}}$ over the run. Plot both against the threshold. You should find a U-shaped
+    failure curve — degeneracy on the left, deprivation on the right — and the bottom of that U is
+    the empirical version of the $M/2$ convention. Report where it actually lands for this problem.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 4 is this chapter's spine: the discrete Bayes filter (Table 4.1), the binary static-state filter (Table 4.2), the particle filter (Table 4.3), and the low-variance sampler (Table 4.4). The derivations here follow its structure and extend it where post-2005 practice has moved on."
+  />
+  <Reference
+    authors="Gordon, N. J., Salmond, D. J., and Smith, A. F. M."
+    year={1993}
+    title="Novel approach to nonlinear/non-Gaussian Bayesian state estimation"
+    venue="IEE Proceedings F (Radar and Signal Processing) 140(2), 107–113"
+    doi="10.1049/ip-f-2.1993.0015"
+    note="The bootstrap filter — the first practical particle filter, and the paper that made resampling standard. Everything in this chapter's second half is a refinement of its five-line algorithm."
+  />
+  <Reference
+    authors="Fox, D."
+    year={2003}
+    title="Adapting the Sample Size in Particle Filters Through KLD-Sampling"
+    venue="The International Journal of Robotics Research 22(12), 985–1003"
+    doi="10.1177/0278364903022012001"
+    note="The source of the KLD bound and its Wilson–Hilferty derivation. Not in the 1999 draft this book uses as its baseline; it is 2005-edition material, rebuilt here from the original paper."
+  />
+  <Reference
+    authors="Li, T., Bolić, M., and Djurić, P. M."
+    year={2015}
+    title="Resampling Methods for Particle Filtering: Classification, Implementation, and Strategies"
+    venue="IEEE Signal Processing Magazine 32(3), 70–86"
+    doi="10.1109/MSP.2014.2330626"
+    note="The taxonomy that organizes multinomial, stratified, systematic and residual resampling into one family, with the variance comparisons Exercise 6 asks you to reproduce."
+  />
+  <Reference
+    authors="Chopin, N. and Papaspiliopoulos, O."
+    year={2020}
+    title="An Introduction to Sequential Monte Carlo"
+    venue="Springer Series in Statistics"
+    doi="10.1007/978-3-030-47845-2"
+    note="The rigorous modern treatment. Read it for the convergence results this chapter states informally, and for the proof that the self-normalized estimator's bias is O(1/M)."
+  />
+  <Reference
+    authors="Elvira, V., Míguez, J., and Djurić, P. M."
+    year={2021}
+    title="On the performance of particle filters with adaptive number of particles"
+    venue="Statistics and Computing 31"
+    doi="10.1007/s11222-021-10056-0"
+    note="KLD-sampling's modern successor: adapt M from online predictive statistics rather than from bin occupancy, with error bounds that follow the adaptation. The right reference if you find KLD's bin size doing too much of the work."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title={'From the desks of ROS maintainers: A survey of modern & capable mobile robotics algorithms in the robot operating system 2'}
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="Evidence for this chapter's claim that Table 4.3 still ships: AMCL — this particle filter with Chapter 9's and Chapter 10's models — remains the Nav2 default localizer. Written by the people who maintain it."
+  />
+  <Reference
+    authors="Chen, X. and Li, Y."
+    year={2025}
+    title="An overview of differentiable particle filters for data-adaptive sequential Bayesian inference"
+    venue="Foundations of Data Science 7(4), 915–943"
+    doi="10.3934/fods.2023014"
+    note="Where resampling goes when you need gradients through it: soft and optimal-transport resamplers that keep the filter differentiable. Chapter 25 picks this up."
+  />
+</References>

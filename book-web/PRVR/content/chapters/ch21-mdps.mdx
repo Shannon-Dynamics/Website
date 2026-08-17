@@ -1,0 +1,1549 @@
+---
+title: "Decision Making I: MDPs and Value Iteration"
+description: A plan is a line through space; a policy is an answer for every state. This chapter derives the Bellman equation, proves value iteration converges, and shows why noise makes the optimal route longer.
+chapter: 21
+part: PART VI
+partTitle: Planning and Acting under Uncertainty
+difficulty: Intermediate
+readingTime: 55 min
+quote: One way to cope with the resulting uncertainty is to generate a policy for action selection defined for all states that the robot might encounter.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 15
+---
+
+import { PlanVsPolicy } from '@/components/ch/ch21/plan-vs-policy';
+import { PolicyPainter } from '@/components/ch/ch21/policy-painter';
+import { BellmanStepper } from '@/components/ch/ch21/bellman-stepper';
+import { CliffRun } from '@/components/ch/ch21/cliff-run';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Define a Markov decision process and say which of its five pieces each earlier chapter already built',
+    'Derive the Bellman optimality equation from the finite-horizon recursion, and take the limit honestly',
+    'Prove that the Bellman backup is a γ-contraction, and turn the proof into a stopping rule you can code',
+    'Bound the loss of acting greedily on a value function that has not converged',
+    'Derive policy iteration, and recognize policy evaluation as one sparse linear solve',
+    'Formulate navigation as a stochastic shortest path, and see Chapter 20’s wave-front planner as its deterministic special case',
+    'Compile an occupancy grid plus the Chapter 9 velocity model into a finite MDP whose slip parameter has a pedigree',
+  ]}
+  prerequisites={[
+    'Expectation and conditional probability (Chapter 2)',
+    'The Markov assumption and the motion model p(x_t | x_{t-1}, u_t) (Chapter 5)',
+    'The velocity motion model and its noise parameters α₁…α₆ (Chapter 9)',
+    'Occupancy grids and configuration-space inflation (Chapters 13 and 20)',
+    'Graph search and the wave-front planner (Chapter 20)',
+  ]}
+  builds="Chapter 20's planners and Chapter 9's motion model, welded into one object: a transition model you plan against instead of assuming away."
+>
+[Chapter 20](/chapters/ch20-motion-planning) ended with a beautiful path and a robot sliding off
+it. That is not a bug in the planner. A path is a function of *time* — do this, then this, then
+this — and the moment the wheels deliver something other than what was commanded, the robot is at
+a state the path has nothing to say about. Every chapter since [Chapter 9](/chapters/ch09-motion-models)
+has been about how reliably the wheels fail to deliver.
+
+This chapter makes the move the rest of Part VI pivots on: stop computing a path and start
+computing a **policy**, a function of *state* that answers "what should I do?" everywhere, so that
+drifting off is not a failure mode but a Tuesday. The framework is the Markov decision process,
+the algorithm is value iteration, and the object it produces — the value function — is
+[Chapter 20](/chapters/ch20-motion-planning)'s potential field done properly: a scalar field that
+*cannot* have spurious local minima, because it is defined as expected cost-to-go rather than
+sculpted out of geometry.
+
+The chapter closes on the question [Chapter 22](/chapters/ch22-pomdps) exists to answer. A policy
+is a function of the state. What if the robot does not know the state?
+</Overview>
+
+## The plan that slides off the floor
+
+Here is the experiment, run twice on the same world, with the same solver and the same random
+numbers. On the left, Rusty commits to the optimal *action sequence* and replays it open-loop. On
+the right, Rusty consults the same solver's answer at every step.
+
+<Deferred>
+  <PlanVsPolicy />
+</Deferred>
+
+At zero slip the two pictures are identical, and that identity is the whole reason deterministic
+planning ever worked: when execution is perfect, the sequence of actions along the optimal path
+*is* the optimal policy restricted to that path. Turn the slip up and the pictures diverge
+immediately, and they diverge in a specific, diagnostic way.
+
+**The plan does not fail gradually.** It fails at the first divergence and then accumulates. Once
+the robot is one cell off the planned trajectory, the remaining actions in the sequence were
+computed for somebody else's position. Step seventeen of a plan is a claim about where you will be
+at step seventeen, and after a few unlucky draws it is a claim about a place you have never been.
+
+**The policy is unbothered.** It never notices the "error", because the notion of error requires a
+reference trajectory and there isn't one. It reads the current cell and answers. The realized path
+is longer than the nominal one — noise costs something, and the cost is real — but the arrival rate
+barely moves. Run that world four thousand times with matched seeds and the split is brutal:
+
+| slip $s$ | $0.00$ | $0.05$ | $0.10$ | $0.15$ | $0.30$ |
+|---|---|---|---|---|---|
+| open-loop plan reaches the dock | $100\%$ | $21.1\%$ | $3.7\%$ | $0.9\%$ | $0.0\%$ |
+| policy reaches the dock | $100\%$ | $100\%$ | $100\%$ | $100\%$ | $99.8\%$ |
+| policy's mean steps (nominal 16) | $16.0$ | $17.9$ | $20.3$ | $23.5$ | $43.5$ |
+
+A five percent chance of veering — which
+[the next section](#where-the-slip-parameter-comes-from) prices at about $13.5°$ of heading
+uncertainty, an ordinary afternoon for a localizer — already sinks the plan four times out of five.
+The policy pays for the same noise in steps rather than in failures, and steps are a currency you
+can budget.
+
+**The two objects are different types.** This is worth being pedantic about, because the type is
+the lesson:
+
+$$
+\text{plan} : \{0, 1, \ldots, T\} \to \mathcal{U}
+\qquad\qquad
+\text{policy} : \mathcal{X} \to \mathcal{U}
+$$
+
+A plan is indexed by time. A policy is indexed by state. Everything else in this chapter follows
+from taking that difference seriously.
+
+<KeyIdea title="The one sentence version">
+A plan is a line through the state space; a policy is a vector field over it. Under stochastic
+execution the line is a fiction after the first step, and the field is not.
+</KeyIdea>
+
+The obvious objection is that replanning fixes this: run the planner again from wherever you
+actually are. It does, and it is what most deployed systems do. But notice what replanning
+converges to as the replanning rate goes up — an answer for every state you might visit, computed
+on demand. A policy is what you get when you precompute all of them, and it is worth building once
+so you can see what the on-demand version is approximating. (When the state space is too big to
+precompute, you go back to on-demand: that is [Chapter 23](/chapters/ch23-mppi).)
+
+## Building intuition
+
+### Paint a reward, get a behavior
+
+The following widget is the chapter in one object. A gridworld is laid over the Apartment
+floorplan; you paint payoff onto cells; value iteration re-converges live and the arrow field is
+read off whatever the value function currently is. Nothing is precomputed, and Rusty walks the
+current policy — including while it is still wrong.
+
+<Deferred>
+  <PolicyPainter />
+</Deferred>
+
+Three things repay a minute of watching, and each one is a theorem later in the chapter.
+
+**Value propagates backward from the payoff, roughly a ring per sweep.** Immediately after you
+paint a goal, only its neighbours know about it. That is why value iteration feels like a wave, and
+why the sweep count scales with the *diameter* of the map rather than its area. Look closely and
+the wave is lopsided — it runs further in one direction per sweep than the other — because the
+backups are done in place, so a cell late in the sweep already sees the cells updated before it.
+Flip the **synchronous sweeps** toggle and the lopsidedness disappears, along with some of the
+speed.
+
+**The arrows straighten out long before the numbers do.** Watch the residual readout: the arrow
+field stops changing while $\lVert \Delta V \rVert_\infty$ is still large. That is not a rendering
+artifact, and it is not luck either —
+[the loss bound](#a-half-converged-value-function-still-gives-a-good-policy) explains why a value
+function nowhere near converged still yields a usable policy, and the measurement below shows this
+scene's policy going *exactly* optimal after 45 of its 72 sweeps. `argmax` only cares about the
+ordering of the $Q$-values, and orderings settle first.
+
+**Slip bends the field away from the hazard.** At $s = 0$ the arrows run right past the spill
+cell — why not, you never veer. Push $s$ toward $0.3$ and a visible berth opens up. Nobody
+programmed a safety margin; the margin is what the expectation computes when some of the futures
+in it involve veering into the thing you are hugging. Measured on the default scene, the optimal
+policy's mean journey grows from $37.0$ steps at $s = 0$ to $45.5$ at $s = 0.2$ to $56.9$ at
+$s = 0.4$. The detour margin *is* the noise, priced.
+
+<Callout type="info">
+Everything in that widget is the real algorithm. The sweeps are `sweepInPlace` from
+`lib/decision/mdp.ts`, the arrows are `greedyPolicy`, and the robot's steps are drawn from the same
+sparse transition rows the solver plans against — the TypeScript twin of the Rust in
+[Implementation in Rust](#implementation-in-rust). If the two ever disagreed, the numerical
+self-checks would say so.
+</Callout>
+
+## The mathematics
+
+### Notation
+
+<NotationTable
+  rows={[
+    { sym: '\\mathcal{X},\\ \\mathcal{U}', meaning: 'Finite state and action sets. Here: free grid cells, and the eight compass moves.' },
+    { sym: 'p(x\' \\mid x, u)', meaning: 'Transition model — the same object the Bayes filter predicts with, now indexed by a decision.' },
+    { sym: 'r(x, u)', meaning: 'Expected immediate payoff of taking u in x. Negative for cost.' },
+    { sym: '\\gamma \\in (0, 1]', meaning: 'Discount factor. γ < 1 for discounted problems; γ = 1 only for stochastic shortest paths.' },
+    { sym: '\\pi : \\mathcal{X} \\to \\mathcal{U}', meaning: 'A deterministic stationary policy — an action for every state, not a sequence.' },
+    { sym: 'R_T', meaning: 'Expected cumulative discounted payoff over horizon T.' },
+    { sym: 'V^{\\pi}(x),\\ V^{*}(x)', meaning: 'Value of following π from x; value of acting optimally from x.' },
+    { sym: 'Q^{*}(x, u)', meaning: 'Value of doing u once, then acting optimally. Chapter 22 reuses these directly.' },
+    { sym: '\\mathcal{T}', meaning: 'The Bellman backup operator, (TV)(x) = max_u [ r + γ Σ p V ].' },
+    { sym: 's', meaning: 'Slip: probability of veering into each of the two neighbouring directions. Intended direction: 1 − 2s.' },
+  ]}
+/>
+
+Thrun et al. write the payoff as $c(x')$, collected on *entering* a state, and put the discount
+outside the integral. We fold the expected entry payoff into $r(x, u)$, which is the textbook form
+and changes not a single number:
+
+$$
+r(x, u) \;=\; -\,\text{cost}(u) \;+\; \sum_{x'} p(x' \mid x, u)\, c(x')
+$$
+
+The book's grid compiler does exactly this, which is why goal payoff shows up in the *neighbours*
+of the goal rather than in the goal cell itself.
+
+### The five pieces, and where each one came from
+
+A **Markov decision process** is the tuple
+
+<LinkedMath>
+$$
+\big(\, \mathcal{X},\; \mathcal{U},\; \htmlClass{term-prediction}{p(x' \mid x, u)},\; \htmlClass{term-measurement}{r(x, u)},\; \gamma \,\big)
+$$
+</LinkedMath>
+
+with three standing assumptions, each of which is load-bearing and each of which is false somewhere.
+
+1. **Markov.** $p(x' \mid x, u)$ depends on the past only through $x$. This is
+   [Chapter 5](/chapters/ch05-bayes-filter)'s assumption, and it is what licenses a policy to be a
+   function of the current state alone. Drop it and the policy needs history.
+2. **Full observability.** The robot knows $x$ exactly at decision time. This is the assumption
+   this chapter buys its tractability with, and it is the one [Chapter 22](/chapters/ch22-pomdps)
+   pays back.
+3. **Stationarity.** $p$ and $r$ do not depend on $t$. Together with an infinite horizon, this is
+   what makes the optimal policy itself stationary — one lookup table, not one per timestep.
+
+Only the first two pieces are new here. $\mathcal{X}$ is [Chapter 13](/chapters/ch13-occupancy-grids)'s
+occupancy grid with the walls inflated by the robot radius, exactly the configuration-space trick
+of [Chapter 20](/chapters/ch20-motion-planning). $p(x' \mid x, u)$ is
+[Chapter 9](/chapters/ch09-motion-models)'s velocity motion model, discretized. The reward is the
+only genuinely new modelling decision, and it is where all the honesty lives: an MDP does not tell
+you what to want, it tells you what to do given what you want.
+
+### Where the slip parameter comes from
+
+Gridworld papers announce a slip probability. We are going to earn ours, because the book's promise
+is that every probability has a pedigree.
+
+The robot commands "move to the neighbouring cell in direction $d$". It drives for
+$\Delta t = \ell / v$ seconds, where $\ell$ is the cell size. The cell it lands in is decided by the
+*bearing* of its net displacement: inside the $\pm \pi/8$ sector around $d$ and it landed on the
+intended neighbour; outside, and it landed on one of the two flanking cells. So
+
+$$
+2s \;=\; \Pr\!\left[\; \left| \operatorname{atan2}(\Delta y, \Delta x) \right| > \frac{\pi}{8} \;\right]
+$$
+
+where $(\Delta x, \Delta y)$ is drawn by the Chapter 9 sampler: perturb the commanded
+$(v, \omega)$ by $\hat{v} = v + \varepsilon_{\alpha_1 v^2}$ and
+$\hat{\omega} = \omega + \varepsilon_{\alpha_3 v^2}$, then integrate the arc for $\Delta t$,
+starting from a heading that is itself uncertain by $\sigma_\theta$ — because the robot aims using
+the heading it *believes* it has.
+
+<Derivation title="Integrating the velocity model over one cell transit" result="s = Φ( −(π/8) / sqrt(σ_θ² + α₃ℓ²/4) ) — and it does not depend on speed">
+Start the transit at pose $(0, 0, \theta_0)$ with $\theta_0 \sim \Normal(0, \sigma_\theta^2)$, the
+heading error the localizer has left on the table. Thrun et al., Table 5.3 gives the endpoint of an
+arc with perturbed controls $(\hat v, \hat\omega)$ after $\Delta t$:
+
+$$
+\Delta x = -\frac{\hat v}{\hat\omega}\sin\theta_0 + \frac{\hat v}{\hat\omega}\sin(\theta_0 + \hat\omega \Delta t),
+\qquad
+\Delta y = \frac{\hat v}{\hat\omega}\cos\theta_0 - \frac{\hat v}{\hat\omega}\cos(\theta_0 + \hat\omega \Delta t)
+$$
+
+**Step 1 — why bearing and not lateral offset.** A tempting alternative is to ask whether the
+lateral displacement exceeds half a cell. It essentially never does: with $\ell = 0.3$ m you would
+need $|\theta_0| > 30°$. But the grid does not ask "did you drift half a cell sideways", it asks
+"which cell are you in", and over a single short transit that question is answered by direction.
+Binning on bearing is the discretization that matches the state space.
+
+**Step 2 — the bearing has a closed form, and it is exact.** Apply the sum-to-product identities to
+both components:
+
+$$
+\Delta x = 2\frac{\hat v}{\hat\omega}\,\sin\!\Big(\tfrac{\hat\omega \Delta t}{2}\Big)\cos\!\Big(\theta_0 + \tfrac{\hat\omega \Delta t}{2}\Big),
+\qquad
+\Delta y = 2\frac{\hat v}{\hat\omega}\,\sin\!\Big(\tfrac{\hat\omega \Delta t}{2}\Big)\sin\!\Big(\theta_0 + \tfrac{\hat\omega \Delta t}{2}\Big)
+$$
+
+The two share a common scalar factor, and that factor is positive whenever $\hat v > 0$ — the sign
+of $\hat\omega$ cancels between $1/\hat\omega$ and $\sin(\hat\omega\Delta t/2)$. So
+
+$$
+\operatorname{atan2}(\Delta y, \Delta x) \;=\; \theta_0 + \tfrac{1}{2}\hat\omega\,\Delta t
+$$
+
+*exactly*, not to leading order: the chord of a circular arc bisects the turn. And $\hat v$ has
+dropped out entirely — a robot that drives too fast overshoots but does not veer.
+
+**Step 3 — collect the variance.** With $\theta_0 \sim \Normal(0, \sigma_\theta^2)$ and
+$\hat\omega \sim \Normal(0, \alpha_3 v^2)$ independent, the bearing is Gaussian, and substituting
+$\Delta t = \ell / v$ makes the second term's dependence on speed vanish too:
+
+$$
+\Var\!\left[\tfrac{1}{2}\hat\omega \Delta t\right] = \tfrac{1}{4}\,\alpha_3 v^2 \cdot \frac{\ell^2}{v^2} = \frac{\alpha_3 \ell^2}{4}
+\qquad\Longrightarrow\qquad
+\boxed{\; s \;=\; \Phi\!\left( -\frac{\pi/8}{\sqrt{\sigma_\theta^2 + \alpha_3 \ell^2 / 4}} \right) \;}
+$$
+
+With $\alpha_3 = 0.05$ and $\ell = 0.3$ m the turn-rate term contributes $0.034$ rad — a shade under
+two degrees — no matter how fast Rusty drives. The library's `slipFromVelocityModel` samples the
+model rather than assuming this, and self-check 11 pins the sampler to the closed form.
+
+**Step 4 — read the number.** Sampled with $40{,}000$ seeded draws and full noise, against the
+formula:
+
+| $\sigma_\theta$ | $5°$ | $10°$ | $15°$ | $20°$ |
+|---|---|---|---|---|
+| closed form | $1.3 \times 10^{-5}$ | $0.0136$ | $0.0684$ | $0.1314$ |
+| sampled | $0.0005$ | $0.0139$ | $0.0684$ | $0.1315$ |
+
+$\blacksquare$
+</Derivation>
+
+The one place the two rows disagree is instructive. At $\sigma_\theta = 5°$ the sampler reports
+$0.0005$ where the formula says $1.3 \times 10^{-5}$ — a factor of forty. The excess is not noise;
+it is $\Pr[\hat v < 0] = \Phi(-1/\sqrt{\alpha_1}) = 7.8 \times 10^{-4}$, the fraction of draws in
+which the *Gaussian* velocity model of [Chapter 9](/chapters/ch09-motion-models) hands back a
+negative speed and Rusty reverses into the cell behind him. Below about six degrees of heading
+uncertainty, the dominant source of "slip" in this model is an artifact of describing a
+non-negative quantity with a Gaussian. Every noise model has a regime where its tails stop being a
+harmless approximation, and this is where the velocity model's is.
+
+That table is the most important thing in the section, and it says something the gridworld
+literature usually hides. **A well-localized robot barely slips.** At five degrees of heading
+uncertainty, honest discretized slip is $1.3 \times 10^{-5}$. The slip parameter is not a
+property of the floor; it is overwhelmingly a property of the *localizer*. Discretized slip is a
+state-estimation error wearing a motion-model costume — which is a broad hint that the honest
+version of this chapter's problem is [Chapter 22](/chapters/ch22-pomdps)'s.
+
+The widgets let you set $s$ up to $0.4$ anyway. Read those settings as "a robot with a bad
+localizer, a wet floor, or 0.3 m cells that are too coarse for its dynamics" — all three are real,
+and the middle one is why the parameter is worth a slider.
+
+### Return, and why $\gamma$ buys convergence
+
+Fix a policy $\pi$ and run it forever. The **return** is the discounted sum of payoffs,
+
+<LinkedMath>
+$$
+R_T \;=\; \E\!\left[\, \sum_{\tau=0}^{T} \gamma^{\tau}\, r_{\tau} \,\right],
+\qquad
+\htmlClass{term-posterior}{V^{\pi}(x)} \;=\; \E\!\left[\, \sum_{\tau=0}^{\infty} \gamma^{\tau}\, r(x_\tau, \pi(x_\tau)) \;\middle|\; x_0 = x \right]
+$$
+</LinkedMath>
+
+Discounting does two jobs, and it is worth separating them because only one is mathematical.
+
+The mathematical job: if $|r| \le r_{\max}$ then $|V^\pi| \le r_{\max}/(1-\gamma)$, so an infinite
+sum of infinitely many terms is a finite number and the whole theory has something to be about.
+Without it, "reach the dock eventually" and "reach the dock in nine steps" both score
+$-\infty$ and $\arg\max$ has nothing to chew on.
+
+The modelling job: $\gamma$ is a statement about how far ahead the robot cares. The **effective
+horizon** is $1/(1-\gamma)$ steps, in the sense that payoff beyond it is discounted below
+$1/e$:
+
+| $\gamma$ | $0.8$ | $0.9$ | $0.95$ | $0.98$ | $0.99$ |
+|---|---|---|---|---|---|
+| effective horizon $1/(1-\gamma)$ | $5$ | $10$ | $20$ | $50$ | $100$ |
+
+For a 0.3 m grid, $\gamma = 0.98$ means the robot can see about 15 metres of consequence. Set
+$\gamma = 0.9$ and the charging dock becomes invisible from the far bedroom — the value function
+goes flat out there, the arrows go arbitrary, and the robot wanders. That failure is not a bug in
+the solver; it is the solver correctly reporting that under your stated preferences, the dock is
+not worth walking to. You can watch it happen with the Policy Painter's $\gamma$ slider.
+
+### The Bellman optimality equation
+
+Define the optimal value function $V^*(x) = \max_\pi V^\pi(x)$ and the **state–action value**
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{Q^{*}(x, u)} \;=\; \htmlClass{term-measurement}{r(x, u)} \;+\; \htmlClass{term-prior}{\gamma \sum_{x'} p(x' \mid x, u)\, V^{*}(x')}
+$$
+</LinkedMath>
+
+— the value of committing to $u$ *once* and behaving optimally forever after. Then the whole of
+dynamic programming is the observation that $V^*$ is the pointwise max of $Q^*$:
+
+<LinkedMath>
+$$
+\boxed{\;
+\htmlClass{term-posterior}{V^{*}(x)} \;=\; \max_{u \in \mathcal{U}} \left[\, \htmlClass{term-measurement}{r(x, u)} \;+\; \htmlClass{term-prior}{\gamma \sum_{x'} p(x' \mid x, u)\, V^{*}(x')} \,\right]
+\;}
+$$
+</LinkedMath>
+
+Read it as a sentence: *the best you can do from here is the best over first moves of (what that
+move pays now) plus (discounted, averaged over where it might land you, the best you can do from
+there)*. The colors match the widget below: green is the immediate payoff, blue is the discounted
+future, purple is the answer.
+
+<Deferred>
+  <BellmanStepper />
+</Deferred>
+
+That widget exists because the equation above looks like linear algebra and is not. A backup is
+clerical work: read a handful of neighbours, weight them by how likely you are to reach them,
+scale by $\gamma$, add the payoff, keep the biggest. Step it a few times and watch the value wave
+crawl backwards from the goal and bend through the doorway — the same wave
+[Chapter 20](/chapters/ch20-motion-planning)'s wave-front planner produced, which is not a
+coincidence and is proved below.
+
+<Derivation title="Deriving the Bellman equation from the finite-horizon recursion" result="V^*(x) = max_u [ r(x,u) + γ Σ p(x'|x,u) V^*(x') ]">
+Thrun et al. build this by induction on the horizon, and so will we, because the induction is where
+the optimal-substructure argument actually lives.
+
+**Step 1 — horizon one.** With exactly one action left, there is no future to trade against:
+
+$$
+V_1(x) \;=\; \max_u\, r(x, u)
+$$
+
+**Step 2 — horizon two, by conditioning on the first move.** Take an action $u$, collect $r(x,u)$,
+land in $x'$ with probability $p(x' \mid x, u)$, and then you have a one-step problem left. The
+best you can do from $x'$ with one step left is $V_1(x')$ *by definition*, so
+
+$$
+V_2(x) \;=\; \max_u \left[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, V_1(x') \,\right]
+$$
+
+**Step 3 — why the tail is allowed to be optimal.** This is the step that deserves suspicion. The
+claim is that the tail of an optimal $2$-step plan is an optimal $1$-step plan. It is true here for
+a specific reason: the payoff decomposes additively across time, the discount factors out, and
+the future dynamics depend on the past only through $x'$ (Markov). So the total is
+$r(x,u) + \gamma\,\E[\text{tail}]$, and the tail term is maximized independently of the choice of
+$u$ — for each possible $x'$ separately. Break any of those three properties and the induction
+fails; risk-sensitive objectives, for instance, are not additively decomposable and genuinely do
+not admit this argument.
+
+**Step 4 — induct.**
+
+$$
+V_{T}(x) \;=\; \max_u \left[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, V_{T-1}(x') \,\right]
+$$
+
+**Step 5 — take the limit.** With $|r| \le r_{\max}$, the horizon-$T$ and horizon-$(T{+}1)$ values
+differ by at most the tail of a geometric series,
+$\lVert V_{T+1} - V_T \rVert_\infty \le \gamma^{T} r_{\max}$, which vanishes for $\gamma < 1$. So
+$V_T$ is Cauchy in the sup norm and converges to some $V_\infty$; passing to the limit inside the
+finite max and finite sum gives $V_\infty = \mathcal{T} V_\infty$. The next derivation shows that
+fixed point is unique, so $V_\infty = V^*$. $\blacksquare$
+</Derivation>
+
+### Value iteration converges, and here is the stopping rule
+
+Write the Bellman equation as an operator on value functions:
+
+$$
+(\mathcal{T}V)(x) \;=\; \max_u \left[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, V(x') \,\right]
+$$
+
+**Value iteration** is $V_{k+1} = \mathcal{T} V_k$, starting from $V_0 = 0$. The theorem that makes
+it an algorithm rather than a hope is that $\mathcal{T}$ is a contraction.
+
+<Derivation title="T is a γ-contraction in the sup norm, and the stopping bound that follows" result="‖TU − TV‖∞ ≤ γ‖U − V‖∞  and  ‖V_k − V*‖∞ ≤ γ/(1−γ) · ‖V_k − V_{k−1}‖∞">
+**Step 1 — the max inequality.** For any two families of reals $\{a_u\}$, $\{b_u\}$ over a finite
+index set,
+
+$$
+\left| \max_u a_u - \max_u b_u \right| \;\le\; \max_u \left| a_u - b_u \right|
+$$
+
+*Proof:* let $u^\star = \arg\max_u a_u$. Then
+$\max_u a_u - \max_u b_u \le a_{u^\star} - b_{u^\star} \le \max_u |a_u - b_u|$. Swap the roles of
+$a$ and $b$ for the other direction. (Exercise 1 asks you to exhibit vectors where it is tight.)
+
+**Step 2 — apply it to the backup.** Fix $x$ and set $a_u = r(x,u) + \gamma\sum_{x'} p\,U(x')$,
+$b_u = r(x,u) + \gamma\sum_{x'} p\,V(x')$. The rewards cancel:
+
+$$
+\left| (\mathcal{T}U)(x) - (\mathcal{T}V)(x) \right| \;\le\; \gamma \max_u \left| \sum_{x'} p(x' \mid x, u)\big(U(x') - V(x')\big) \right|
+$$
+
+**Step 3 — push the expectation through.** The transition row is a probability distribution, so it
+is an averaging operator and cannot amplify:
+
+$$
+\left| \sum_{x'} p(x' \mid x, u)\big(U(x') - V(x')\big) \right| \;\le\; \sum_{x'} p(x' \mid x, u)\,\lVert U - V \rVert_\infty \;=\; \lVert U - V \rVert_\infty
+$$
+
+**Step 4 — take the sup over $x$.** $\lVert \mathcal{T}U - \mathcal{T}V \rVert_\infty \le \gamma \lVert U - V \rVert_\infty$.
+Since $\gamma < 1$ and the space of bounded value functions with the sup norm is complete, Banach's
+fixed-point theorem gives a unique fixed point $V^*$ and geometric convergence
+$\lVert V_k - V^* \rVert_\infty \le \gamma^k \lVert V_0 - V^* \rVert_\infty$ from any start.
+
+**Step 5 — the stopping rule.** You cannot measure $\lVert V_k - V^* \rVert_\infty$; you can measure
+the change one sweep made. Chain them with the triangle inequality:
+
+$$
+\lVert V_k - V^* \rVert_\infty \;\le\; \sum_{j \ge k} \lVert V_{j+1} - V_j \rVert_\infty \;\le\; \sum_{j \ge k} \gamma^{\,j-k+1} \lVert V_k - V_{k-1} \rVert_\infty \;=\; \frac{\gamma}{1-\gamma} \lVert V_k - V_{k-1} \rVert_\infty
+$$
+
+So to guarantee $\lVert V_k - V^* \rVert_\infty \le \epsilon$, stop when a sweep moves the value
+function by less than $\epsilon(1-\gamma)/\gamma$. That is the entire content of
+`stoppingThreshold(gamma, eps)` in the library, and it is why a request for
+$\epsilon = 10^{-6}$ at $\gamma = 0.98$ actually iterates until sweeps move things by
+$2 \times 10^{-8}$: at $\gamma$ near one, the residual you can see is a wild underestimate of the
+error you have. $\blacksquare$
+</Derivation>
+
+<Callout type="warn">
+The factor $\gamma/(1-\gamma)$ is the single most common way to be wrong about a value function. At
+$\gamma = 0.99$ it is $99$: a sweep that changes nothing by more than $0.01$ may still leave you a
+full unit of reward away from the truth. Reporting "converged" because the residual looked small is
+how you get a policy that is confidently suboptimal in the one region you cared about.
+</Callout>
+
+### A half-converged value function still gives a good policy
+
+Greedy extraction is the reason value iteration is useful at all:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\pi_V(x)} \;=\; \arg\max_u \left[\, \htmlClass{term-measurement}{r(x, u)} + \htmlClass{term-prior}{\gamma \sum_{x'} p(x' \mid x, u)\, V(x')} \,\right]
+$$
+</LinkedMath>
+
+<Derivation title="Greedy on V* is optimal; greedy on a nearby V is nearly optimal" result="V^{π_V} ≥ V* − 2γ‖V − V*‖∞ / (1−γ)">
+**Part A — exactness at the fixed point.** Let $\pi^* = \pi_{V^*}$ and let $\mathcal{T}_{\pi}$ be
+the *linear* backup that follows $\pi$ without a max:
+$(\mathcal{T}_\pi V)(x) = r(x, \pi(x)) + \gamma \sum_{x'} p(x' \mid x, \pi(x)) V(x')$. By the
+definition of $\arg\max$, $\mathcal{T}_{\pi^*} V^* = \mathcal{T} V^* = V^*$, so $V^*$ is a fixed
+point of $\mathcal{T}_{\pi^*}$. But $\mathcal{T}_{\pi^*}$ is also a $\gamma$-contraction (Steps 3–4
+above never used the max), so its fixed point is unique, and its fixed point is by definition
+$V^{\pi^*}$. Hence $V^{\pi^*} = V^*$: greedy is not merely good, it is exact.
+
+**Part B — the loss bound.** Let $\epsilon = \lVert V - V^* \rVert_\infty$ and $\pi = \pi_V$. Three
+inequalities chained:
+
+$$
+\lVert V^{\pi} - V^{*} \rVert_\infty
+\le \underbrace{\lVert V^{\pi} - \mathcal{T}_{\pi} V \rVert_\infty}_{\text{(i)}}
++ \underbrace{\lVert \mathcal{T}_{\pi} V - V^{*} \rVert_\infty}_{\text{(ii)}}
+$$
+
+For (ii): $\mathcal{T}_\pi V = \mathcal{T} V$ because $\pi$ is greedy for $V$; and
+$\lVert \mathcal{T}V - V^* \rVert_\infty = \lVert \mathcal{T}V - \mathcal{T}V^* \rVert_\infty \le \gamma\epsilon$.
+For (i): $V^\pi = \mathcal{T}_\pi V^\pi$, so
+$\lVert V^\pi - \mathcal{T}_\pi V \rVert_\infty \le \gamma \lVert V^\pi - V \rVert_\infty \le \gamma(\lVert V^\pi - V^* \rVert_\infty + \epsilon)$.
+Substituting and solving for $\lVert V^\pi - V^* \rVert_\infty$:
+
+$$
+\lVert V^{\pi} - V^{*} \rVert_\infty \;\le\; \frac{2\gamma\,\epsilon}{1-\gamma}
+$$
+
+$\blacksquare$
+</Derivation>
+
+Two readings of that bound, and they point in opposite directions.
+
+**Pessimistic:** the amplification factor $2\gamma/(1-\gamma)$ is $98$ at $\gamma = 0.98$. A value
+function good to $0.1$ certifies only a policy within $9.8$ of optimal — nearly vacuous.
+
+**Optimistic, and what actually happens:** the bound is worst-case over adversarial MDPs. In a
+gridworld, $\arg\max$ depends only on the *order* of the $Q$-values at each state, and orderings
+stabilize long before magnitudes do. Measured on the Apartment scene, the greedy policy becomes
+**exactly** optimal — identical to $\pi^*$ in all 925 free cells — after 45 of the 72 sweeps value
+iteration eventually takes. The residual at that moment is $2.07$, so the theorem certifies only
+$\lVert V^\pi - V^* \rVert_\infty \le 101$, on a problem whose optimal value at the start is $7.9$.
+The bound is not wrong; it is simply not the thing that happens.
+
+That gap is what real-time dynamic programming (Barto, Bradtke and Singh, 1995) is built to
+exploit: you may act on a value function you have no right to trust, as long as you keep backing it
+up along the states you actually visit. It is also why the Policy Painter can run the robot while
+the wave is still crossing the map.
+
+### Policy iteration: solve, improve, repeat
+
+Value iteration nudges every state a little on every sweep. Policy iteration takes the other
+extreme: pick a policy, evaluate it *exactly*, then improve it everywhere at once.
+
+The evaluation step is where the linear algebra finally shows up. Fix $\pi$; there is no max any
+more, so the Bellman equation for $V^\pi$ is a linear system:
+
+$$
+V^{\pi} \;=\; r_{\pi} + \gamma P_{\pi} V^{\pi}
+\qquad\Longleftrightarrow\qquad
+\big(I - \gamma P_{\pi}\big) V^{\pi} \;=\; r_{\pi}
+$$
+
+with $P_\pi$ the $|\mathcal{X}| \times |\mathcal{X}|$ row-stochastic matrix
+$[P_\pi]_{x x'} = p(x' \mid x, \pi(x))$ — sparse, with at most three nonzeros per row in our
+gridworld. That is the *same shape of solve* as the sparse Cholesky in
+[Chapter 15](/chapters/ch15-factor-graphs), and the Rust implementation hands it to the same crate.
+
+<Derivation title="Policy iteration improves monotonically and terminates" result="π_{k+1} ≥ π_k, with equality only at π*; at most |U|^|X| iterations, in practice a handful">
+**Step 1 — the improvement is not worse.** Let $\pi' = \pi_{V^\pi}$ be greedy with respect to
+$V^\pi$. By construction $\mathcal{T}_{\pi'} V^\pi = \mathcal{T} V^\pi \ge \mathcal{T}_{\pi} V^\pi = V^\pi$,
+pointwise.
+
+**Step 2 — monotone operators propagate that.** $\mathcal{T}_{\pi'}$ is monotone: if $U \ge W$
+pointwise then $\mathcal{T}_{\pi'} U \ge \mathcal{T}_{\pi'} W$, because it only adds a fixed vector
+and averages with nonnegative weights. Applying it repeatedly to $\mathcal{T}_{\pi'}V^\pi \ge V^\pi$
+gives $\mathcal{T}_{\pi'}^{\,k} V^\pi \ge V^\pi$ for every $k$, and the left side converges to
+$V^{\pi'}$. Hence $V^{\pi'} \ge V^{\pi}$ pointwise. *(This is the policy improvement theorem, and
+notice it is the monotonicity, not the contraction, doing the work.)*
+
+**Step 3 — strictness and termination.** If $\pi'$ and $\pi$ have the same value function, then
+$V^\pi = \mathcal{T}V^\pi$, so $V^\pi = V^*$ and $\pi$ is optimal. Otherwise the improvement is
+strict at some state. There are finitely many deterministic stationary policies —
+$|\mathcal{U}|^{|\mathcal{X}|}$ of them — and the sequence of values is strictly increasing, so no
+policy repeats and the loop terminates.
+
+**Step 4 — what happens in practice.** The bound is astronomical and irrelevant. On the four-cell
+hallway below, policy iteration finishes in **one** improvement. On the 927-state Apartment with
+$\gamma = 0.98$ it takes **23**, the first of which fixes 178 states and the last of which fixes 3.
+The rule of thumb — iterations grow like $\log$ of the state count, not like the state count — is
+observed everywhere and proved nowhere useful.
+
+**Step 5 — the interpolation.** You do not have to solve the linear system exactly. Doing $m$
+linear backups instead is *modified policy iteration*: $m = 1$ is value iteration, $m = \infty$ is
+Howard's policy iteration, and the sweet spot for large sparse problems is usually
+$m \approx 20$. $\blacksquare$
+</Derivation>
+
+### Stochastic shortest paths: what navigation actually is
+
+Discounting is a strange thing to want from a delivery robot. Nobody prefers a package delivered
+now over the same package delivered in a minute by a factor of $0.98^{60}$; we just want it
+delivered, quickly, and the discount was a mathematical convenience. The formulation that says
+what we mean is the **stochastic shortest path** (SSP):
+
+- $\gamma = 1$ — no discounting;
+- one or more absorbing goal states with zero payoff;
+- $r(x, u) = -1$ per step (or $-\text{cost}(u)$), so every action strictly hurts.
+
+Then $-V^*(x)$ is literally the minimum expected number of steps to the goal, which is a quantity
+you can hold in your head. But the contraction argument is gone: $\gamma = 1$ makes the modulus $1$,
+and there is no Banach theorem to invoke. What replaces it is a condition on the *problem* rather
+than on the discount.
+
+<KeyIdea title="The SSP condition">
+Value iteration converges for an undiscounted goal-absorbing MDP provided (i) at least one
+**proper** policy exists — one that reaches the goal with probability 1 from every state — and
+(ii) every improper policy has infinite expected cost from some state. Bertsekas and Tsitsiklis
+(1991) prove this and characterize exactly when it fails.
+</KeyIdea>
+
+Both conditions are checkable, and both fail in ways you will meet. Condition (i) fails if the
+inflated map has a walled-off room: the goal is unreachable, $V^* = -\infty$ there, and a solver
+that does not detect it will happily return $-10^{12}$ and an arrow field of noise. Condition (ii)
+fails if you give the robot a free action — a zero-cost `stay` — because then "stand still forever"
+is an improper policy with finite cost $0$, and it is *optimal*. This is not a hypothetical; it is
+the single most common bug in hand-rolled SSP solvers, and it is why the library's `stay` action
+still charges `stepCost`.
+
+### The wave-front planner, unmasked
+
+Now set the slip to zero. Each action has exactly one successor, $x' = f(x, u)$, so the sum over
+$x'$ collapses to a single term and the SSP Bellman equation becomes
+
+$$
+\boxed{\;
+-V^{*}(x) \;=\; \min_{u} \Big[\, \text{cost}(u) \;+\; \big(-V^{*}(f(x, u))\big) \Big]
+\;}
+$$
+
+That is the Bellman–Ford relaxation. Sweep it synchronously and you have Bellman–Ford. Sweep it
+in-place in order of increasing $-V^*$ — always expanding the unfinished state closest to the
+goal — and you have Dijkstra. Fill it outward from the goal one ring at a time and you have
+[Chapter 20](/chapters/ch20-motion-planning)'s wave-front planner, exactly.
+
+So the wave-front planner is not analogous to value iteration; it *is* value iteration, on a
+deterministic MDP with unit costs, with a particularly clever sweep order. Everything this chapter
+adds is what happens when the arrow out of a cell is no longer a promise. And the "potential field
+with no local minima" that Chapter 20 wanted is now definitional: $V^*$ has no spurious local
+optimum because it is not a field somebody sculpted, it is the expected cost-to-go, and a state
+whose neighbours are all worse than it would be violating its own Bellman equation.
+
+## How much detour is noise worth?
+
+We have said twice now that noise makes the optimal route longer. Here is the quantitative version,
+in the smallest world that can carry it: two corridors from start to goal, one short and flanked by
+a drop, one long and flanked by walls.
+
+Before touching the widget, commit to a guess. The ledge is $6$ cells; the detour is $16$ —
+nearly three times as long. A veer on the ledge costs a penalty of $6$ *and* dumps the robot back
+at the start. At what slip $s$ does the optimal policy abandon the ledge?
+
+<Deferred>
+  <CliffRun />
+</Deferred>
+
+Write your number down, then read the derivation.
+
+<Derivation title="Closed-form route values and the critical slip" result="V_ledge = −(1+2sC)(1−q^L)/(2s q^L),  V_detour = −M/q,  q = 1−2s">
+Let $q = 1 - 2s$ be the probability that a step goes as commanded, $L$ the ledge length, $M$ the
+detour length, and $C$ the cliff penalty.
+
+**The detour.** A veer bumps a wall, costing one step and no progress. The number of attempts
+needed for one cell of progress is geometric with success probability $q$, so its mean is $1/q$,
+and by linearity
+
+$$
+V_{\text{detour}} = -\frac{M}{q}
+$$
+
+Note this is *already* worse than $-M$: even the safe route pays for noise.
+
+**The ledge.** Let $V_k$ be the value with $k$ cells still to go, so $V_0 = 0$, and let
+$W = V_L$ be the value at the start. Each step costs $1$, and with probability $2s$ the robot goes
+over, pays $C$, and restarts at the start:
+
+$$
+V_k = \underbrace{-1 - 2sC}_{A} + q\,V_{k-1} + 2s\,W
+$$
+
+Write $B = A + 2sW$, a constant with respect to $k$. Then $V_k = B + qV_{k-1}$ with $V_0 = 0$
+unrolls to a geometric sum:
+
+$$
+V_k = B\,\frac{1 - q^k}{1 - q} = B\,\frac{1 - q^k}{2s}
+$$
+
+Now impose self-consistency at $k = L$, where $V_L = W$. Writing $\rho = (1-q^L)/(2s)$:
+
+$$
+W = (A + 2sW)\rho \;\Longrightarrow\; W(1 - 2s\rho) = A\rho \;\Longrightarrow\; W = \frac{A\rho}{q^{L}}
+$$
+
+using $1 - 2s\rho = 1 - (1 - q^L) = q^L$. Substituting $A$ and $\rho$:
+
+$$
+V_{\text{ledge}} = -\,\frac{(1 + 2sC)\,\big(1 - q^{L}\big)}{2s\, q^{L}}
+$$
+
+**Sanity checks.** As $s \to 0$, $(1-q^L)/(2s) \to L$ and $q^L \to 1$, so $V_{\text{ledge}} \to -L$:
+the deterministic answer. And $V_{\text{ledge}}$ blows up like $q^{-L}$, exponentially in the length
+of the exposure, while $V_{\text{detour}}$ degrades only like $1/q$. That asymmetry is the whole
+story.
+
+**The critical slip.** $s^*$ is the root of $V_{\text{ledge}}(s) = V_{\text{detour}}(s)$. It has no
+closed form, so bisect — on the two formulas, not on a simulation. For $L = 6$, $M = 16$, $C = 6$:
+
+$$
+s^{*} = 0.0671
+$$
+
+$\blacksquare$
+</Derivation>
+
+Six and a bit percent. Most readers guess somewhere between $0.15$ and $0.3$, because the detour is
+*so* much longer. The values say otherwise:
+
+| slip $s$ | $0.00$ | $0.02$ | $0.05$ | $0.08$ | $0.15$ | $0.25$ |
+|---|---|---|---|---|---|---|
+| $V^{\pi}$ ledge | $-6.0$ | $-8.6$ | $-14.1$ | $-22.6$ | $-70.0$ | $-504.0$ |
+| $V^{\pi}$ detour | $-16.0$ | $-16.7$ | $-17.8$ | $-19.0$ | $-22.9$ | $-32.0$ |
+
+The ledge is exponentially fragile and the detour is merely linearly annoying, so they cross early.
+And notice what $s^* = 0.067$ corresponds to in the units of the previous section: **about $15°$
+of heading uncertainty.** The decision of whether to take the short route through the narrow gap is
+being made, in effect, by the localizer.
+
+<Callout type="warn">
+Two honest caveats the widget makes visible. First, long after the policy has switched, *individual*
+runs on the ledge still sometimes beat the detour — expectation is a claim about the average and
+nothing else, and if you need a guarantee about the worst case you want a risk-sensitive objective
+(Akella et al., 2025), which is a different and harder problem. Second, the mean realized return
+converges to $V^*$ slowly and from either side; twenty finished runs tell you almost nothing.
+</Callout>
+
+## The algorithms
+
+<Algorithm
+  name="MDP_value_iteration(p, r, γ, ε)"
+  inputs="transition model, reward, discount, target accuracy"
+  outputs="V within ε of V*, and the greedy policy π"
+  complexity="O(|X|·|U|·b) per sweep for branching factor b; O(log ε / log γ) sweeps"
+>
+1. for all $x$ do $\hat V(x) = 0$
+2. repeat
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\delta = 0$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for all $x$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$v = \hat V(x)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\hat V(x) = \max_u \big[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, \hat V(x') \,\big]$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\delta = \max\big(\delta,\, |\hat V(x) - v|\big)$
+8. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+9. until $\delta < \epsilon(1-\gamma)/\gamma$
+10. $\pi(x) = \arg\max_u \big[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, \hat V(x') \,\big]$
+11. return $\hat V, \pi$
+</Algorithm>
+
+This is Thrun et al.'s Table 15.1 with two additions: the stopping rule from the contraction proof
+(line 9), and the explicit policy extraction (line 10). One subtlety hides in line 6. If $\hat V$
+is a single array that you write into as you go, later states in the sweep see the *updated* values
+of earlier ones — that is the Gauss–Seidel or **asynchronous** variant, and it is what the library
+does by default. If you write into a fresh array, it is the synchronous Jacobi variant. Thrun's
+draft is explicit that this does not affect *whether* value iteration converges, only how fast. On
+the Apartment, Gauss–Seidel needs 72 sweeps where Jacobi needs 84 — and if you order the sweep by
+breadth-first distance from the goal, so that every backup reads neighbours that were updated
+moments ago, it drops to **33**. Same algorithm, same fixed point, less than half the work, purely
+from the order of a `for` loop.
+
+<Algorithm
+  name="policy_iteration(p, r, γ)"
+  inputs="transition model, reward, discount"
+  outputs="V*, π* — exactly, in finitely many steps"
+  complexity="a sparse |X|×|X| solve per iteration; a handful of iterations"
+>
+1. initialize $\pi$ arbitrarily
+2. repeat
+3. &nbsp;&nbsp;&nbsp;&nbsp;*evaluate:* solve $(I - \gamma P_{\pi}) V^{\pi} = r_{\pi}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;*improve:* $\pi'(x) = \arg\max_u \big[\, r(x,u) + \gamma \sum_{x'} p(x' \mid x, u)\, V^{\pi}(x') \,\big]$
+5. &nbsp;&nbsp;&nbsp;&nbsp;if $\pi' = \pi$ then return $V^{\pi}, \pi$
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\pi \leftarrow \pi'$
+7. forever
+</Algorithm>
+
+<Algorithm
+  name="prioritized_sweeping(p, r, γ, ε, V₀)"
+  inputs="the MDP, a target accuracy, and a warm start"
+  outputs="V, backed up only where it mattered"
+  complexity="O(log|X|) per backup for the heap; total backups data-dependent"
+>
+1. $H \leftarrow$ empty max-heap; for all $x$ with residual $\rho(x) > \theta$: push $x$ with key $\rho(x)$
+2. while $H$ nonempty do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$x \leftarrow$ pop-max; if its key is stale, continue
+4. &nbsp;&nbsp;&nbsp;&nbsp;$v = V(x)$; $V(x) = (\mathcal{T}V)(x)$; $\Delta = |V(x) - v|$
+5. &nbsp;&nbsp;&nbsp;&nbsp;for each predecessor $\tilde x$ of $x$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\kappa = \gamma \cdot \max_u p(x \mid \tilde x, u) \cdot \Delta$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $\kappa > \theta$ then push $\tilde x$ with key $\kappa$
+8. return $V$
+</Algorithm>
+
+The priority key on line 6 is an upper bound on how much this backup could possibly move that
+predecessor — so the heap orders states by *potential* change without paying for a trial backup.
+Moore and Atkeson (1993) introduced this for learned models; it is just as useful for known ones.
+
+<Callout type="info">
+Prioritized sweeping is not universally faster, and it is worth knowing when it loses. Solving the
+Apartment MDP **cold** takes 226,050 prioritized backups against 86,400 for 72 Gauss–Seidel sweeps
+— 2.6× *worse*, because when every state needs updating, the heap is pure overhead. Its win is
+**repair**: after painting one new hazard cell, prioritized sweeping restores optimality in 4,487
+backups where warm-started Gauss–Seidel needs 18 sweeps, or 21,600. That is the regime the Policy
+Painter lives in, and the regime a robot with a changing map lives in.
+</Callout>
+
+## A worked example you can check by hand
+
+Four states in a line: $A$, $B$, $C$, and the goal $G$, which absorbs. Rusty has two actions.
+
+- **`roll`** — nudge forward. Advances one cell with probability $0.8$; with probability $0.2$ the
+  wheels spin and nothing happens. Costs $1$.
+- **`lunge`** — dump enough current into the motors to guarantee the cell change. Costs $2$.
+
+Undiscounted, $\gamma = 1$: a stochastic shortest path. Every number below is reproduced by a Rust
+unit test and by self-check 1 in `lib/decision/__checks_ch21__.ts`.
+
+### The fixed point, by hand
+
+Work backwards from the goal. At $C$, `roll` gives
+$-1 + 0.8 \cdot V(G) + 0.2 \cdot V(C) = -1 + 0.2\,V(C)$, and if `roll` is optimal there, that
+equals $V(C)$:
+
+$$
+0.8\,V(C) = -1 \quad\Longrightarrow\quad V(C) = -1.25
+$$
+
+which is just $1/0.8$: the expected number of attempts to make one cell of progress. Each cell
+costs the same, so
+
+$$
+V(B) = -1 + 0.8(-1.25) + 0.2\,V(B) \;\Longrightarrow\; V(B) = -2.5,
+\qquad
+V(A) = -3.75
+$$
+
+Is `roll` really optimal? Check the alternative at each state: `lunge` from $C$ scores $-2$ against
+$-1.25$; from $B$, $-2 + (-1.25) = -3.25$ against $-2.5$; from $A$, $-4.5$ against $-3.75$. Buying
+determinism at a price of $2$ is a bad deal when the stochastic option costs $1.25$ in expectation.
+The max gate has something to do at every state, and it always makes the same choice.
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{V^{*} = (-3.75,\; -2.5,\; -1.25,\; 0)}
+$$
+</LinkedMath>
+
+### The first three sweeps
+
+Now run the algorithm synchronously from $V_0 = 0$ and watch it get there. Every entry is one line
+of arithmetic:
+
+| sweep | $V(A)$ | $V(B)$ | $V(C)$ | $V(G)$ |
+|---|---|---|---|---|
+| $0$ | $0$ | $0$ | $0$ | $0$ |
+| $1$ | $-1$ | $-1$ | $-1$ | $0$ |
+| $2$ | $-2$ | $-2$ | $-1.2$ | $0$ |
+| $3$ | $-3$ | $-2.36$ | $-1.24$ | $0$ |
+| $4$ | $-3.488$ | $-2.464$ | $-1.248$ | $0$ |
+| $\infty$ | $-3.75$ | $-2.5$ | $-1.25$ | $0$ |
+
+Check sweep 3 at $B$ yourself: $-1 + 0.8 \cdot V_2(C) + 0.2 \cdot V_2(B) = -1 + 0.8(-1.2) + 0.2(-2) = -2.36$.
+And notice the shape of the convergence. After three sweeps $C$ is 99% of the way to its answer and
+$A$ is only 80%; after four, $C$ is done to three decimals and $A$ still is not. Information flows
+backward from the goal at one cell per synchronous sweep, which is the whole reason sweep order
+matters.
+
+Value iteration needs 24 sweeps to reach $10^{-12}$ here. Policy iteration needs **one**
+improvement: evaluate the initial all-`roll` policy exactly, discover it is already greedy, stop.
+
+## Implementation in Rust
+
+The module is `crates/ch21_mdp`. The design constraint that shapes everything: a gridworld MDP has
+tens of thousands of states and at most three successors per state-action, so the transition model
+must be sparse and the inner loop must not allocate.
+
+### The model
+
+```rust title="crates/ch21_mdp/src/mdp.rs"
+use nalgebra::DVector;
+
+/// One successor and its probability. `p` is f32 because a transition row is
+/// read far more often than it is written, and halving the row halves the cache
+/// misses in the inner loop — the only place this crate spends time.
+#[derive(Clone, Copy, Debug)]
+pub struct Transition {
+    pub s: u32,
+    pub p: f32,
+}
+
+/// A sparse row of p(· | x, u). Probabilities sum to 1 up to f32 epsilon.
+pub type SparseDist = Vec<Transition>;
+
+/// A finite MDP with a compile-time action count.
+///
+/// `A` is a const generic because the action set of a gridworld is fixed by its
+/// connectivity (4, 8, or 9 with `stay`), and pinning it lets the per-state
+/// arrays live inline instead of behind a second indirection.
+pub struct Mdp<const A: usize> {
+    pub n_states: usize,
+    /// Indexed [state][action].
+    pub trans: Vec<[SparseDist; A]>,
+    /// r(x, u): the expected immediate payoff, with entry payoff folded in.
+    pub reward: Vec<[f64; A]>,
+    /// γ ∈ (0, 1]. γ = 1 is legal only when `absorbing` is non-empty (SSP).
+    pub gamma: f64,
+    /// V(x) ≡ 0 here, and the episode stops.
+    pub absorbing: Vec<bool>,
+    pub action_labels: [&'static str; A],
+}
+
+impl<const A: usize> Mdp<A> {
+    /// Q(x, u) = r(x, u) + γ Σ_{x'} p(x' | x, u) V(x').
+    #[inline]
+    pub fn q(&self, v: &[f64], x: usize, u: usize) -> f64 {
+        if self.absorbing[x] {
+            return 0.0;
+        }
+        let mut acc = 0.0;
+        for t in &self.trans[x][u] {
+            acc += f64::from(t.p) * v[t.s as usize];
+        }
+        self.reward[x][u] + self.gamma * acc
+    }
+
+    /// The max gate: (TV)(x) and the action that attains it.
+    #[inline]
+    pub fn backup(&self, v: &[f64], x: usize) -> (f64, u8) {
+        if self.absorbing[x] {
+            return (0.0, 0);
+        }
+        let mut best = f64::NEG_INFINITY;
+        let mut arg = 0u8;
+        for u in 0..A {
+            let q = self.q(v, x, u);
+            if q > best {
+                best = q;
+                arg = u as u8;
+            }
+        }
+        (best, arg)
+    }
+
+    /// ‖TV − V‖∞ over non-absorbing states. Zero exactly at the fixed point,
+    /// which makes it the only honest convergence certificate.
+    pub fn max_residual(&self, v: &DVector<f64>) -> f64 {
+        (0..self.n_states)
+            .filter(|&x| !self.absorbing[x])
+            .map(|x| (self.backup(v.as_slice(), x).0 - v[x]).abs())
+            .fold(0.0, f64::max)
+    }
+}
+```
+
+### Value iteration, with the stopping rule that the proof earned
+
+```rust title="crates/ch21_mdp/src/vi.rs" {13-21,52-56}
+use nalgebra::DVector;
+use crate::mdp::Mdp;
+
+pub struct ViResult {
+    pub v: DVector<f64>,
+    pub policy: Vec<u8>,
+    pub sweeps: usize,
+    /// ‖V_k − V_{k−1}‖∞ after each sweep — the widgets' convergence wave.
+    pub residuals: Vec<f64>,
+    pub converged: bool,
+}
+
+/// Stop when one sweep moves V by less than this, and ‖V − V*‖∞ ≤ ε is
+/// guaranteed. From ‖V_k − V*‖ ≤ γ/(1−γ)·‖V_k − V_{k−1}‖.
+///
+/// γ = 1 (a stochastic shortest path) has no such bound: the contraction
+/// modulus is 1 in the sup norm, so we fall back to the raw residual and the
+/// caller is on the hook for a proper policy existing.
+pub fn stopping_threshold(gamma: f64, eps: f64) -> f64 {
+    if gamma >= 1.0 { eps } else { eps * (1.0 - gamma) / gamma }
+}
+
+/// One in-place Gauss–Seidel sweep. Returns ‖ΔV‖∞.
+///
+/// In place on purpose: a backup late in the sweep sees the states updated
+/// earlier in it, so with a good ordering information crosses the whole map in
+/// a single pass instead of one cell per sweep.
+pub fn sweep_in_place<const A: usize>(mdp: &Mdp<A>, v: &mut DVector<f64>) -> f64 {
+    let mut residual: f64 = 0.0;
+    for x in 0..mdp.n_states {
+        if mdp.absorbing[x] {
+            v[x] = 0.0;
+            continue;
+        }
+        let next = mdp.backup(v.as_slice(), x).0;
+        residual = residual.max((next - v[x]).abs());
+        v[x] = next;
+    }
+    residual
+}
+
+/// Thrun et al., Table 15.1 — `MDP_value_iteration`.
+pub fn value_iteration<const A: usize>(mdp: &Mdp<A>, eps: f64, max_sweeps: usize) -> ViResult {
+    let mut v = DVector::zeros(mdp.n_states);
+    let threshold = stopping_threshold(mdp.gamma, eps);
+    let mut residuals = Vec::new();
+
+    let converged = loop {
+        if residuals.len() >= max_sweeps {
+            break false;
+        }
+        let r = sweep_in_place(mdp, &mut v);
+        residuals.push(r);
+        if r < threshold {
+            break true;
+        }
+    };
+
+    ViResult { policy: greedy_policy(mdp, &v), sweeps: residuals.len(), v, residuals, converged }
+}
+
+/// π(x) = argmax_u Q(x, u). Optimal once V = V*; within 2γε/(1−γ) before that.
+pub fn greedy_policy<const A: usize>(mdp: &Mdp<A>, v: &DVector<f64>) -> Vec<u8> {
+    (0..mdp.n_states).map(|x| mdp.backup(v.as_slice(), x).1).collect()
+}
+```
+
+### Policy evaluation as a sparse solve
+
+The exact evaluation step is where `faer` earns its place. The matrix $I - \gamma P_\pi$ is sparse,
+nonsymmetric, and — for $\gamma < 1$ — strictly diagonally dominant by rows, which means it is
+nonsingular and an LU with partial pivoting is stable without any reordering heroics.
+
+```rust title="crates/ch21_mdp/src/pi.rs" {17-36}
+use faer::sparse::{SparseColMat, Triplet};
+use faer::prelude::*;
+use nalgebra::DVector;
+use crate::mdp::Mdp;
+use crate::vi::greedy_policy;
+
+/// Solve (I − γ P_π) V^π = r_π exactly.
+///
+/// Same shape of problem as the normal equations in Chapter 15, and the same
+/// crate solves it — the difference is that here the matrix is nonsymmetric, so
+/// it is LU rather than Cholesky.
+pub fn policy_evaluation<const A: usize>(mdp: &Mdp<A>, pi: &[u8]) -> DVector<f64> {
+    let n = mdp.n_states;
+    let mut triplets: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(4 * n);
+    let mut rhs = Mat::<f64>::zeros(n, 1);
+
+    for x in 0..n {
+        if mdp.absorbing[x] {
+            // V(x) ≡ 0: a 1×1 identity row keeps the system square and the
+            // absorbing convention explicit rather than implied.
+            triplets.push(Triplet::new(x, x, 1.0));
+            continue;
+        }
+        let u = pi[x] as usize;
+        triplets.push(Triplet::new(x, x, 1.0));
+        for t in &mdp.trans[x][u] {
+            // Accumulating duplicates is exactly right here: a self-loop lands
+            // on the diagonal and must be subtracted from the identity.
+            triplets.push(Triplet::new(x, t.s as usize, -mdp.gamma * f64::from(t.p)));
+        }
+        rhs[(x, 0)] = mdp.reward[x][u];
+    }
+
+    let a = SparseColMat::try_new_from_triplets(n, n, &triplets)
+        .expect("policy transition matrix is well formed by construction");
+    let v = a.sp_lu().expect("I − γP_π is nonsingular for γ < 1").solve(&rhs);
+    DVector::from_iterator(n, (0..n).map(|i| v[(i, 0)]))
+}
+
+/// Howard's policy iteration: evaluate exactly, improve greedily, repeat.
+pub fn policy_iteration<const A: usize>(mdp: &Mdp<A>, max_iter: usize) -> (DVector<f64>, Vec<u8>, usize) {
+    let mut pi = vec![0u8; mdp.n_states];
+    let mut v = DVector::zeros(mdp.n_states);
+
+    for it in 0..max_iter {
+        v = policy_evaluation(mdp, &pi);
+        let next = greedy_policy(mdp, &v);
+        // Switch only on a strict improvement. Ties between equally good
+        // actions would otherwise make the loop oscillate forever.
+        let mut changed = 0usize;
+        let mut merged = pi.clone();
+        for x in 0..mdp.n_states {
+            let (a, b) = (next[x] as usize, pi[x] as usize);
+            if a != b && mdp.q(v.as_slice(), x, a) > mdp.q(v.as_slice(), x, b) + 1e-12 {
+                merged[x] = next[x];
+                changed += 1;
+            }
+        }
+        pi = merged;
+        if changed == 0 {
+            return (v, pi, it + 1);
+        }
+    }
+    (v, pi, max_iter)
+}
+```
+
+### Compiling a world into an MDP
+
+This is the function that keeps the book's promise. It takes
+[Chapter 13](/chapters/ch13-occupancy-grids)'s occupancy grid and
+[Chapter 9](/chapters/ch09-motion-models)'s velocity model and produces a finite MDP with no
+invented constants.
+
+```rust title="crates/ch21_mdp/src/gridworld.rs" {53-63}
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
+use crate::mdp::{Mdp, SparseDist, Transition};
+
+/// The eight compass moves, counter-clockwise from north.
+pub const MOVES8: [(i32, i32); 8] =
+    [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)];
+
+pub struct GridSpec {
+    pub width: usize,
+    pub height: usize,
+    pub blocked: Vec<bool>,
+    /// Payoff collected on *entering* a cell. Goals positive, hazards negative.
+    pub payoff: Vec<f64>,
+    pub terminal: Vec<bool>,
+    /// Probability of veering into *each* lateral neighbour. Intended: 1 − 2s.
+    pub slip: f64,
+    pub gamma: f64,
+    pub step_cost: f64,
+    pub no_corner_cutting: bool,
+}
+
+/// The slip parameter, derived rather than decreed: drive the Chapter 9
+/// velocity model one cell and bin the displacement by which neighbour its
+/// bearing points at.
+///
+/// `sigma_theta` is the heading error the localizer has left on the table, and
+/// it dominates. The closed form derived in the text is
+///
+///     s = Φ( −(π/8) / sqrt(σ_θ² + α₃ℓ²/4) )
+///
+/// so with α₃ = 0.05 and ℓ = 0.3 m the wheels contribute a fixed 0.034 rad
+/// regardless of speed, while fifteen degrees of heading error puts s at 0.068.
+/// We sample rather than evaluate the formula so that changing the motion model
+/// changes the answer, which is the whole point of deriving it.
+pub fn slip_from_velocity_model(
+    v: f64, cell: f64, alpha1: f64, alpha3: f64, sigma_theta: f64, seed: u64,
+) -> f64 {
+    let mut rng = SmallRng::seed_from_u64(seed); // never thread_rng: demos are reproducible
+    let dt = cell / v;
+    let half_sector = std::f64::consts::FRAC_PI_8;
+    let heading = Normal::new(0.0, sigma_theta.max(1e-9)).unwrap();
+    let dv = Normal::new(0.0, (alpha1 * v * v).sqrt().max(1e-12)).unwrap();
+    let dw = Normal::new(0.0, (alpha3 * v * v).sqrt().max(1e-12)).unwrap();
+
+    const N: usize = 40_000;
+    let lateral = (0..N)
+        .filter(|_| {
+            let th0 = heading.sample(&mut rng);
+            let vh = v + dv.sample(&mut rng);
+            let wh = dw.sample(&mut rng);
+            // Thrun et al., Table 5.3: the arc traced by perturbed (v, ω).
+            let (dx, dy) = if wh.abs() < 1e-9 {
+                (vh * th0.cos() * dt, vh * th0.sin() * dt)
+            } else {
+                let r = vh / wh;
+                (
+                    -r * th0.sin() + r * (th0 + wh * dt).sin(),
+                    r * th0.cos() - r * (th0 + wh * dt).cos(),
+                )
+            };
+            dy.atan2(dx).abs() > half_sector
+        })
+        .count();
+    // Both sides together are 2s.
+    (lateral as f64 / N as f64 / 2.0).min(0.49)
+}
+
+/// Compile a spec into a finite MDP over the eight compass moves.
+///
+/// The rule, in one sentence: the commanded direction happens with probability
+/// 1 − 2s, each 45° neighbour of it with probability s, and any outcome that
+/// would leave the map or enter a wall leaves the robot where it was — while
+/// still charging for the attempt, because the wheels turned.
+pub fn grid_world_mdp(spec: &GridSpec) -> Mdp<8> {
+    let n = spec.width * spec.height;
+    let s = spec.slip.clamp(0.0, 0.49);
+    let idx = |i: i32, j: i32| (j as usize) * spec.width + (i as usize);
+    let free = |i: i32, j: i32| {
+        i >= 0 && j >= 0 && (i as usize) < spec.width && (j as usize) < spec.height
+            && !spec.blocked[idx(i, j)]
+    };
+
+    let mut trans = Vec::with_capacity(n);
+    let mut reward = Vec::with_capacity(n);
+    let mut absorbing = vec![false; n];
+
+    for j in 0..spec.height as i32 {
+        for i in 0..spec.width as i32 {
+            let x = idx(i, j);
+            absorbing[x] = spec.blocked[x] || spec.terminal[x];
+
+            let mut rows: [SparseDist; 8] = Default::default();
+            let mut rs = [0.0f64; 8];
+            for a in 0..8usize {
+                let land = |dir: usize| -> u32 {
+                    let (di, dj) = MOVES8[dir % 8];
+                    if !free(i + di, j + dj) { return x as u32; }
+                    if spec.no_corner_cutting && di != 0 && dj != 0
+                        && (!free(i + di, j) || !free(i, j + dj)) {
+                        return x as u32;
+                    }
+                    idx(i + di, j + dj) as u32
+                };
+                let row = condense(&[
+                    Transition { s: land(a),         p: (1.0 - 2.0 * s) as f32 },
+                    Transition { s: land(a + 7),     p: s as f32 },
+                    Transition { s: land(a + 1),     p: s as f32 },
+                ]);
+                // r(x,u) = −cost(u) + Σ p(x'|x,u)·payoff(x'), so goal payoff is
+                // collected by the *neighbours* of the goal.
+                let (di, dj) = MOVES8[a];
+                let len = ((di * di + dj * dj) as f64).sqrt();
+                rs[a] = -spec.step_cost * len
+                    + row.iter().map(|t| f64::from(t.p) * spec.payoff[t.s as usize]).sum::<f64>();
+                rows[a] = row;
+            }
+            trans.push(rows);
+            reward.push(rs);
+        }
+    }
+
+    Mdp {
+        n_states: n, trans, reward, gamma: spec.gamma, absorbing,
+        action_labels: ["N", "NW", "W", "SW", "S", "SE", "E", "NE"],
+    }
+}
+
+/// Merge duplicate successors and renormalize. Sparse rows must sum to 1, and
+/// after wall-clamping they very often do not without this.
+fn condense(pairs: &[Transition]) -> SparseDist {
+    let mut out: SparseDist = Vec::with_capacity(pairs.len());
+    for t in pairs.iter().filter(|t| t.p > 0.0) {
+        match out.iter_mut().find(|o| o.s == t.s) {
+            Some(o) => o.p += t.p,
+            None => out.push(*t),
+        }
+    }
+    let total: f32 = out.iter().map(|t| t.p).sum();
+    for t in out.iter_mut() { t.p /= total; }
+    out.sort_unstable_by_key(|t| t.s);
+    out
+}
+```
+
+### The worked example, as a test
+
+```rust title="crates/ch21_mdp/examples/hallway_ssp.rs"
+use ch21_mdp::mdp::{Mdp, Transition};
+use ch21_mdp::vi::value_iteration;
+
+/// A, B, C, G in a line. `roll` advances w.p. p and costs 1; `lunge` is
+/// deterministic and costs 2. γ = 1, G absorbing: a stochastic shortest path.
+pub fn hallway_ssp(p: f64, lunge_cost: f64) -> Mdp<2> {
+    let mut trans = Vec::new();
+    let mut reward = Vec::new();
+    for x in 0..4usize {
+        if x == 3 {
+            trans.push([vec![Transition { s: 3, p: 1.0 }], vec![Transition { s: 3, p: 1.0 }]]);
+            reward.push([0.0, 0.0]);
+            continue;
+        }
+        trans.push([
+            vec![
+                Transition { s: x as u32, p: (1.0 - p) as f32 },
+                Transition { s: x as u32 + 1, p: p as f32 },
+            ],
+            vec![Transition { s: x as u32 + 1, p: 1.0 }],
+        ]);
+        reward.push([-1.0, -lunge_cost]);
+    }
+    Mdp {
+        n_states: 4, trans, reward, gamma: 1.0,
+        absorbing: vec![false, false, false, true],
+        action_labels: ["roll", "lunge"],
+    }
+}
+
+fn main() {
+    let mdp = hallway_ssp(0.8, 2.0);
+    let out = value_iteration(&mdp, 1e-12, 10_000);
+    println!("V* = {:?}", out.v.as_slice());          // [-3.75, -2.5, -1.25, 0.0]
+    println!("π* = {:?}", out.policy);                // [0, 0, 0, 0]  (all `roll`)
+    println!("sweeps = {}", out.sweeps);              // 24
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::DVector;
+
+    /// The chapter's hand-computed fixed point, to the digit.
+    #[test]
+    fn hallway_ssp_worked_example() {
+        let mdp = hallway_ssp(0.8, 2.0);
+        let out = value_iteration(&mdp, 1e-12, 10_000);
+        for (got, want) in out.v.iter().zip([-3.75, -2.5, -1.25, 0.0]) {
+            assert_relative_eq!(got, &want, epsilon = 1e-9);
+        }
+        // Determinism at 2 per cell is a bad deal against 1/0.8 = 1.25.
+        assert_eq!(out.policy, vec![0, 0, 0, 0]);
+    }
+
+    /// And the first three sweeps, which the chapter prints as a table.
+    #[test]
+    fn hallway_ssp_first_three_sweeps() {
+        let mdp = hallway_ssp(0.8, 2.0);
+        let mut v = DVector::zeros(4);
+        let want = [
+            [-1.0, -1.0, -1.0, 0.0],
+            [-2.0, -2.0, -1.2, 0.0],
+            [-3.0, -2.36, -1.24, 0.0],
+        ];
+        // Synchronous, to match the table: Gauss–Seidel would already be ahead.
+        for row in want {
+            let mut next = v.clone();
+            for x in 0..4 { next[x] = mdp.backup(v.as_slice(), x).0; }
+            v = next;
+            for (got, w) in v.iter().zip(row) {
+                assert_relative_eq!(got, &w, epsilon = 1e-12);
+            }
+        }
+    }
+}
+```
+
+## Putting it together
+
+Run the whole thing on the Apartment: 0.3 m cells, walls inflated by 0.16 m for Rusty's radius,
+$40 \times 30 = 1200$ cells of which 927 are free states, eight compass moves, no corner cutting,
+$s = 0.2$, $\gamma = 0.98$, a charging dock worth $+100$ and a spill worth $-60$.
+
+| method | work to $\epsilon = 10^{-6}$ | notes |
+|---|---|---|
+| value iteration, synchronous (Jacobi) | 84 sweeps | 100,800 backups |
+| value iteration, in place (Gauss–Seidel) | 72 sweeps | 86,400 backups — 14% fewer, for free |
+| the same, swept in breadth-first order from the goal | 33 sweeps | 39,600 backups — the order is the algorithm |
+| policy iteration | 23 improvements | 23 sparse solves; agrees with VI to $7 \times 10^{-9}$ |
+| prioritized sweeping, cold | 226,050 backups | 2.6× *worse* — the heap is pure overhead |
+| prioritized sweeping, repairing one painted hazard | 4,487 backups | vs 21,600 for warm Gauss–Seidel |
+
+Then the check that matters: does the value function mean anything? $V^*$ at the start cell is
+$7.898$. Twenty thousand seeded rollouts of the greedy policy, sampling transitions from the same
+sparse rows, average $8.05$ — within 2%, with a mean journey of 45.5 steps. Monte Carlo meeting
+dynamic programming on the page, which is the only way to be sure that the number the solver
+printed is the number the robot will actually experience.
+
+And the sweep across noise, which is the chapter's thesis in five rows:
+
+| $s$ | $0.0$ | $0.1$ | $0.2$ | $0.3$ | $0.4$ |
+|---|---|---|---|---|---|
+| $V^*(x_0)$ | $20.01$ | $13.48$ | $7.90$ | $1.45$ | $-3.15$ |
+| mean steps to dock | $37.0$ | $41.3$ | $45.5$ | $51.7$ | $56.9$ |
+| VI sweeps to $10^{-8}$ | $41$ | $64$ | $77$ | $114$ | $105$ |
+
+Noise costs value, costs steps, and costs sweeps. Nothing in the policy was "made safe"; the
+expectation did all of it.
+
+### What this chapter is not
+
+**Not reinforcement learning.** Q-learning, SARSA and actor–critic solve *these* Bellman equations
+with $p$ and $r$ unknown, learning from samples instead of from a model. That is a genuinely
+different problem — exploration becomes an issue, and convergence proofs get much harder — and it
+belongs to [Chapter 25](/chapters/ch25-learning). What is worth carrying forward is that the
+equation being solved is the one above, unchanged.
+
+**Not continuous state.** Discretizing a 3-DOF pose at any useful resolution is already millions of
+states, and adding velocities makes it hopeless. The answer in practice is not a finer grid but a
+different algorithm: sample trajectories from the current state, evaluate them, act, throw them
+away, repeat. That is [Chapter 23](/chapters/ch23-mppi), where the value function of this chapter
+reappears as the terminal cost that makes a short horizon behave like a long one.
+
+**Not observable.** Here is the bridge, and it is worth being blunt about. Take the Policy Painter's
+converged policy — provably optimal, arrows correct in every cell — and kidnap Rusty. The policy is
+still optimal. It is also useless, because $\pi(x)$ requires $x$, and after a kidnapping the robot
+has a *belief*, not a state. Nothing in this chapter's machinery has an input port for a
+distribution.
+
+[Chapter 22](/chapters/ch22-pomdps) fixes this in the only way the mathematics allows: promote the
+belief to the state. The belief-MDP is a genuine MDP over a continuous, high-dimensional space, the
+Bellman equation is unchanged, and every algorithm here still applies in principle. Whether they
+apply in practice is what makes that chapter hard. One of them — QMDP — is nothing more than this
+chapter's $Q^*$ averaged against the belief, $\sum_x b(x) Q^*(x,u)$, so keep the $Q$-values; you
+will need them in about twenty pages.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={1} title="The max inequality, and when it is tight">
+    Prove $\left| \max_u a_u - \max_u b_u \right| \le \max_u \left| a_u - b_u \right|$ for finite
+    index sets, and exhibit vectors $a, b \in \mathbb{R}^3$ where it holds with equality. Then find
+    vectors where the left side is $0$ and the right side is as large as you like, and say in one
+    sentence what that means for the *tightness* of the contraction bound on a real gridworld.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The hallway in closed form">
+    For the four-cell hallway with success probability $p$ (and `lunge` disabled), derive
+    $V(A), V(B), V(C)$ in closed form and verify the $p = 0.8$ numbers. Then: at what `lunge` cost
+    does the optimal policy start preferring it, and is the answer the same at every state? Finally,
+    predict how many *synchronous* sweeps value iteration needs to reach
+    $\lVert V_k - V^* \rVert_\infty < 0.01$ using the geometric bound with the effective contraction
+    modulus $1 - p$, and compare with the measured count.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Why undiscounted is harder">
+    Build two four-state undiscounted goal-absorbing MDPs, both starting value iteration from
+    $V_0 = 0$. On the first, value iteration **diverges**: some state's value runs to $-\infty$. On
+    the second it **converges to a finite fixed point whose optimal policy never reaches the goal**.
+    Say which of the two conditions in the SSP box each one violates. (Hint for the second: one
+    free action is enough.) Then repair each in two ways — a strictly positive cost on every action,
+    and a discount $\gamma < 1$ — and say what each repair changes about the *optimal policy*, not
+    merely about the solver's ability to find it.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict the cliff">
+    In the Cliff Run, before committing your prediction: estimate $s^*$ for the default geometry
+    using only the two closed forms in the derivation and a calculator. Then use the widget's guess
+    slider to commit, reveal, and bisect with the slip slider to find where the arrow at the start
+    actually flips. Finally — and this is the interesting part — explain why the slip at which
+    *realized* runs start preferring the detour is noticeably higher than $s^*$, and what that gap
+    is made of.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Make the discount change the topology">
+    Using the Policy Painter, construct a painting in which lowering $\gamma$ does not merely make
+    the arrows lazier but routes the robot through a *different doorway*. Record both arrow fields
+    and both values at the start cell, and explain the mechanism in terms of the effective horizon
+    $1/(1-\gamma)$ and the two routes' lengths. Then predict, before checking, whether raising the
+    slip makes the effect appear at a higher or lower $\gamma$.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Prioritized sweeping, and when it loses">
+    Implement `prioritized_sweeping` in Rust with a `BinaryHeap` keyed on the Bellman residual and
+    the priority rule from the algorithm box. Reproduce both halves of this chapter's measurement on
+    the Apartment: that it *loses* to Gauss–Seidel on a cold solve (226k backups vs 86k), and that
+    it wins by roughly 5× when repairing a single changed reward cell. Plot backups against
+    $\lVert TV - V \rVert_\infty$ for both, and explain the crossover in terms of what fraction of
+    states have a nonzero residual.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="The wave-front planner, generated">
+    Add an SSP mode ($\gamma = 1$) to the crate with proper-policy detection: build the predecessor
+    graph with `petgraph`, run a reverse traversal from the goal set, and flag every state that
+    cannot reach a goal instead of letting its value run to $-\infty$. Then set the slip to zero and
+    assert that $-V^*$ equals, cell for cell, the distance field produced by
+    [Chapter 20](/chapters/ch20-motion-planning)'s wave-front planner on the same map. If the assert
+    fails, the most likely culprit is diagonal cost: check that you charged $\sqrt{2}$.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Bellman, R."
+    year={1957}
+    title="A Markovian Decision Process"
+    venue="Indiana University Mathematics Journal 6(4), 679–684"
+    doi="10.1512/iumj.1957.6.56038"
+    note="The five-page paper that named the object and wrote down the optimality equation this whole chapter revolves around."
+  />
+  <Reference
+    authors="Howard, R. A."
+    year={1960}
+    title="Dynamic Programming and Markov Processes"
+    venue="MIT Press"
+    url="https://archive.org/details/dynamicprogrammi0000howa"
+    note="Policy iteration's origin, still the clearest account of why evaluate-then-improve terminates. The algorithm in this chapter's second box is Howard's, essentially unmodified."
+  />
+  <Reference
+    authors="Bertsekas, D. P. and Tsitsiklis, J. N."
+    year={1991}
+    title="An Analysis of Stochastic Shortest Path Problems"
+    venue="Mathematics of Operations Research 16(3), 580–595"
+    doi="10.1287/moor.16.3.580"
+    note="The proper-policy conditions in the SSP box, proved. This is the reference for why undiscounted navigation MDPs are well posed — and exactly when they are not."
+  />
+  <Reference
+    authors="Moore, A. W. and Atkeson, C. G."
+    year={1993}
+    title="Prioritized sweeping: Reinforcement learning with less data and less time"
+    venue="Machine Learning 13(1), 103–130"
+    doi="10.1007/BF00993104"
+    note="The priority rule implemented in this chapter's third algorithm box, including the argument for keying on how much of a change can reach each predecessor."
+  />
+  <Reference
+    authors="Barto, A. G., Bradtke, S. J., and Singh, S. P."
+    year={1995}
+    title="Learning to act using real-time dynamic programming"
+    venue="Artificial Intelligence 72(1), 81–138"
+    doi="10.1016/0004-3702(94)00011-O"
+    note="Asynchronous DP made into a control architecture: back up only the states you actually visit, and act on the half-converged value function. The formal justification for what the Policy Painter does every frame."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 15 is this chapter's baseline: the MDP framing, the payoff notation, and the MDP_value_iteration algorithm of Table 15.1, which the first algorithm box reproduces with a stopping rule added."
+  />
+  <Reference
+    authors="Kurniawati, H."
+    year={2022}
+    title="Partially Observable Markov Decision Processes and Robotics"
+    venue="Annual Review of Control, Robotics, and Autonomous Systems 5, 253–277"
+    doi="10.1146/annurev-control-042920-092451"
+    note="The modern survey of what happens when you drop this chapter's full-observability assumption. Read the introduction now for the bridge to Chapter 22; read the rest after it."
+  />
+  <Reference
+    authors="Akella, P., Dixit, A., Ahmadi, M., Lindemann, L., Chapman, M. P., Pappas, G. J., Ames, A. D., and Burdick, J. W."
+    year={2025}
+    title="Risk-Aware Robotics: Tail Risk Measures in Planning, Control, and Verification"
+    venue="IEEE Control Systems 45(4), 46–78"
+    doi="10.1109/MCS.2025.3577050"
+    note="What to do when maximizing the expectation is not what you meant — CVaR and other tail measures, and what they cost you in tractability. The honest answer to the Cliff Run's caveat about individual runs."
+  />
+</References>
