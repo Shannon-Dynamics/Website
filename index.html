@@ -894,6 +894,24 @@
             .hero-shortcuts { grid-template-columns: 1fr; }
         }
 
+        /* ── mobile hero: tighter, stable, no scramble reflow ── */
+        @media (max-width: 640px) {
+            /* svh = small viewport height, excludes mobile browser chrome */
+            .hero { min-height: 100svh; }
+            .hero-in { padding-top: 110px; padding-bottom: 52px; }
+            /* smaller floor so the headline fits comfortably on one visual unit */
+            .hero-h1 { font-size: 34px; text-wrap: unset; }
+            /* reserve space for the longest scramble word so its width change
+               never causes a line-break reflow in the headline */
+            #hero-scramble { display: inline-block; min-width: 8ch; }
+            .hero-sub { font-size: 14px; margin-top: 18px; }
+            .hero-cta { margin-top: 22px; gap: 10px; }
+            .hero-shortcuts { margin-top: 36px; gap: 10px; }
+            .hero-shortcut { padding: 16px 18px; gap: 12px; border-radius: 12px; }
+            .hero-shortcut b { font-size: 13.5px; }
+            .hero-shortcut em { font-size: 11.5px; }
+        }
+
         /* ── library shortcut ──
            Same hairline row grammar the spec index used, but the rows are
            navigation now: three doors into the Library instead of four numbers. */
