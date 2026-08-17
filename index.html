@@ -3011,12 +3011,8 @@
 
             panels.forEach((p, i) => {
                 const tab = p.querySelector(".lib-tab");
-                /* hover drives it on a real pointer; the tab button keeps it
-                   reachable by click, tap and keyboard everywhere else */
-                p.addEventListener("mouseenter", () => { if (desktop.matches) open(i); });
                 tab.addEventListener("click", () => open(i));
                 tab.addEventListener("focus", () => open(i));
-                /* focus moving into the open body must not let a stale panel win */
                 p.addEventListener("focusin", () => { if (desktop.matches && current !== i) open(i); });
             });
 
