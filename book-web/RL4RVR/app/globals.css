@@ -33,6 +33,10 @@
 :root {
   color-scheme: light;
 
+  /* The families themselves come from Fontsource, imported in app/layout.tsx. */
+  --font-inter: 'Inter Variable';
+  --font-jetbrains-mono: 'JetBrains Mono Variable';
+
   --font-sans: var(--font-inter), system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sd-font-mono: var(--font-mono);

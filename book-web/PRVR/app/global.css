@@ -67,6 +67,9 @@
   --pr-widget-ink: #0d9488;
 
   /* --- Shannon shell ---------------------------------------------------- */
+  /* The families themselves come from Fontsource, imported in app/layout.tsx. */
+  --font-inter: 'Inter Variable';
+  --font-jetbrains-mono: 'JetBrains Mono Variable';
   --sd-font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 
   /* Fumadocs' chrome tokens, remapped onto the Shannon reading surface: a

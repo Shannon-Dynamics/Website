@@ -15,6 +15,10 @@ env:
   # — it is the only place the prefix is written down.
   SITE_BASE: /web-shannon-26
 
+  # The build should need no network beyond the npm registry. Fonts are vendored
+  # (see either book's app/layout.tsx); this closes the remaining call.
+  NEXT_TELEMETRY_DISABLED: '1'
+
 jobs:
   deploy:
     runs-on: ubuntu-latest

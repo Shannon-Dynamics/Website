@@ -1,27 +1,20 @@
 import type { Metadata } from 'next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+// The Shannon Dynamics pair, self-hosted through Fontsource.
+//
+// NOT `next/font/google`: that fetches the woff2 files from fonts.gstatic.com
+// during the build, so a runner that cannot reach Google fails the deploy
+// outright rather than degrading — which is exactly what happened. Fontsource
+// ships the same files through npm, so the only network the build needs is the
+// registry it already depends on.
+//
+// `index.css` is the weight-axis variable face across all subsets; the Greek
+// one earns its place in a book written in γ, λ and σ.
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import './globals.css';
 import { ThemeProvider, themeScript } from '@/components/layout/ThemeProvider';
 import { BookHeader } from '@/components/shannon/BookHeader';
 import { SiteFooter } from '@/components/shannon/SiteFooter';
-
-/**
- * The Shannon Dynamics pair. Inter carries everything the site sets in type;
- * JetBrains Mono carries code, and the mono eyebrows the chrome is built from.
- */
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  display: 'swap',
-  variable: '--font-inter',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500'],
-  display: 'swap',
-  variable: '--font-jetbrains-mono',
-});
 
 export const metadata: Metadata = {
   title: {
@@ -44,11 +37,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html
-      lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable}`}
-      suppressHydrationWarning
-    >
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
