@@ -1,4 +1,4 @@
 :HL["/web-shannon-26/books/probabilistic-robotics-via-rust/_next/static/chunks/0jm9p8e831ziy.css","style"]
 :HL["/web-shannon-26/books/probabilistic-robotics-via-rust/_next/static/chunks/0n_nezv4jg0eh.css","style"]
 :HL["/web-shannon-26/books/probabilistic-robotics-via-rust/shannon/logo-horizontal-white.png","image"]
-0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"/_not-found","param":null,"prefetchHints":4192,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}},"staleTime":300,"buildId":"s_qMI_gdhmRRMMDGSCvRH"}
+0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"/_not-found","param":null,"prefetchHints":4192,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}},"staleTime":300,"buildId":"hXYK_QaUSYAB313ySbGVm"}
