@@ -1,0 +1,1272 @@
+---
+title: "Probability: The Language of Uncertainty"
+description: Bayes rule as pointwise multiplication, the Gaussian as a shape you can drag, and the two parameterizations — moments and canonical — that every filter in this book trades between.
+chapter: 2
+part: PART I
+partTitle: Foundations
+difficulty: Foundational
+readingTime: 55 min
+quote: In probabilistic robotics, quantities such as sensor measurements, controls, and the states a robot and its environment might assume are all modeled as random variables.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 2
+---
+
+import { GaussianPlayground } from '@/components/ch/ch02/gaussian-playground';
+import { BlobMultiplier } from '@/components/ch/ch02/blob-multiplier';
+import { SamplingConvergence } from '@/components/ch/ch02/sampling-convergence';
+import { SliceVsSquash } from '@/components/ch/ch02/slice-vs-squash';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Derive Bayes rule from the definition of conditioning, and say exactly what the normalizer η is',
+    'State what conditional independence assumes — and what it does not follow from',
+    'Read a covariance matrix as a shape: eigenvectors, iso-density ellipses, and the χ² number that sizes them',
+    'Multiply two Gaussians in moments form the hard way and in canonical form the easy way',
+    'Tell marginalizing apart from conditioning, and predict which one narrows a distribution',
+    'Implement Gaussian<N> and Canonical<N> in Rust, factoring once and never inverting a covariance to evaluate a density',
+  ]}
+  prerequisites={[
+    'Chapter 1: the hallway, the door detector, and why a single best guess is not enough',
+    'Linear algebra: matrix multiplication, transpose, eigenvectors of a symmetric matrix',
+    'Calculus: integration by substitution, and enough comfort to skip a page of algebra',
+  ]}
+>
+Every remaining chapter of this book is Bayes rule applied cleverly to robots. That makes this
+chapter's toolkit small — random variables, conditioning, expectation, the Gaussian, entropy — but
+it has to be *owned* rather than reviewed, because Chapters 5 through 26 will lean on it without
+apology.
+
+Two ideas do most of the work. The first is that **Bayes rule is not a formula, it is pointwise
+multiplication**: take the curve you believed, multiply it by the curve the sensor implies, divide
+by whatever it takes to make the result integrate to one. The second is that **a Gaussian is not a
+formula either, it is a shape** — a blob with a location, a size, and a tilt, and every operation
+this book performs on it is something you can watch happen to the blob.
+
+Both claims come with an executable receipt. The numbers printed here are the numbers the widgets
+show, and they are the numbers a Rust unit test pins to twelve decimal places. That convention
+starts in this chapter and never stops.
+</Overview>
+
+## The problem: two numbers in, one number out
+
+In [Chapter 1](/chapters/ch01-robot-that-doubts) we put Rusty in a ten-cell corridor with doors at
+cells 1, 4 and 5, gave it a door detector that fires correctly 60% of the time at a door and 20% of
+the time at a blank wall, and told it nothing about where it started. The detector fired.
+
+The reader was handed two numbers — a prior of $0.1$ per cell, a likelihood of $0.6$ or $0.2$ — and
+one answer: $0.1875$ at each door, $0.0625$ everywhere else. What was never justified was the
+recipe. Why multiply rather than average? Why is the answer not $0.6$? And what exactly is the
+division at the end doing?
+
+Here is the whole computation, in one line per step. Multiply the prior by the likelihood, cell by
+cell:
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{0.1} \cdot \htmlClass{term-measurement}{0.6} = 0.06
+\quad\text{(three doors)}
+\qquad
+\htmlClass{term-prior}{0.1} \cdot \htmlClass{term-measurement}{0.2} = 0.02
+\quad\text{(seven walls)}
+$$
+</LinkedMath>
+
+Those ten numbers sum to $3(0.06) + 7(0.02) = 0.32$, not to one, so they are not yet a
+distribution — they are the right *shape* at the wrong scale. Divide by the total:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{0.06 / 0.32 = 0.1875}
+\qquad\qquad
+\htmlClass{term-posterior}{0.02 / 0.32 = 0.0625}
+$$
+</LinkedMath>
+
+That is Bayes rule, and the $0.32$ is the only part that needs a name. It is the probability of
+seeing what we saw, averaged over everywhere we might have been, and it is a constant with respect
+to the cell index — which is why the whole normalization can be deferred to the end and written as
+a single symbol $\eta = 1/0.32$. Thrun, Burgard and Fox use $\eta$ this way throughout, and so does
+this book: *compute the shape, normalize later.*
+
+Now make the corridor continuous. Rusty's odometry says it has travelled about 5 m, give or take
+2 m. Its wall-range sensor says 6.5 m, and it is a better sensor. Multiplying ten numbers by ten
+numbers becomes multiplying one curve by another, and the widget below does exactly that, live.
+
+<Deferred>
+  <BlobMultiplier />
+</Deferred>
+
+Three things in that figure are worth more than the algebra that justifies them later.
+
+**The posterior is narrower than both inputs, always.** Not narrower than the average of the two —
+narrower than the *better* of the two. Fusing an excellent estimate with a mediocre one still
+improves the excellent one, because two independent opinions genuinely carry more information than
+one.
+
+**The posterior mean is not a midpoint.** It sits between the two means, but pulled toward whichever
+curve is sharper. When they are equally sharp it lands exactly halfway; when the sensor is ten times
+sharper, it lands almost on the sensor. This is *precision weighting*, and the weight is one over
+the variance.
+
+**In canonical form the arithmetic is addition.** The ledger under the plot tracks two numbers,
+$\Omega = 1/\sigma^2$ and $\xi = \mu/\sigma^2$, and the fusion is nothing but $\Omega_1 + \Omega_2$
+and $\xi_1 + \xi_2$. That observation looks like a curiosity here. In
+[Chapter 6](/chapters/ch06-kalman-filters) it becomes the information filter, and in
+[Chapter 15](/chapters/ch15-factor-graphs) it becomes the reason modern SLAM back-ends never
+store a covariance matrix at all.
+
+<KeyIdea title="The one sentence version">
+Bayes rule multiplies the distribution you had by the distribution the data implies, and divides by
+whatever makes the result integrate to one. Everything else in this chapter is about choosing
+representations that make that multiplication cheap.
+</KeyIdea>
+
+## Building intuition: a Gaussian is a shape you can drag
+
+One distribution dominates this book, and it earns that place for three reasons that are all
+theorems: the product of two Gaussians is Gaussian, the marginal of a Gaussian is Gaussian, and a
+linear map of a Gaussian is Gaussian. A belief that starts Gaussian and only ever meets those three
+operations stays Gaussian forever, described by a mean vector and a covariance matrix and nothing
+else. That is the entire premise of the Kalman filter.
+
+So the covariance matrix deserves to be understood as geometry before it is understood as algebra.
+Play with it first.
+
+<Deferred>
+  <GaussianPlayground />
+</Deferred>
+
+The figure shows the same distribution three ways at once, and each way answers a different
+question. The **cloud** answers *what would I see if I drew from it* — and notice that the 500 dots
+are never re-sampled: they are one fixed set of standard-normal numbers being pushed through a
+changing matrix, which is all that $x = \mu + Lz$ means. The **ellipses** answer *where does the
+density live*, at one, two, and 2.4477 standard deviations. The **gray axes** answer *which
+directions are special*: they are the eigenvectors of $\Sigma$, and along them the two coordinates
+stop interfering with each other.
+
+The misconception this kills is a stubborn one. It is tempting to read the ellipse's half-widths as
+the standard deviations of $x_a$ and $x_b$. They are not, and the blue marginal curves painted
+along the two edges prove it: as $\rho$ sweeps and the ellipse swings through 45 degrees, those
+curves do not move by a pixel. Correlation changes how the two coordinates covary; it does not
+change how uncertain either one is on its own. What it *does* change is how much one of them can
+teach you about the other — and that is a different question, taken up in Derivation 6.
+
+## The mathematics
+
+### Notation
+
+Every symbol below is Thrun-compatible; the manifold operators wait for
+[Chapter 3](/chapters/ch03-geometry-of-motion).
+
+<NotationTable
+  rows={[
+    { sym: 'X,\\; x', meaning: 'Random variable and a value it may take. p(x) is a pmf if X is discrete, a pdf if continuous.' },
+    { sym: 'p(x, y),\\; p(x \\mid y)', meaning: 'Joint distribution; conditional distribution of x given that Y took the value y.' },
+    { sym: '\\eta', meaning: 'Generic normalizer. Whatever constant makes the expression to its right integrate to one.' },
+    { sym: '\\mathbb{E}[X],\\; \\operatorname{Var}[X]', meaning: 'Expectation and variance.' },
+    { sym: '\\mu,\\; \\Sigma', meaning: 'Mean vector and covariance matrix — the moments parameterization.' },
+    { sym: '\\mathcal{N}(x; \\mu, \\Sigma)', meaning: 'Gaussian density in x with that mean and covariance.' },
+    { sym: '\\Omega = \\Sigma^{-1},\\; \\xi = \\Sigma^{-1}\\mu', meaning: 'Information matrix and information vector — the canonical parameterization.' },
+    { sym: 'd_M^2(x) = (x-\\mu)^{\\mathsf{T}}\\Sigma^{-1}(x-\\mu)', meaning: 'Squared Mahalanobis distance: distance measured in standard deviations, not metres.' },
+    { sym: 'H(X)', meaning: 'Entropy. Differential entropy when X is continuous, in nats unless bits are stated.' },
+  ]}
+/>
+
+### Random variables, joints, and conditionals
+
+A **random variable** $X$ takes values according to a distribution. If the value space is discrete
+we write $p(X = x)$, abbreviated $p(x)$, with $\sum_x p(x) = 1$ and $p(x) \ge 0$. If it is
+continuous we assume a **probability density** $p(x)$ with $\int p(x)\,dx = 1$. A density is not a
+probability: it can exceed one. Only its integral over a region is a probability, and this book will
+use "probability", "density", and "distribution" interchangeably wherever no confusion can result.
+
+The **joint** $p(x, y)$ is the density of both events together. The **conditional** is defined,
+whenever $p(y) > 0$, as
+
+$$
+p(x \mid y) \;=\; \frac{p(x, y)}{p(y)}
+$$
+
+which is worth reading as a statement about renormalization: slice the joint at $Y = y$, and scale
+the slice so it integrates to one again. That is the definition the entire chapter hangs on.
+
+$X$ and $Y$ are **independent** when $p(x, y) = p(x)\,p(y)$, equivalently $p(x \mid y) = p(x)$:
+knowing $Y$ tells you nothing about $X$. They are **conditionally independent given $Z$** when
+
+$$
+p(x, y \mid z) \;=\; p(x \mid z)\, p(y \mid z)
+$$
+
+<Callout type="warn">
+Conditional independence neither implies nor is implied by independence. Two LiDAR beams from the
+same pose are wildly dependent unconditionally — both are long in a corridor and short in a closet —
+yet the beam model of [Chapter 10](/chapters/ch10-sensor-models) treats them as independent *given
+the pose and the map*. That assumption is what makes a 360-beam likelihood a product of 360 terms
+instead of an intractable joint, and it is also why a scan match can be catastrophically
+overconfident: the beams share a wall, so conditioning on the pose does not actually make them
+independent. Chapter 10 measures the damage; here it is enough to notice that the assumption is a
+choice, not a fact.
+</Callout>
+
+Finally, the **theorem of total probability** reconstructs a marginal from a conditional by
+integrating out what you introduced:
+
+$$
+p(x) = \sum_y p(x \mid y)\, p(y)
+\qquad\qquad
+p(x) = \int p(x \mid y)\, p(y)\, dy
+$$
+
+### Bayes rule
+
+<Derivation title="Bayes rule from the definition of conditioning" result="p(x \mid z) = \eta\, p(z \mid x)\, p(x)" defaultOpen>
+**Step 1 — the joint is symmetric.** By the definition of conditional probability applied both ways,
+
+$$
+p(x, z) \;=\; p(x \mid z)\, p(z) \;=\; p(z \mid x)\, p(x)
+$$
+
+**Step 2 — divide.** For $p(z) > 0$,
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x \mid z)}
+= \frac{\htmlClass{term-measurement}{p(z \mid x)}\;\htmlClass{term-prior}{p(x)}}{p(z)}
+$$
+</LinkedMath>
+
+**Step 3 — notice the denominator does not depend on $x$.** Expanding it by total probability,
+$p(z) = \int p(z \mid x')\,p(x')\,dx'$, which has integrated $x$ away. It is therefore the same
+number for every $x$ in the posterior, and we may name it $1/\eta$ and defer it:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x \mid z)}
+= \eta\; \htmlClass{term-measurement}{p(z \mid x)}\; \htmlClass{term-prior}{p(x)}
+$$
+</LinkedMath>
+
+**The version with background knowledge.** Every rule above may be conditioned on further variables
+without changing its form. Conditioning on $y$ throughout gives
+
+$$
+p(x \mid z, y) \;=\; \eta\; p(z \mid x, y)\, p(x \mid y)
+$$
+
+which is the form the Bayes filter of [Chapter 5](/chapters/ch05-bayes-filter) actually uses, with
+$y$ standing for the entire history of controls and earlier measurements.
+
+**The hallway, in this notation.** With $x$ ranging over ten cells, $\bel(x) = p(x) = 0.1$, and
+$p(z = \text{door} \mid x)$ equal to $0.6$ at cells $\{1, 4, 5\}$ and $0.2$ elsewhere:
+
+$$
+\eta^{-1} = \sum_x p(z \mid x)\,p(x) = 3(0.6)(0.1) + 7(0.2)(0.1) = 0.32
+$$
+
+$$
+p(x \mid z) = \frac{(0.6)(0.1)}{0.32} = 0.1875
+\quad\text{at a door,}\qquad
+\frac{(0.2)(0.1)}{0.32} = 0.0625
+\quad\text{elsewhere.} \qquad \blacksquare
+$$
+</Derivation>
+
+The quantity $\eta^{-1} = p(z)$ has a name worth remembering: the **evidence**. The filter treats it
+as housekeeping, but it is a live diagnostic: a surprisingly small value means the measurement was
+unlikely under everything you currently believe. [Chapter 11](/chapters/ch11-localization-gaussian)
+rejects outliers with it and [Chapter 12](/chapters/ch12-localization-global) uses it to notice that
+a robot has been kidnapped.
+
+### Expectation and covariance
+
+The **expectation** is the probability-weighted average, and it is linear:
+
+$$
+\E[X] = \int x\, p(x)\, dx
+\qquad\qquad
+\E[AX + b] = A\,\E[X] + b
+$$
+
+Linearity holds whether or not the components of $X$ are independent, which is why it will survive
+every approximation in this book. The **covariance** is the expected outer product of the deviation
+from the mean:
+
+$$
+\Sigma \;=\; \Cov[X] \;=\; \E\!\left[(X - \E[X])(X - \E[X])\T\right]
+$$
+
+Three properties follow immediately and get used constantly. $\Sigma$ is symmetric, since the outer
+product is. It is positive semi-definite, since for any vector $a$ we have
+$a\T \Sigma a = \E[(a\T(X - \mu))^2] \ge 0$ — a variance, and variances cannot be negative. And its
+diagonal entries are the variances of the individual coordinates while its off-diagonal entries
+measure how they move together. A covariance with a negative eigenvalue is not an unlucky
+covariance; it is a bug, and [Chapter 6](/chapters/ch06-kalman-filters) spends real effort making
+sure filters never produce one.
+
+### The Gaussian
+
+In one dimension,
+
+$$
+\Normal(x; \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}}
+\exp\!\left(-\frac{1}{2}\frac{(x-\mu)^2}{\sigma^2}\right)
+$$
+
+and in $n$ dimensions, with $\mu \in \R^n$ and $\Sigma$ symmetric positive-definite,
+
+$$
+\Normal(x; \mu, \Sigma) = \det(2\pi\Sigma)^{-1/2}
+\exp\!\left(-\tfrac{1}{2}(x-\mu)\T \Sigma^{-1} (x-\mu)\right)
+$$
+
+The second is a strict generalization of the first. Everything interesting lives in the exponent's
+quadratic form: the prefactor exists only to make the integral one, which is precisely why $\eta$
+can absorb it and why so much of what follows is bookkeeping about quadratics.
+
+It is worth being explicit about the working definition this book uses: **a Gaussian is a quadratic
+in the exponent**. Multiplying densities adds quadratics; conditioning fixes some variables in a
+quadratic; a linear map substitutes into a quadratic. All three stay quadratic, so all three stay
+Gaussian, and the next five derivations are just careful applications of that one fact.
+
+### The product of two Gaussians
+
+<Derivation title="Two 1-D Gaussians multiply to an unnormalized Gaussian" result="\sigma^2 = (\sigma_1^{-2} + \sigma_2^{-2})^{-1}">
+**Statement.** $\Normal(x; \mu_1, \sigma_1^2)\cdot\Normal(x; \mu_2, \sigma_2^2) \propto \Normal(x; \mu, \sigma^2)$
+with
+
+$$
+\sigma^2 = \left(\frac{1}{\sigma_1^2} + \frac{1}{\sigma_2^2}\right)^{-1}
+\qquad
+\mu = \sigma^2\left(\frac{\mu_1}{\sigma_1^2} + \frac{\mu_2}{\sigma_2^2}\right)
+$$
+
+**Step 1 — exponents add.** Discarding both prefactors into a constant $c$,
+
+$$
+c\,\exp\!\left(-\tfrac{1}{2}\left[\frac{(x-\mu_1)^2}{\sigma_1^2} + \frac{(x-\mu_2)^2}{\sigma_2^2}\right]\right)
+$$
+
+**Step 2 — collect the quadratic in $x$.** Expanding both squares and gathering powers of $x$,
+
+$$
+\frac{(x-\mu_1)^2}{\sigma_1^2} + \frac{(x-\mu_2)^2}{\sigma_2^2}
+= \underbrace{\left(\frac{1}{\sigma_1^2}+\frac{1}{\sigma_2^2}\right)}_{\textstyle \Omega}x^2
+- 2\underbrace{\left(\frac{\mu_1}{\sigma_1^2}+\frac{\mu_2}{\sigma_2^2}\right)}_{\textstyle \xi}x
++ \left(\frac{\mu_1^2}{\sigma_1^2}+\frac{\mu_2^2}{\sigma_2^2}\right)
+$$
+
+The two coefficients that carry all the $x$-dependence are exactly $\Omega$ and $\xi$. This is not a
+coincidence and it is not notation smuggled in from later — it is the definition of canonical form,
+falling out of the algebra on its own.
+
+**Step 3 — complete the square.** The book's first use of the manoeuvre that will eventually produce
+the Kalman gain:
+
+$$
+\Omega x^2 - 2\xi x = \Omega\left(x - \frac{\xi}{\Omega}\right)^2 - \frac{\xi^2}{\Omega}
+$$
+
+The trailing $-\xi^2/\Omega$ has no $x$ in it, so it joins the constant. What is left is
+$\exp(-\tfrac{1}{2}\Omega(x - \xi/\Omega)^2)$: a Gaussian with variance $1/\Omega$ and mean
+$\xi/\Omega$.
+
+**Step 4 — read off the moments.**
+
+$$
+\sigma^2 = \frac{1}{\Omega} = \frac{\sigma_1^2\sigma_2^2}{\sigma_1^2+\sigma_2^2}
+\qquad
+\mu = \frac{\xi}{\Omega} = \frac{\sigma_2^2\mu_1 + \sigma_1^2\mu_2}{\sigma_1^2+\sigma_2^2}
+$$
+
+Both forms are useful: the first says precisions add, the second says the mean is a weighted average
+in which each estimate is weighted by *the other's* variance. And since
+$\sigma^2 < \min(\sigma_1^2, \sigma_2^2)$ whenever both are finite, fusion strictly increases
+certainty — the claim the widget demonstrates and cannot be made to violate.
+
+**What the constant was.** Collecting every discarded factor and comparing with the normalized
+answer gives
+
+$$
+\int \Normal(x; \mu_1, \sigma_1^2)\,\Normal(x; \mu_2, \sigma_2^2)\, dx
+= \Normal(\mu_1;\, \mu_2,\, \sigma_1^2 + \sigma_2^2)
+$$
+
+so $\eta$ was never hiding anything mysterious: it is the evidence, and it is itself a Gaussian —
+evaluated at the disagreement between the two means, with the two variances added. A large
+disagreement relative to $\sqrt{\sigma_1^2+\sigma_2^2}$ means small evidence, which is exactly the
+gating test [Chapter 11](/chapters/ch11-localization-gaussian) applies before accepting a data
+association. $\blacksquare$
+</Derivation>
+
+### Canonical form, where multiplication is addition
+
+<Derivation title="Canonical parameters add under multiplication" result="\Omega = \Omega_1 + \Omega_2,\; \xi = \xi_1 + \xi_2">
+**Statement.** Write a Gaussian as
+$p_i(x) \propto \exp\!\left(-\tfrac{1}{2}x\T\Omega_i x + x\T\xi_i\right)$, with
+$\Omega_i = \Sigma_i^{-1}$ and $\xi_i = \Sigma_i^{-1}\mu_i$. Then $p_1 p_2$ has parameters
+$\Omega_1 + \Omega_2$ and $\xi_1 + \xi_2$.
+
+**Step 1 — exponents add.**
+
+$$
+p_1(x)\,p_2(x) \propto
+\exp\!\left(-\tfrac{1}{2}x\T\Omega_1 x + x\T\xi_1 -\tfrac{1}{2}x\T\Omega_2 x + x\T\xi_2\right)
+$$
+
+**Step 2 — gather like terms.** The quadratic coefficients add and the linear coefficients add:
+
+$$
+= \exp\!\left(-\tfrac{1}{2}x\T(\Omega_1+\Omega_2)x + x\T(\xi_1+\xi_2)\right)
+$$
+
+which is canonical form again, with the stated parameters. There is no third step. $\blacksquare$
+
+**Why this matters more than it looks.** The two Bayes-filter operations have opposite costs in the
+two parameterizations:
+
+| Operation | Moments $(\mu, \Sigma)$ | Canonical $(\xi, \Omega)$ |
+|---|---|---|
+| Multiply two Gaussians — *correct* | $O(n^3)$: inverses and a product | $O(n^2)$: two additions |
+| Marginalize a block out — *predict* | $O(n^2)$: copy $\Sigma_{aa}$ | $O(n^3)$: a Schur complement |
+| Condition on a measured block | $O(n^3)$: a Schur complement | $O(n^2)$: copy $\Omega_{aa}$ |
+
+Every row is a mirror. That table is the reason [Chapter 6](/chapters/ch06-kalman-filters) presents
+two filters instead of one, the reason the information filter is preferred in multi-sensor fusion
+where measurements outnumber predictions, and the reason
+[Chapter 15](/chapters/ch15-factor-graphs) formulates SLAM entirely in $\Omega$: with a thousand
+poses, $\Omega$ is sparse and $\Sigma$ is dense. The bottom row is Derivation 6, which has not
+happened yet — come back to this table after it has.
+</Derivation>
+
+<Algorithm
+  name="gaussian_product_canonical(ξ₁, Ω₁, ξ₂, Ω₂)"
+  inputs="two Gaussians in canonical form"
+  outputs="their normalized product, in canonical form"
+  complexity="O(n²) — two additions. Converting back to moments costs one O(n³) solve."
+>
+1. $\Omega = \Omega_1 + \Omega_2$
+2. $\xi = \xi_1 + \xi_2$
+3. return $(\xi, \Omega)$
+</Algorithm>
+
+### Linear transformations
+
+<Derivation title="A linear map of a Gaussian is a Gaussian" result="Y = AX + b \Rightarrow Y \sim \mathcal{N}(A\mu + b,\; A\Sigma A^{\mathsf{T}})">
+**Statement.** If $X \sim \Normal(\mu, \Sigma)$ and $Y = AX + b$ for a constant matrix $A$ and
+vector $b$, then $Y \sim \Normal(A\mu + b,\, A\Sigma A\T)$.
+
+**Step 1 — the mean, by linearity of expectation.** $\E[Y] = A\,\E[X] + b = A\mu + b$.
+
+**Step 2 — the covariance, from its definition.**
+
+$$
+\Cov[Y] = \E\!\left[(Y - A\mu - b)(Y - A\mu - b)\T\right]
+= \E\!\left[A(X-\mu)(X-\mu)\T A\T\right]
+$$
+
+**Step 3 — pull the constants out.** $A$ and $A\T$ do not depend on $X$, so
+
+$$
+\Cov[Y] = A\,\E\!\left[(X-\mu)(X-\mu)\T\right]A\T = A\Sigma A\T
+$$
+
+Note that Steps 1–3 never used Gaussianity: *any* distribution transforms its mean and covariance
+this way. What Gaussianity adds is that the mean and covariance are the whole story.
+
+**The density-level version, for invertible $A$.** Change of variables gives
+$p_Y(y) = p_X(A^{-1}(y-b))\,\lvert\det A\rvert^{-1}$. Substituting the Gaussian density and using
+$(A^{-1})\T \Sigma^{-1} A^{-1} = (A\Sigma A\T)^{-1}$ together with
+$\det(2\pi\Sigma)\,(\det A)^2 = \det(2\pi A\Sigma A\T)$ reproduces
+$\Normal(y; A\mu + b, A\Sigma A\T)$ exactly. $\blacksquare$
+
+**Read backwards, this is a sampler.** Factor $\Sigma = LL\T$ by Cholesky, draw
+$z \sim \Normal(0, I)$, and set $x = \mu + Lz$. Then $x$ has mean $\mu$ and covariance
+$L I L\T = \Sigma$. One $O(n^3)$ factorization, then $O(n^2)$ per sample forever after — and it is
+literally what the Gaussian Playground redraws every frame.
+
+**Read together with Derivation 2, this is the Kalman filter waiting to happen.** A linear motion
+model pushes a Gaussian forward (Derivation 4); a linear measurement multiplies it by another
+Gaussian (Derivation 2). Chapter 6 does little more than compose the two and give the result a
+subscript.
+</Derivation>
+
+### Iso-density contours are ellipses
+
+<Derivation title="Contours of constant density are ellipses on the eigenvectors of Σ" result="semi-axes \sqrt{c\,\lambda_i}, and c = 5.991 for 95% in 2-D">
+**Statement.** The set $\{x : d_M^2(x) = c\}$, where
+$d_M^2(x) = (x-\mu)\T\Sigma^{-1}(x-\mu)$, is an ellipsoid centred at $\mu$ whose axes point along
+the eigenvectors of $\Sigma$ and whose semi-axis lengths are $\sqrt{c\,\lambda_i}$.
+
+**Step 1 — the density depends on $x$ only through $d_M^2$.** Everything else in
+$\Normal(x;\mu,\Sigma)$ is constant, so a contour of constant density is a contour of constant
+$d_M^2$.
+
+**Step 2 — diagonalize.** $\Sigma$ is symmetric positive-definite, so
+$\Sigma = V\Lambda V\T$ with $V$ orthogonal and $\Lambda = \diag(\lambda_1,\dots,\lambda_n)$,
+$\lambda_i > 0$. Then $\Sigma^{-1} = V\Lambda^{-1}V\T$.
+
+**Step 3 — rotate coordinates.** Put $u = V\T(x-\mu)$, a rigid rotation into the eigenbasis. The
+quadratic form decouples completely:
+
+$$
+d_M^2 = u\T \Lambda^{-1} u = \sum_i \frac{u_i^2}{\lambda_i}
+$$
+
+**Step 4 — read off the axes.** $\sum_i u_i^2/\lambda_i = c$ is the standard equation of an
+ellipsoid with semi-axes $\sqrt{c\,\lambda_i}$ along the coordinate directions of $u$ — that is,
+along the eigenvectors of $\Sigma$.
+
+**Which $c$?** Since $u_i/\sqrt{\lambda_i}$ are independent standard normals, $d_M^2$ is a sum of
+$n$ squared standard normals: it is $\chi^2_n$ distributed. In two dimensions the $\chi^2_2$ CDF is
+elementary, $P(d_M^2 \le c) = 1 - e^{-c/2}$, so
+
+$$
+c = -2\ln(1-p)
+\qquad\Rightarrow\qquad
+c_{95\%} = -2\ln 0.05 = 5.9915,\qquad \sqrt{c} = 2.4477
+$$
+
+The 95% ellipse is therefore the **2.4477σ** ellipse, not the 2σ one — which covers only
+$1 - e^{-2} = 86.5\%$. Every confidence ellipse in this book is drawn at $\sqrt{-2\ln(1-p)}$, by the
+same `chi2Quantile2` the widgets call, so the figure and the formula are one computation.
+$\blacksquare$
+</Derivation>
+
+The Mahalanobis distance introduced there is worth naming on its own, because it is the only
+sensible way to answer "is this measurement consistent with what I expected?". Euclidean distance
+cannot answer it: 30 cm of error is nothing along an axis where the filter is uncertain and
+catastrophic along one where it is not. Mahalanobis distance measures in standard deviations, and
+its square is the $\chi^2$ statistic you compare against a table.
+
+<Algorithm
+  name="mahalanobis2(μ, Σ, x)"
+  inputs="a Gaussian and a query point"
+  outputs="d²(x) = (x−μ)ᵀ Σ⁻¹ (x−μ)"
+  complexity="O(n²) given a cached Cholesky factor; O(n³) if you have to compute it"
+>
+1. $L = \text{cholesky}(\Sigma)$ &nbsp;&nbsp;*(cache this — it is the only cubic step)*
+2. $y = L^{-1}(x - \mu)$ &nbsp;&nbsp;*(forward substitution, never an explicit inverse)*
+3. return $y\T y$
+</Algorithm>
+
+<Callout type="info">
+**Numerical hygiene rule, obeyed book-wide.** Never form $\Sigma^{-1}$ to evaluate a quadratic form
+or a density. Factor once, solve against the factor. It is faster, it is more accurate, and it fails
+loudly — Cholesky refuses a non-positive-definite matrix — where an inverse would quietly return
+garbage and let a filter run for another thousand steps before producing a negative variance.
+</Callout>
+
+### Marginals and conditionals
+
+Partition a jointly Gaussian vector as $x = (x_a, x_b)$, with
+
+$$
+\mu = \begin{bmatrix}\mu_a\\ \mu_b\end{bmatrix}
+\qquad
+\Sigma = \begin{bmatrix}\Sigma_{aa} & \Sigma_{ab}\\ \Sigma_{ba} & \Sigma_{bb}\end{bmatrix}
+$$
+
+There are two entirely different ways to get down to $x_a$ alone, and confusing them is the single
+most common error in a first estimation course.
+
+<Derivation title="Marginals copy a block; conditionals take a Schur complement" result="\Sigma_{a|b} = \Sigma_{aa} - \Sigma_{ab}\Sigma_{bb}^{-1}\Sigma_{ba}">
+**Statement.** The marginal is
+
+<LinkedMath>
+$$
+p(x_a) = \Normal\!\left(x_a;\; \htmlClass{term-prior}{\mu_a},\; \htmlClass{term-prior}{\Sigma_{aa}}\right)
+$$
+</LinkedMath>
+
+and the conditional, for an observed value $x_b = \beta$, is
+
+<LinkedMath>
+$$
+p(x_a \mid x_b = \beta) = \Normal\!\left(x_a;\;
+\htmlClass{term-posterior}{\mu_a + \Sigma_{ab}\Sigma_{bb}^{-1}(\beta - \mu_b)},\;
+\htmlClass{term-posterior}{\Sigma_{aa} - \Sigma_{ab}\Sigma_{bb}^{-1}\Sigma_{ba}}\right)
+$$
+</LinkedMath>
+
+**Sketch — the marginal.** Integrating $x_b$ out of the joint density means completing the square in
+$x_b$ and integrating that Gaussian to one; what survives is a Gaussian in $x_a$ whose parameters
+are the corresponding blocks of $\mu$ and $\Sigma$. Nothing has to be computed. In moments form,
+marginalization is a memory copy.
+
+**Sketch — the conditional.** Hold $x_b = \beta$ fixed and treat the joint exponent as a quadratic
+in $x_a$ alone. Write the information matrix in blocks,
+$\Omega = \Sigma^{-1} = \begin{bmatrix}\Omega_{aa} & \Omega_{ab}\\ \Omega_{ba} & \Omega_{bb}\end{bmatrix}$,
+whose upper-left block is known to be
+$\Omega_{aa} = (\Sigma_{aa} - \Sigma_{ab}\Sigma_{bb}^{-1}\Sigma_{ba})^{-1}$ with
+$\Omega_{ab} = -\Omega_{aa}\Sigma_{ab}\Sigma_{bb}^{-1}$. The quadratic coefficient in $x_a$ is
+$\Omega_{aa}$, so the conditional covariance is $\Omega_{aa}^{-1}$ — the Schur complement — and the
+linear coefficient $\xi_a - \Omega_{ab}\beta$ produces the stated mean. The full algebra is
+Appendix B; the pattern to remember is that the *quadratic* coefficient of the exponent is always
+the inverse covariance.
+
+**And now the duality closes.** Read that last paragraph again in canonical coordinates and the
+conditional is not a computation at all:
+
+$$
+\Omega_{a \mid b} = \Omega_{aa}
+\qquad
+\xi_{a \mid b} = \xi_a - \Omega_{ab}\,\beta
+$$
+
+Conditioning is a block copy in *canonical* form and a Schur complement in moments form; marginalizing
+is a block copy in *moments* form and a Schur complement in canonical form. The two operations are
+exact mirror images, and every estimator in this book is, at bottom, a choice about which of them you
+are willing to pay for.
+
+**The two facts worth memorizing.** Read the two parameters again and notice what is missing from
+each. The conditional **mean** depends on $\beta$; the conditional **covariance** does not. Learning
+*that* a correlated quantity was measured is what buys certainty; learning *what* it read only moves
+the estimate. And in 2-D the shrinkage has a one-line form:
+
+$$
+\sigma_{a\mid b}^2 = \sigma_a^2\left(1 - \rho^2\right)
+= \frac{\det \Sigma}{\sigma_b^2}
+$$
+
+so at $\rho = 0.95$ the conditional standard deviation is $\sqrt{1-0.9025} = 0.312$ times the
+marginal one — a 69% reduction from a single scalar observation, purchased entirely by correlation.
+$\blacksquare$
+
+**Where you will meet this matrix again.** The factor $\Sigma_{ab}\Sigma_{bb}^{-1}$ is the Kalman
+gain of [Chapter 6](/chapters/ch06-kalman-filters) with the innovation covariance already in place
+of $\Sigma_{bb}$. The Schur complement is what appears when
+[Chapter 15](/chapters/ch15-factor-graphs) marginalizes an old pose out of a factor graph and
+discovers the fill-in it leaves behind, and it is why
+[Chapter 18](/chapters/ch18-visual-slam) treats marginalization as a thing to be budgeted rather
+than done freely.
+</Derivation>
+
+<Deferred>
+  <SliceVsSquash />
+</Deferred>
+
+### Entropy
+
+Uncertainty deserves a scalar, if only so that a robot can be asked *which action would teach me the
+most*. Shannon entropy is that scalar:
+
+$$
+H(X) = \E[-\log_2 p(x)] = -\sum_x p(x)\log_2 p(x)
+$$
+
+in bits, or with $\ln$ for nats. A uniform belief over $n$ cells has $\log_2 n$ bits; a certain
+belief has zero. For continuous variables the same expression with an integral is the **differential
+entropy**, and it can be negative — a density concentrated in a region narrower than one unit has
+$H < 0$. That is not a contradiction, only a reminder that differential entropy measures spread
+relative to the units you chose, and that only *differences* of differential entropy are physically
+meaningful. Information gain, which is a difference, is perfectly well behaved.
+
+<Derivation title="Entropy of a Gaussian" result="H = \tfrac{1}{2}\ln\det(2\pi e\,\Sigma)">
+**Step 1 — write out $-\E[\ln p]$.** From the density,
+
+$$
+-\ln \Normal(x;\mu,\Sigma) = \tfrac{1}{2}\ln\det(2\pi\Sigma) + \tfrac{1}{2}(x-\mu)\T\Sigma^{-1}(x-\mu)
+$$
+
+so $H = \tfrac{1}{2}\ln\det(2\pi\Sigma) + \tfrac{1}{2}\,\E\!\left[(x-\mu)\T\Sigma^{-1}(x-\mu)\right]$.
+
+**Step 2 — the trace trick.** A scalar equals its own trace, and the trace is cyclic and linear, so
+
+$$
+\E\!\left[(x-\mu)\T\Sigma^{-1}(x-\mu)\right]
+= \E\!\left[\tr\!\left(\Sigma^{-1}(x-\mu)(x-\mu)\T\right)\right]
+= \tr\!\left(\Sigma^{-1}\Sigma\right) = n
+$$
+
+**Step 3 — collect.** $H = \tfrac{1}{2}\ln\det(2\pi\Sigma) + \tfrac{n}{2}
+= \tfrac{1}{2}\ln\!\left((2\pi e)^n \det\Sigma\right)$, which in 1-D is
+$\tfrac{1}{2}\ln(2\pi e\sigma^2)$. $\blacksquare$
+
+**Read what is not there.** $\mu$ does not appear. Entropy measures how uncertain the robot is, not
+where it thinks it is — so moving a belief costs nothing and squashing it costs everything. And
+since $\det\Sigma$ is a product of eigenvalues, entropy is a *volume*: one very confident direction
+can hide behind one very uncertain one, which is exactly the failure mode
+[Chapter 24](/chapters/ch24-exploration) has to design around when it uses information gain to
+choose where a robot should drive next.
+</Derivation>
+
+## Samples: the third representation
+
+So far a distribution has been a formula or a pair of moments. There is a third option, and half
+this book runs on it: **a bag of numbers drawn from the distribution**. The law of large numbers
+says that for any well-behaved $f$,
+
+$$
+\E[f(X)] \;\approx\; \frac{1}{N}\sum_{i=1}^{N} f(x^{[i]}),
+\qquad x^{[i]} \sim p(x)
+$$
+
+with an error that shrinks like $\sigma_f/\sqrt{N}$ by the central limit theorem. Samples have one
+enormous advantage over moments — they can represent *any* shape, including the three-peaked belief
+of [Chapter 5](/chapters/ch05-bayes-filter) that no Gaussian can express — and one enormous
+disadvantage, which is that $1/\sqrt{N}$ is a miserable rate.
+
+<Deferred>
+  <SamplingConvergence />
+</Deferred>
+
+Both halves of that widget are worth internalizing before
+[Chapter 8](/chapters/ch08-nonparametric-filters) turns samples into a filter. Ten samples look
+nothing like a bell curve and yet nothing is wrong; the estimate is unbiased at every $N$ and merely
+noisy. And getting one more decimal digit of accuracy costs a hundred times the samples, forever,
+in every dimension. That is why particle counts are argued about, why importance sampling exists,
+and why nobody runs a naive particle filter over a six-dimensional pose.
+
+<Algorithm
+  name="sample_multivariate_normal(μ, Σ)"
+  inputs="mean, covariance, and a seeded generator"
+  outputs="one draw x ~ N(μ, Σ)"
+  complexity="O(n³) once for the factorization, then O(n²) per sample"
+>
+1. $L = \text{cholesky}(\Sigma)$ &nbsp;&nbsp;*(cache across draws)*
+2. $z = (z_1,\dots,z_n)$ with each $z_i \sim \Normal(0,1)$
+3. return $\mu + Lz$
+</Algorithm>
+
+<Callout type="info">
+**How it was done in 2000.** `sample_normal_distribution` in Thrun et al.'s Table 5.4 exploits the
+central limit theorem directly: sum twelve uniform draws and scale. It was a sensible trade when a
+transcendental function cost more than twelve uniforms, and its defects are honest ones. The
+approximation is poor in the tails, and the support is bounded — a scaled sum of twelve $U(-1,1)$
+draws cannot exceed $6\sigma$ — so it can never produce the outlier that breaks your filter, which
+means it can never warn you that one exists.
+
+It also carries an arithmetic slip worth checking for yourself. Twelve independent draws from
+$U(-1,1)$ have total variance $12 \cdot \tfrac{1}{3} = 4$, so the scale factor that turns their sum
+into a standard deviation of $b$ is $\tfrac{1}{2}$; the $\tfrac{1}{6}$ printed in the draft edition's
+Table 5.4 delivers $b/3$ instead. It is a one-line thing to catch with a test and a very hard thing
+to catch by reading, which is the argument for the test convention in this chapter in miniature.
+Modern samplers use the Ziggurat method (Marsaglia and Tsang, 2000), which is both exact and
+faster; `rand_distr`'s `StandardNormal` is a Ziggurat, and it is what this book uses.
+</Callout>
+
+<KeyIdea title="Seeded reproducibility, as a rule">
+All randomness in this book flows from an explicitly seeded generator: `SmallRng::seed_from_u64` in
+Rust, `lib/prob/rng.ts` on the web. Never `thread_rng()`, never `Math.random()`. Every widget
+displays its seed and offers a re-roll; every test fixes its seed; every figure is therefore
+reproducible bit-for-bit, native and in the browser. A stochastic result you cannot reproduce is not
+a result.
+</KeyIdea>
+
+## Implementation in Rust
+
+The type carries an invariant — the covariance is symmetric positive-definite — so the constructor
+is the only place that can create one, and it proves the invariant by factoring. The factor is then
+cached, and every query below is a triangular solve rather than an inverse.
+
+```rust title="crates/pr-core/src/prob/gaussian.rs" {15}
+use nalgebra::{Cholesky, Const, SMatrix, SVector};
+use rand::Rng;
+use rand_distr::StandardNormal;
+
+/// A Gaussian in moments form: p(x) = N(x; mean, cov).
+///
+/// The Cholesky factor is cached because it is the only cubic-cost object here.
+/// Given L with cov = L Lᵀ, the density, the Mahalanobis distance, the entropy
+/// and the sampler are all O(n²) — and none of them ever forms cov⁻¹, which is
+/// slower, less accurate, and silent when it goes wrong.
+#[derive(Clone, Debug)]
+pub struct Gaussian<const N: usize> {
+    mean: SVector<f64, N>,
+    cov: SMatrix<f64, N, N>,
+    chol: Cholesky<f64, Const<N>>,
+}
+
+/// The one way to fail: a covariance that is not positive-definite. Usually a
+/// filter bug three steps upstream, which is exactly why we refuse it here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotPositiveDefinite;
+
+impl<const N: usize> Gaussian<N> {
+    pub fn new(
+        mean: SVector<f64, N>,
+        cov: SMatrix<f64, N, N>,
+    ) -> Result<Self, NotPositiveDefinite> {
+        // Symmetrize first. A covariance update that is symmetric on paper
+        // drifts by a few ULPs in floating point, and Cholesky is unforgiving.
+        let cov = (cov + cov.transpose()) * 0.5;
+        let chol = Cholesky::new(cov).ok_or(NotPositiveDefinite)?;
+        Ok(Self { mean, cov, chol })
+    }
+
+    pub fn mean(&self) -> &SVector<f64, N> { &self.mean }
+    pub fn cov(&self) -> &SMatrix<f64, N, N> { &self.cov }
+
+    /// ln|Σ| = 2 Σᵢ ln Lᵢᵢ. Free, given the factor — and it never overflows the
+    /// way a product of eigenvalues does for a 30-dimensional SLAM state.
+    pub fn ln_det(&self) -> f64 {
+        2.0 * self.chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>()
+    }
+
+    /// d²(x) = (x − μ)ᵀ Σ⁻¹ (x − μ) by one triangular solve (Algorithm above).
+    pub fn mahalanobis2(&self, x: &SVector<f64, N>) -> f64 {
+        let d = x - self.mean;
+        d.dot(&self.chol.solve(&d))
+    }
+
+    pub fn ln_pdf(&self, x: &SVector<f64, N>) -> f64 {
+        let ln_2pi = std::f64::consts::TAU.ln();
+        -0.5 * (self.mahalanobis2(x) + self.ln_det() + N as f64 * ln_2pi)
+    }
+
+    pub fn pdf(&self, x: &SVector<f64, N>) -> f64 {
+        self.ln_pdf(x).exp()
+    }
+
+    /// H = ½ ln((2πe)ⁿ |Σ|), Derivation 7. Note μ is absent: entropy says how
+    /// uncertain the robot is, never where it thinks it is.
+    pub fn entropy(&self) -> f64 {
+        let ln_2pi_e = (std::f64::consts::TAU * std::f64::consts::E).ln();
+        0.5 * (N as f64 * ln_2pi_e + self.ln_det())
+    }
+
+    /// x = μ + L z, Derivation 4 read backwards.
+    pub fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> SVector<f64, N> {
+        let z = SVector::<f64, N>::from_fn(|_, _| rng.sample(StandardNormal));
+        self.mean + self.chol.l() * z
+    }
+
+    /// Push forward through y = A x + b (Derivation 4). The const generics are
+    /// doing real work: a 2×3 A applied to a 3-D state can only produce a 2-D
+    /// Gaussian, and getting it wrong is a compile error rather than a panic.
+    pub fn transform<const M: usize>(
+        &self,
+        a: &SMatrix<f64, M, N>,
+        b: &SVector<f64, M>,
+    ) -> Result<Gaussian<M>, NotPositiveDefinite> {
+        Gaussian::new(a * self.mean + b, a * self.cov * a.transpose())
+    }
+
+    /// (μ, Σ) → (ξ, Ω). ξ comes from a solve; Ω has to be materialized, because
+    /// that is what the canonical form *is*. Pay the O(n³) once, then add.
+    pub fn to_canonical(&self) -> Canonical<N> {
+        Canonical { xi: self.chol.solve(&self.mean), omega: self.chol.inverse() }
+    }
+}
+
+/// p(x_a | x_b = β) for a 2-D joint (Derivation 6), written in scalars so the
+/// Schur complement is visible. The gain `k` moves the mean *and* shrinks the
+/// variance; in Chapter 6 it acquires a name and a subscript.
+pub fn condition_second(g: &Gaussian<2>, beta: f64) -> Gaussian<1> {
+    let (mu, s) = (g.mean(), g.cov());
+    let k = s[(0, 1)] / s[(1, 1)];
+    Gaussian::new(
+        SVector::from([mu[0] + k * (beta - mu[1])]),
+        SMatrix::from([[s[(0, 0)] - k * s[(0, 1)]]]),
+    )
+    .expect("the Schur complement of an SPD matrix is SPD")
+}
+```
+
+The canonical form is the same distribution asking a different question, and its entire
+implementation is Derivation 3.
+
+```rust title="crates/pr-core/src/prob/canonical.rs"
+use nalgebra::{Cholesky, SMatrix, SVector};
+use super::gaussian::{Gaussian, NotPositiveDefinite};
+
+/// Canonical (information) form: p(x) ∝ exp(−½ xᵀΩx + xᵀξ).
+///
+/// Moments form answers "where is it and how wide". Canonical form answers
+/// "how much do I know". They carry identical information; what differs is
+/// which of the two Bayes-filter operations is cheap.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Canonical<const N: usize> {
+    /// ξ = Σ⁻¹ μ
+    pub xi: SVector<f64, N>,
+    /// Ω = Σ⁻¹ — sparse for a pose graph, dense for its covariance.
+    pub omega: SMatrix<f64, N, N>,
+}
+
+impl<const N: usize> Canonical<N> {
+    /// The Bayes product: exponents add, so the parameters add. O(n²), and
+    /// there is genuinely nothing else to it.
+    pub fn product(&self, other: &Self) -> Self {
+        Self { xi: self.xi + other.xi, omega: self.omega + other.omega }
+    }
+
+    /// Back to moments: one factorization, one solve, one inverse. O(n³).
+    pub fn to_moments(&self) -> Result<Gaussian<N>, NotPositiveDefinite> {
+        let chol = Cholesky::new(self.omega).ok_or(NotPositiveDefinite)?;
+        Gaussian::new(chol.solve(&self.xi), chol.inverse())
+    }
+}
+```
+
+Randomness gets its own module for one reason: so that there is exactly one place in the workspace
+where a generator is constructed, and it takes a seed.
+
+```rust title="crates/pr-core/src/prob/sample.rs"
+use rand::{rngs::SmallRng, Rng, SeedableRng};
+
+/// Every demo, figure and test in this book starts here. Widgets display it.
+pub const BOOK_SEED: u64 = 0x5EED_2026;
+
+/// The only RNG constructor in the workspace. `thread_rng()` appears nowhere:
+/// a figure that cannot be reproduced is not evidence, and a flaky test is a
+/// test that will eventually be deleted rather than fixed.
+pub fn rng(seed: u64) -> SmallRng {
+    SmallRng::seed_from_u64(seed)
+}
+
+/// Thrun et al., Table 5.4 — how you sampled a normal in 2000. Kept because
+/// the book discusses it; never called, because `rand_distr::StandardNormal`
+/// is exact, faster, and has tails.
+///
+/// Twelve draws from U(−1,1) sum to variance 12·(1/3) = 4, so the multiplier
+/// that yields standard deviation `b` is 1/2. Support is bounded at ±6b, which
+/// is the defect that matters: this sampler cannot produce the outlier that
+/// breaks your filter, so it will never warn you that one exists.
+pub fn sample_normal_distribution(b: f64, rng: &mut impl Rng) -> f64 {
+    let sum: f64 = (0..12).map(|_| rng.random_range(-1.0..1.0)).sum();
+    0.5 * b * sum
+}
+```
+
+### A worked example you can check by hand
+
+Rusty's odometry gives a prior $\Normal(5.0,\, 4.0)$ — 5 m, standard deviation 2 m. The wall-range
+sensor gives a likelihood $\Normal(6.5,\, 1.0)$. Convert both, add, convert back:
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{\Omega_1 = \tfrac{1}{4} = 0.25} \;+\;
+\htmlClass{term-measurement}{\Omega_2 = \tfrac{1}{1} = 1.00} \;=\;
+\htmlClass{term-posterior}{\Omega = 1.25}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{\xi_1 = \tfrac{5.0}{4} = 1.25} \;+\;
+\htmlClass{term-measurement}{\xi_2 = \tfrac{6.5}{1} = 6.50} \;=\;
+\htmlClass{term-posterior}{\xi = 7.75}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\sigma^2 = \frac{1}{\Omega} = \htmlClass{term-posterior}{0.8}
+\qquad
+\mu = \frac{\xi}{\Omega} = \frac{7.75}{1.25} = \htmlClass{term-posterior}{6.2}
+$$
+</LinkedMath>
+
+Sanity-check the two claims from the widget against these numbers. The posterior variance $0.8$ is
+below both $4.0$ and $1.0$. The posterior mean $6.2$ sits $80\%$ of the way from the prior to the
+sensor, because the sensor is four times as precise: $\tfrac{1}{1} / (\tfrac{1}{4} + \tfrac{1}{1}) = 0.8$.
+
+Now the 2-D act. Take $\mu = 0$ and
+
+$$
+\Sigma = \begin{bmatrix} 4.0 & 1.9 \\ 1.9 & 1.0 \end{bmatrix}
+\qquad
+\rho = \frac{1.9}{\sqrt{4 \cdot 1}} = 0.95
+\qquad
+\det\Sigma = 4 - 1.9^2 = 0.39
+$$
+
+Conditioning on $x_b = 1$ gives, from Derivation 6, a mean of $1.9$ and a variance of
+$4 - 1.9^2/1 = 0.39$ — the same $0.39$, because in 2-D $\sigma_{a|b}^2 = \det\Sigma / \sigma_b^2$
+and $\sigma_b^2 = 1$ here. The marginal standard deviation was $2.0$; the conditional one is
+$\sqrt{0.39} = 0.6245$. One scalar observation of a correlated quantity removed 69% of the
+uncertainty without measuring $x_a$ at all.
+
+In entropy terms, the correlation is worth
+
+$$
+\Delta H = \tfrac{1}{2}\ln\frac{4.0}{0.39} = -\tfrac{1}{2}\ln(1-\rho^2) = 1.164\ \text{nats} = 1.679\ \text{bits}
+$$
+
+### The tests that pin those numbers
+
+```rust title="crates/pr-core/src/prob/gaussian.rs (tests)"
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prob::sample::{rng, BOOK_SEED};
+    use approx::assert_relative_eq;
+    use nalgebra::{Matrix2, SMatrix, SVector, Vector2};
+
+    /// The chapter's 1-D worked example, to the printed digit. If this test
+    /// ever disagrees with the prose, the test is what settles it.
+    #[test]
+    fn worked_example_ch02_fuse_two_sensors() {
+        let prior = Gaussian::<1>::new(SVector::from([5.0]), SMatrix::from([[4.0]])).unwrap();
+        let likelihood = Gaussian::<1>::new(SVector::from([6.5]), SMatrix::from([[1.0]])).unwrap();
+
+        let fused = prior.to_canonical().product(&likelihood.to_canonical());
+        assert_relative_eq!(fused.omega[(0, 0)], 1.25, epsilon = 1e-12); // 0.25 + 1.00
+        assert_relative_eq!(fused.xi[0], 7.75, epsilon = 1e-12);         // 1.25 + 6.50
+
+        let posterior = fused.to_moments().unwrap();
+        assert_relative_eq!(posterior.mean()[0], 6.2, epsilon = 1e-12);
+        assert_relative_eq!(posterior.cov()[(0, 0)], 0.8, epsilon = 1e-12);
+    }
+
+    /// The 2-D worked example: determinant, Schur complement, and the entropy
+    /// that correlation is worth.
+    #[test]
+    fn worked_example_ch02_correlated_pair() {
+        let sigma = Matrix2::new(4.0, 1.9, 1.9, 1.0);
+        let joint = Gaussian::<2>::new(Vector2::zeros(), sigma).unwrap();
+
+        assert_relative_eq!(sigma.determinant(), 0.39, epsilon = 1e-9);
+
+        let conditional = condition_second(&joint, 1.0);
+        assert_relative_eq!(conditional.mean()[0], 1.9, epsilon = 1e-9);
+        assert_relative_eq!(conditional.cov()[(0, 0)], 0.39, epsilon = 1e-9);
+
+        let uncorrelated =
+            Gaussian::<2>::new(Vector2::zeros(), Matrix2::new(4.0, 0.0, 0.0, 1.0)).unwrap();
+        // ½ ln(4.0 / 0.39) = −½ ln(1 − ρ²), the nats that correlation is worth.
+        let gain = uncorrelated.entropy() - joint.entropy();
+        assert_relative_eq!(gain, 1.163_951_45, epsilon = 1e-8);
+    }
+
+    /// Round-trip: moments → canonical → moments is the identity. Property-test
+    /// this over random SPD matrices; the fixed case is the regression guard.
+    #[test]
+    fn canonical_round_trip_is_identity() {
+        let sigma = Matrix2::new(4.0, 1.9, 1.9, 1.0);
+        let g = Gaussian::<2>::new(Vector2::new(1.0, -2.0), sigma).unwrap();
+        let back = g.to_canonical().to_moments().unwrap();
+        assert_relative_eq!(*back.mean(), *g.mean(), epsilon = 1e-10);
+        assert_relative_eq!(*back.cov(), *g.cov(), epsilon = 1e-10);
+    }
+
+    /// The 95% ellipse had better contain 95% of the samples. If it does not,
+    /// either the sampler or the χ² quantile is wrong — and every covariance
+    /// ellipse printed in this book is lying by the same amount.
+    #[test]
+    fn ellipse_coverage_is_what_it_claims() {
+        let g = Gaussian::<2>::new(Vector2::zeros(), Matrix2::new(4.0, 1.9, 1.9, 1.0)).unwrap();
+        let mut r = rng(BOOK_SEED);
+        const M: usize = 100_000;
+        const CHI2_95: f64 = 5.991_464_547_107_98; // −2 ln 0.05
+
+        let inside = (0..M)
+            .filter(|_| g.mahalanobis2(&g.sample(&mut r)) <= CHI2_95)
+            .count();
+        assert!((inside as f64 / M as f64 - 0.95).abs() < 5e-3);
+    }
+}
+```
+
+## Putting it together
+
+The runnable artifact for this chapter is one example binary that does both acts and prints the
+numbers the prose claims.
+
+```rust title="crates/pr-core/examples/fuse_two_sensors.rs"
+use nalgebra::{Matrix2, SMatrix, SVector, Vector2};
+use pr_core::prob::{rng, Gaussian, BOOK_SEED};
+
+fn main() {
+    // Act I — one dimension, by hand-checkable arithmetic.
+    let prior = Gaussian::<1>::new(SVector::from([5.0]), SMatrix::from([[4.0]])).unwrap();
+    let likelihood = Gaussian::<1>::new(SVector::from([6.5]), SMatrix::from([[1.0]])).unwrap();
+    let posterior = prior
+        .to_canonical()
+        .product(&likelihood.to_canonical())
+        .to_moments()
+        .unwrap();
+
+    println!("prior       N(mu = {:.3}, var = {:.3})", prior.mean()[0], prior.cov()[(0, 0)]);
+    println!("likelihood  N(mu = {:.3}, var = {:.3})", likelihood.mean()[0], likelihood.cov()[(0, 0)]);
+    println!("posterior   N(mu = {:.3}, var = {:.3})", posterior.mean()[0], posterior.cov()[(0, 0)]);
+    println!("entropy     {:.4} nats  (prior {:.4})", posterior.entropy(), prior.entropy());
+
+    // Act II — two dimensions, checked against 10 000 seeded draws.
+    let joint = Gaussian::<2>::new(Vector2::zeros(), Matrix2::new(4.0, 1.9, 1.9, 1.0)).unwrap();
+    let mut r = rng(BOOK_SEED);
+    let draws: Vec<_> = (0..10_000).map(|_| joint.sample(&mut r)).collect();
+
+    let mean = draws.iter().sum::<Vector2<f64>>() / draws.len() as f64;
+    let cov = draws
+        .iter()
+        .map(|x| (x - mean) * (x - mean).transpose())
+        .sum::<Matrix2<f64>>()
+        / (draws.len() - 1) as f64;
+
+    println!("sample cov  [{:.3} {:.3}; {:.3} {:.3}]", cov[(0, 0)], cov[(0, 1)], cov[(1, 0)], cov[(1, 1)]);
+    println!("entropy     {:.4} nats", joint.entropy());
+}
+```
+
+```text title="cargo run -p pr-core --example fuse_two_sensors"
+prior       N(mu = 5.000, var = 4.000)
+likelihood  N(mu = 6.500, var = 1.000)
+posterior   N(mu = 6.200, var = 0.800)
+entropy     1.3074 nats  (prior 2.1121)
+sample cov  [3.984 1.891; 1.891 0.995]
+entropy     2.3671 nats
+```
+
+Read the first entropy line against Derivation 7: $\tfrac{1}{2}\ln(2\pi e \cdot 4) = 2.1121$ before
+the measurement, $\tfrac{1}{2}\ln(2\pi e \cdot 0.8) = 1.3074$ after. The sensor was worth $0.80$
+nats, or $1.16$ bits — and it would have been worth exactly the same number had it read $6.5$,
+$60$, or $-4$, because entropy does not care where the belief sits. The 2-D entropy, $2.3671$ nats,
+is $\ln(2\pi e) + \tfrac{1}{2}\ln 0.39$, and the $1.164$ nats separating it from the uncorrelated
+case is the correlation earning its keep.
+
+The sample covariance agrees with $\Sigma$ to about half a percent at $N = 10^4$, which is the
+$1/\sqrt{N}$ rate of the Sampling Convergence widget doing exactly what it promised — and no better.
+Re-seed and the third digit moves; the second does not.
+
+That is the whole toolkit. From here:
+
+- [Chapter 5](/chapters/ch05-bayes-filter) applies Bayes rule recursively, and the "compute the
+  shape, normalize later" habit becomes line 3 of the Bayes filter.
+- [Chapter 6](/chapters/ch06-kalman-filters) industrializes Derivations 2, 4 and 6 into the Kalman
+  filter, and the moments/canonical duality of Derivation 3 becomes the Kalman filter and the
+  information filter side by side.
+- [Chapter 8](/chapters/ch08-nonparametric-filters) takes samples seriously as the belief itself.
+- [Chapter 11](/chapters/ch11-localization-gaussian) gates data associations on the Mahalanobis
+  distance of Derivation 5, using the very $\chi^2$ number that sizes the ellipses here.
+- [Chapter 24](/chapters/ch24-exploration) turns the entropy of Derivation 7 into information gain,
+  and lets the robot choose where to drive.
+
+One last thing worth saying plainly: the purple curve in the Blob Multiplier is not an illustration
+of `Canonical::product`. It is the output of the TypeScript port of `Canonical::product`, fed the
+same numbers as the Rust test, agreeing to the last digit the screen can show. Where the prose, the
+figure and the code disagree in this book, the test is what settles it — and there is always a test.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The product in n dimensions, twice">
+    Derive the product of two $n$-dimensional Gaussians in canonical form. It should take three
+    lines. Then derive the same result in moments form, which will take a page and require the
+    matrix inversion lemma. Conclude in one sentence why
+    [Chapter 6](/chapters/ch06-kalman-filters) offers two filters rather than one, and state which
+    one you would choose for a robot with twenty sensors and one motion model.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Variance is positive, entropy is not">
+    Show that $\Cov[X] \succeq 0$ for every random vector with finite second moments, directly from
+    the definition. Then specialize the Gaussian entropy formula to one dimension and find the
+    values of $\sigma$ for which the differential entropy is negative. Explain in two sentences why
+    a negative entropy is not a contradiction, and why the *difference* of two differential
+    entropies is still meaningful when both are negative.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="The evidence is a Gaussian">
+    Derivation 2 claims that the constant thrown away when two Gaussians are multiplied is exactly
+    $\Normal(\mu_1; \mu_2, \sigma_1^2 + \sigma_2^2)$. Prove it by carrying the constants through
+    Steps 1–4 instead of discarding them. Then explain why this makes an innovation-based outlier
+    test and an evidence-based one the same test.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check: precision weighting" hint="The posterior mean is a weighted average with weights proportional to 1/σ².">
+    In the Blob Multiplier, set the likelihood's variance to nine times the prior's. Before you
+    look: what fraction of the distance from the prior mean to the likelihood mean will the
+    posterior mean travel? Write the number down, then verify it. Now push the likelihood variance
+    to its maximum and predict what the posterior converges to and why. Finally, find a setting
+    where the posterior is *narrower than the likelihood by less than one percent* and say what
+    that setting means physically.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then check: the slice that does not widen">
+    Set $\rho = 0.95$ in Slice vs. Squash. Predict whether the conditional at $\beta = \mu_b$ is
+    narrower, wider, or the same width as the conditional at $\beta = \mu_b + 2\sigma_b$. Most
+    people get this wrong the first time. Verify with the widget, then explain the result using
+    Derivation 6 by pointing at the one symbol that is missing from the conditional covariance.
+    Finally, use the Gaussian Playground to explain why the ellipse's horizontal extent at
+    $\rho = 0.95$ is *not* the width of the blue marginal curve underneath it.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Conditioning in general dimension">
+    Implement conditioning for a partitioned `Gaussian<N>`, returning the distribution of the
+    unobserved block given values for the observed one. Rust's const generics cannot express
+    `Gaussian<{N - K}>` on stable, so you will have to choose: fixed 2-block const parameters with
+    an `A + B == N` assertion, a dynamically-sized `DVector`/`DMatrix` variant, or the nightly
+    `generic_const_exprs` feature. Pick one, justify it in a comment, and property-test the result
+    against brute-force numerical integration of the joint density on a 2-D grid.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Two samplers, one benchmark">
+    Implement `sample_normal_distribution(b)` from the Callout above and benchmark it against
+    `rand_distr::StandardNormal` with Criterion at $10^6$ draws. Report throughput, and report the
+    first four sample moments of each. Then do the part that actually matters: estimate
+    $P(\lvert X \rvert > 5)$ with both samplers and compare against the exact
+    $5.7 \times 10^{-7}$. Write two sentences on why a filter that gates outliers at $5\sigma$ must
+    not be tested with the twelve-uniform sampler.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Section 2.2 is the notation baseline for this chapter — η, the Gaussian, expectation, entropy. The canonical parameterization is deferred there to the information filter in Chapter 3; we pull it forward so the duality is a one-line observation later instead of a surprise."
+  />
+  <Reference
+    authors="Jaynes, E. T. (edited by G. L. Bretthorst)"
+    year={2003}
+    title="Probability Theory: The Logic of Science"
+    venue="Cambridge University Press"
+    doi="10.1017/CBO9780511790423"
+    note="The argument that probability is extended logic rather than a theory of frequencies. Read Chapters 1–2 if the phrase 'the robot's belief' has ever felt like a category error."
+  />
+  <Reference
+    authors="Marsaglia, G. and Tsang, W. W."
+    year={2000}
+    title="The Ziggurat Method for Generating Random Variables"
+    venue="Journal of Statistical Software 5(8), 1–7"
+    doi="10.18637/jss.v005.i08"
+    note="The sampler behind rand_distr::StandardNormal, and the reason this book does not use Thrun's twelve-uniform approximation: exact tails, and faster."
+  />
+  <Reference
+    authors="Barfoot, T. D."
+    year={2024}
+    title="State Estimation for Robotics, 2nd edition"
+    venue="Cambridge University Press"
+    url="https://asrl.utias.utoronto.ca/~tdb/bib/barfoot_ser24.pdf"
+    note="Chapter 2 covers the same Gaussian identities with more care about the linear-algebra details, including the block-inverse manipulations we sketch in Derivation 6 and prove in Appendix B. The author maintains a freely readable draft at the URL above."
+  />
+  <Reference
+    authors="Barfoot, T. D., Forbes, J. R., and Yoon, D. J."
+    year={2020}
+    title="Exactly sparse Gaussian variational inference with application to derivative-free batch nonlinear state estimation"
+    venue="International Journal of Robotics Research 39(13), 1473–1502"
+    doi="10.1177/0278364920937608"
+    note="A modern argument for living in canonical form: the inverse covariance of a batch estimation problem is block-tridiagonal, so storing Ω instead of Σ turns a dense O(n²) object into a sparse O(n) one. Derivation 3 is the toy version of the whole method."
+  />
+  <Reference
+    authors="Barfoot, T. D."
+    year={2020}
+    title="Fundamental Linear Algebra Problem of Gaussian Inference"
+    venue="arXiv:2010.08022"
+    url="https://arxiv.org/abs/2010.08022"
+    note="States precisely which entries of Σ you can recover cheaply once you have Ω, via the Takahashi recursions. The clearest available account of why the moments/canonical trade in Derivation 3 is not symmetric in practice."
+  />
+  <Reference
+    authors="Ortiz, J., Evans, T., and Davison, A. J."
+    year={2021}
+    title="A visual introduction to Gaussian Belief Propagation"
+    venue="arXiv:2107.02308"
+    url="https://arxiv.org/abs/2107.02308"
+    note="Gaussians in canonical form, made interactive — and the closest thing in the literature to what this book is trying to be. Its factor-multiplication figures are the multi-variable sequel to the Blob Multiplier."
+  />
+  <Reference
+    authors="Placed, J. A., Strader, J., Carrillo, H., Atanasov, N., Indelman, V., Carlone, L., and Castellanos, J. A."
+    year={2023}
+    title="A Survey on Active Simultaneous Localization and Mapping: State of the Art and New Frontiers"
+    venue="IEEE Transactions on Robotics 39(3), 1686–1705"
+    doi="10.1109/TRO.2023.3248510"
+    note="Where the entropy of Derivation 7 goes: Section IV surveys the information-theoretic utilities — entropy reduction, D-optimality, log det Σ — that Chapter 24 uses to decide where a robot should drive next."
+  />
+</References>

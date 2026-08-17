@@ -1,0 +1,1466 @@
+---
+title: "Localization I: Tracking with Gaussians"
+description: "EKF localization is Chapter 7's filter with Chapters 9 and 10 plugged in — an assembly, not a new algorithm. The hard part is the discrete variable nobody writes down: which landmark am I looking at?"
+chapter: 11
+part: PART IV
+partTitle: Localization
+difficulty: Intermediate
+readingTime: 55 min
+quote: In fact, the key to successful localization lies in the approach for data association.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 7
+---
+
+import { EkfLocalizationLab } from '@/components/ch/ch11/ekf-localization-lab';
+import { TaxonomyGrid } from '@/components/ch/ch11/taxonomy-grid';
+import { AssociationGate } from '@/components/ch/ch11/association-gate';
+import { HypothesisForest } from '@/components/ch/ch11/hypothesis-forest';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Place any localization problem in the taxonomy — tracking, global, or kidnapped; static or dynamic; passive or active — and say which of them a Gaussian can survive',
+    'Assemble EKF localization from parts you already own: the Chapter 7 filter, the Chapter 9 velocity model, the Chapter 10 landmark model',
+    'Derive every entry of G_t, V_t and H_t, and know why the control noise M_t is only rank 2',
+    'Choose correspondences by maximum likelihood, gate them with a calibrated χ² threshold, and explain why the Mahalanobis metric is the only honest one',
+    'Show numerically why a single wrong association is not a small error but a self-reinforcing one',
+    'Read a NEES plot, and stop believing small ellipses',
+    'Implement EkfLocalizer in Rust with const-generic measurement dimensions, and hedge with a multi-hypothesis mixture when the map is ambiguous',
+  ]}
+  prerequisites={[
+    'The EKF and the on-manifold discipline of Chapter 7 — ⊞, ⊟, and tangent-space covariance',
+    'The velocity motion model and its α parameters (Chapter 9)',
+    'The range–bearing landmark model and the correspondence variable c_t (Chapter 10)',
+    'χ² distributions and Mahalanobis distance (Chapter 2)',
+  ]}
+>
+Parts II and III built an estimator and two generative models. This chapter finally asks the
+question that started the field: **given a map, where is the robot?**
+
+The satisfying answer is that you have already built it. EKF localization is the extended Kalman
+filter of [Chapter 7](/chapters/ch07-ekf-ukf-manifolds), predicting with the velocity model of
+[Chapter 9](/chapters/ch09-motion-models) and correcting with the landmark model of
+[Chapter 10](/chapters/ch10-sensor-models). Nothing new is invented. Two hundred lines of Rust and
+Rusty tracks a loop of the Apartment with a purple ellipse that breathes in and out.
+
+The unsatisfying answer arrives about thirty seconds later. Every equation in that assembly is
+conditioned on a variable nobody derived: $c_t$, the correspondence — *which landmark is this?*
+It is discrete, it is not Gaussian, and it cannot be estimated by any filter in Part II. Get it
+right and localization is easy. Get it wrong once, and the filter does not degrade gracefully; it
+moves confidently toward a place the robot has never been, shrinks its covariance while doing so,
+and thereby makes the next wrong answer more likely than the last. This chapter is about that
+failure, the geometry that predicts it, the χ² gate that mitigates it, and the Gaussian mixture
+that hedges against it — right up to the point where hedging stops being enough and
+[Chapter 12](/chapters/ch12-localization-global) has to throw away the Gaussian entirely.
+</Overview>
+
+## The problem
+
+Here is a working localizer. Rusty drives laps of the Apartment corridor; the filter is the real
+`EkfLocalizer` from the library, the world generates noisy range–bearing detections of surveyed
+landmarks, and the purple ellipse is the posterior it reports.
+
+Watch it for one lap before touching anything. Then do exactly one thing: press **close pair**.
+
+<Deferred>
+  <EkfLocalizationLab />
+</Deferred>
+
+Under the `dense` preset the filter is *good*. Position RMSE over four hundred steps is 0.094 m,
+the ellipse swells while the robot crosses a landmark-free stretch — which is 42% of them — and
+snaps tight when a feature comes back into the cone, and the NEES trace scatters around 3 the way
+a truthful three-degree-of-freedom filter should. Four hundred and thirteen features are matched
+and every one of them is matched correctly.
+
+Under the `close pair` preset, two of the surveyed landmarks sit 0.30 m apart — the two edges of a
+doorframe, entered into the map as separate features. Nothing else changes: same filter, same
+noise, same trajectory, same seed. And the run falls apart — but not in the way readers usually
+expect. It does not get noisier. It gets **confident and wrong**, which is a strictly worse
+failure, because every number the filter publishes downstream still looks healthy.
+
+Three claims follow from that one demonstration, and the rest of the chapter earns them.
+
+**The estimator is not the hard part.** Everything in the prediction and correction steps is
+assembly of parts you already have. We will still derive it in full, because every implementer
+transcribes those Jacobians by hand at least once, but there is no new idea in it.
+
+**The hard part is a discrete variable.** Deciding what you are looking at is not estimation; it
+is a combinatorial choice made under uncertainty, and the Gaussian machinery has nothing to say
+about it. What it *does* provide is a metric in which to make the choice.
+
+**Distance must be measured in the currency of your own uncertainty.** Not metres. The correct
+question is never "which landmark is closest?" but "which landmark, given how wrong I might be,
+best explains this reading?" — and the answers differ, systematically and predictably.
+
+<KeyIdea title="The one sentence version">
+EKF localization is the Chapter 7 filter with Chapter 9 and Chapter 10 substituted in; the only
+genuinely new problem is choosing $c_t$, and it must be chosen in the Mahalanobis metric of the
+innovation covariance $S_t$, gated by a calibrated χ² threshold, because one accepted wrong match
+poisons every step that follows.
+</KeyIdea>
+
+## Which localization problem is this?
+
+Before deriving anything, it is worth being precise about what "localization" means, because it
+names at least six different problems of wildly different difficulty. Thrun's taxonomy splits them
+along three axes, and a Gaussian filter is honestly applicable to exactly one cell.
+
+<Deferred>
+  <TaxonomyGrid />
+</Deferred>
+
+The three axes are worth stating in the book's own words.
+
+**Local versus global.** *Position tracking* assumes the initial pose is known and the error stays
+small; the posterior is unimodal and a Gaussian is a fair summary of it. *Global localization*
+starts from a uniform prior — the robot is somewhere in the building, and after one door sighting
+the belief has one peak per door. *Kidnapped robot* is global localization plus a lie: the robot
+is confident about a pose it does not occupy. As the baseline puts it, in global localization the
+robot knows that it does not know where it is; a kidnapped robot does not even have that.
+
+**Static versus dynamic.** In a static world the robot's pose is the only thing that changes. In a
+dynamic one, people walk and chairs move, and a fraction of every scan corresponds to nothing in
+the map. That is not extra noise: it is *correlated* extra noise, which is the one kind a
+Bayes filter cannot absorb ([Chapter 5](/chapters/ch05-bayes-filter) showed why).
+
+**Passive versus active.** A passive localizer estimates whatever the controller happens to drive
+past. An active one chooses where to go in order to learn — trading path length for certainty.
+That is a decision problem, and it waits for [Chapter 22](/chapters/ch22-pomdps) and
+[Chapter 24](/chapters/ch24-exploration). But the option is worth naming here, because
+[w11.4](#w11.4) below makes its value visible in a single button press.
+
+This chapter lives in the top-left cell: **tracking, static, passive**. Chapter 12 takes the rest
+of the top row.
+
+## Markov localization
+
+The formal umbrella over all six cells is one line of [Chapter 5](/chapters/ch05-bayes-filter)
+with a map $m$ added to every conditional:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\belbar(x_t)} = \int \htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1}, m)}\;
+\htmlClass{term-prior}{\bel(x_{t-1})}\, dx_{t-1}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)} = \eta\;
+\htmlClass{term-measurement}{p(z_t \mid x_t, m)}\;
+\htmlClass{term-prediction}{\belbar(x_t)}
+$$
+</LinkedMath>
+
+<Algorithm
+  name="Markov_localization(bel(x_{t-1}), u_t, z_t, m)"
+  inputs="the previous belief, the control, the measurement, the map"
+  outputs="bel(x_t)"
+  complexity="depends entirely on the representation of bel — that choice is the algorithm"
+>
+1. for all $x_t$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\belbar(x_t) = \int p(x_t \mid u_t, x_{t-1}, m)\, \bel(x_{t-1})\, dx_{t-1}$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\bel(x_t) = \eta\, p(z_t \mid x_t, m)\, \belbar(x_t)$
+4. endfor
+5. return $\bel(x_t)$
+</Algorithm>
+
+That is the whole content of "Markov localization": the Bayes filter, told about a map. Everything
+interesting is in the choice of representation for $\bel$, and in the initial condition — which is
+precisely the taxonomy above:
+
+<NotationTable
+  rows={[
+    { sym: '\\bel(x_0) = \\delta(x_0 - \\bar{x}_0)', meaning: 'Position tracking. A point mass at the known start pose; in practice a tight Gaussian.' },
+    { sym: '\\bel(x_0) = 1 / |X|', meaning: 'Global localization. Uniform over every pose in the map.' },
+    { sym: '\\bel(x_0) = \\delta(x_0 - \\tilde{x}_0)', meaning: 'Kidnapped robot. A point mass at the wrong pose — the same shape as tracking, and that is exactly the problem.' },
+  ]}
+/>
+
+Notice that tracking and kidnapping have *the same functional form*. A filter cannot tell them
+apart by looking at its own belief. It can only tell them apart by looking at the evidence
+$\eta^{-1} = p(z_t \mid z_{1:t-1}, u_{1:t}, m)$ — the diagnostic Chapter 5 promised would come
+back. It comes back twice in this chapter: as the χ² gate, and as the mixture weight.
+
+## The mathematics
+
+### Notation this chapter adds
+
+<NotationTable
+  rows={[
+    { sym: 'c_t^i \\in \\{1,\\dots,N{+}1\\}', meaning: 'Correspondence: which map landmark generated observed feature i. The value N+1 means "none of them" — an outlier.', note: 'Ch. 10' },
+    { sym: '\\hat{c}_t^i', meaning: 'The estimated correspondence, chosen by maximum likelihood.' },
+    { sym: 'M_t', meaning: 'Control-noise covariance, 2×2, in (v, ω) space.' },
+    { sym: 'V_t = \\partial g / \\partial u_t', meaning: 'Control Jacobian, 3×2. Maps control noise into pose space.' },
+    { sym: '\\hat{z}_t^j', meaning: 'Predicted measurement of landmark j from the predicted pose.' },
+    { sym: 'S_t^j = H_t^j \\bar\\Sigma_t (H_t^j)\\T + Q_t', meaning: 'Innovation covariance for landmark j: how far a reading may plausibly fall from its prediction.' },
+    { sym: 'd_M^2(z, \\hat z^j)', meaning: 'Squared Mahalanobis distance in the metric of S_t^j. This is the distance that matters.' },
+    { sym: '\\gamma = \\chi^2_{d, 1-\\epsilon}', meaning: 'Gate threshold. 5.99 for a 2-D feature at 95%; 9.21 at 99%.' },
+    { sym: '\\{(\\mu^{(h)}, \\Sigma^{(h)}, w^{(h)})\\}', meaning: 'A hypothesis set: the Gaussian mixture an MHT localizer carries.' },
+  ]}
+/>
+
+### Prediction: the velocity model, differentiated
+
+The state is a pose $x_t = (x, y, \theta)\T$, and the control is a commanded translational and
+rotational velocity $u_t = (v_t, \omega_t)\T$ held for $\Delta t$. Chapter 9 integrated that
+exactly, as an arc of radius $v/\omega$:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\mu_t} = g(u_t, \htmlClass{term-prior}{\mu_{t-1}}) =
+\htmlClass{term-prior}{\mu_{t-1}} +
+\begin{pmatrix}
+-\frac{v_t}{\omega_t}\sin\mu_{t-1,\theta} + \frac{v_t}{\omega_t}\sin(\mu_{t-1,\theta} + \omega_t \Delta t)\\[2pt]
+\frac{v_t}{\omega_t}\cos\mu_{t-1,\theta} - \frac{v_t}{\omega_t}\cos(\mu_{t-1,\theta} + \omega_t \Delta t)\\[2pt]
+\omega_t \Delta t
+\end{pmatrix}
+$$
+</LinkedMath>
+
+The covariance needs two Jacobians, because the uncertainty has two sources: the uncertainty
+already in the pose, and the uncertainty in what the wheels actually did.
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\Sigma_t} =
+G_t\, \htmlClass{term-prior}{\Sigma_{t-1}}\, G_t\T \;+\; V_t M_t V_t\T,
+\qquad
+M_t = \begin{pmatrix} \alpha_1 v_t^2 + \alpha_2 \omega_t^2 & 0\\ 0 & \alpha_3 v_t^2 + \alpha_4 \omega_t^2\end{pmatrix}
+$$
+</LinkedMath>
+
+The term $V_t M_t V_t\T$ deserves a sentence, because it is where the 2005 presentation improves on
+the earlier draft (which simply wrote an additive 3×3 $R_t$). Motion noise does not live in pose
+space. It lives in *control* space: the robot commanded $(v, \omega)$ and the wheels delivered
+something else. $M_t$ is 2×2, so $V_t M_t V_t\T$ is a 3×3 matrix of **rank 2**. There is one
+direction in pose space along which the velocity model claims *perfect* certainty — and Chapter 9
+already told us which one, when it introduced the third noise term $\hat\gamma$: a final rotation
+that no $(v, \omega)$ pair can produce. If you do not add it back, a filter running this model
+believes it knows its heading better than it possibly can. The lab widget above adds it as an
+explicit floor $\diag(0, 0, (\alpha_5 v^2 + \alpha_6 \omega^2)\Delta t^2)$, which is exactly the
+variance the Chapter 9 sampler injects.
+
+### Correction: the landmark model, differentiated
+
+Chapter 10's front end reports features $f_t^i = (r_t^i, \phi_t^i, s_t^i)\T$. Given a
+correspondence $c_t^i = j$, the predicted measurement of map landmark $m_j = (m_{j,x}, m_{j,y})$
+from the predicted pose is pure trigonometry. Write $\delta = m_j - \bar\mu_{t,xy}$ and
+$q = \delta\T\delta$:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\hat z_t^j} =
+\begin{pmatrix} \sqrt{q} \\ \operatorname{atan2}(\delta_y, \delta_x) - \bar\mu_{t,\theta} \\ m_{j,s}\end{pmatrix},
+\qquad
+H_t^j = \frac{1}{q}\begin{pmatrix} -\sqrt{q}\,\delta_x & -\sqrt{q}\,\delta_y & 0 \\ \delta_y & -\delta_x & -q \\ 0 & 0 & 0\end{pmatrix}
+$$
+</LinkedMath>
+
+Read the two useful rows of $H_t^j$ before moving on; they explain most of what the widgets show.
+
+The **range row** is the negative unit vector pointing from the robot to the landmark, and it has a
+zero in the $\theta$ column: turning in place does not change how far away something is. So a range
+measurement constrains position *along the line of sight* and nothing else.
+
+The **bearing row** has $-1$ in the $\theta$ column *whatever the range*, and position terms that
+decay as $1/\sqrt{q}$. A distant landmark is therefore almost a pure compass: it pins heading
+tightly and position hardly at all. A near landmark is almost a pure position fix. This is why a
+sparse map of far-away beacons produces a filter with excellent heading and drifting position, and
+why the ellipse in the lab is long along the corridor rather than round.
+
+The signature row is identically zero, which is Thrun's own observation: once the correspondence is
+known, the signature carries no information about the pose. It earns its place only in the *next*
+section, where the correspondence is not known.
+
+<Algorithm
+  name="EKF_localization_known_correspondences(μ_{t-1}, Σ_{t-1}, u_t, z_t, c_t, m)"
+  inputs="previous Gaussian belief, control, features, their correspondences, the map"
+  outputs="μ_t, Σ_t"
+  complexity="O(N) three-by-three updates for N observed features"
+>
+1. $\bar\mu_t = g(u_t, \mu_{t-1})$
+2. $\bar\Sigma_t = G_t \Sigma_{t-1} G_t\T + V_t M_t V_t\T$
+3. $Q_t = \diag(\sigma_r^2,\ \sigma_\phi^2,\ \sigma_s^2)$
+4. for all observed features $z_t^i = (r_t^i\ \phi_t^i\ s_t^i)\T$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;$j = c_t^i$
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\delta = \begin{pmatrix} m_{j,x} - \bar\mu_{t,x} \\ m_{j,y} - \bar\mu_{t,y}\end{pmatrix}, \quad q = \delta\T\delta$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\hat z_t^i = \big(\sqrt{q},\ \operatorname{atan2}(\delta_y, \delta_x) - \bar\mu_{t,\theta},\ m_{j,s}\big)\T$
+8. &nbsp;&nbsp;&nbsp;&nbsp;compute $H_t^i$ as above
+9. &nbsp;&nbsp;&nbsp;&nbsp;$S_t^i = H_t^i \bar\Sigma_t (H_t^i)\T + Q_t$
+10. &nbsp;&nbsp;&nbsp;&nbsp;$K_t^i = \bar\Sigma_t (H_t^i)\T (S_t^i)^{-1}$
+11. &nbsp;&nbsp;&nbsp;&nbsp;$\bar\mu_t \leftarrow \bar\mu_t \bplus K_t^i\,(z_t^i \bminus \hat z_t^i)$
+12. &nbsp;&nbsp;&nbsp;&nbsp;$\bar\Sigma_t \leftarrow (I - K_t^i H_t^i)\,\bar\Sigma_t$
+13. endfor
+14. return $\mu_t = \bar\mu_t,\ \Sigma_t = \bar\Sigma_t$
+</Algorithm>
+
+Two deviations from Thrun's Table 7.2 are deliberate and both come from
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds).
+
+First, lines 11–12 apply each feature **sequentially**, re-linearizing $H_t$ against the updated
+mean, where the book sums $\sum_i K_t^i(z_t^i - \hat z_t^i)$ and $\big(I - \sum_i K_t^i H_t^i\big)$
+at the end. The summed form is a first-order approximation to the sequential one and is only
+equivalent when the corrections are infinitesimal. Sequential costs nothing extra and is strictly
+better conditioned; Exercise 5 makes you measure the difference.
+
+Second, $\bplus$ and $\bminus$ are not decoration. The measurement residual $z_t^i \bminus \hat z_t^i$
+wraps its bearing component to $(-\pi, \pi]$; without that, a predicted bearing of $179°$ and an
+observed $-179°$ produce an innovation of $358°$, a gain-scaled correction that hurls the estimate
+across the map, and a filter that fails exactly once per lap at exactly the same place. The mean
+update likewise wraps $\theta$. This is the smallest possible instance of the manifold discipline,
+and it is the single most common bug in hand-written EKF localizers.
+
+<Derivation title="EKF localization from the Bayes filter, and every Jacobian entry" result="\bar\Sigma_t = G_t \Sigma_{t-1} G_t^{\mathsf{T}} + V_t M_t V_t^{\mathsf{T}}">
+
+**Step 1 — start from Markov localization.** Take the two lines of `Markov_localization` and assume
+$\bel(x_{t-1}) = \Normal(\mu_{t-1}, \Sigma_{t-1})$.
+
+**Step 2 — linearize the motion.** $g$ is nonlinear, so the exact predicted belief is not Gaussian.
+Expand about the mean and the commanded control:
+
+$$
+g(u_t, x_{t-1}) \approx g(u_t, \mu_{t-1}) + G_t\,(x_{t-1} - \mu_{t-1}) + V_t\,(u_t^{\text{actual}} - u_t)
+$$
+
+with $G_t = \partial g/\partial x_{t-1}$ and $V_t = \partial g/\partial u_t$, both evaluated at
+$(\mu_{t-1}, u_t)$.
+
+**Step 3 — push the two Gaussians through.** A linear map of a Gaussian is Gaussian, and the two
+sources are independent, so the covariances add:
+$\bar\Sigma_t = G_t \Sigma_{t-1} G_t\T + V_t M_t V_t\T$. This is line 2 of the algorithm.
+
+**Step 4 — linearize the measurement.** Repeat for $h$, this time about $\bar\mu_t$, obtaining
+$H_t^j$. Because $h$ is evaluated per landmark, so is $H$.
+
+**Step 5 — apply the Kalman correction.** With $\belbar$ Gaussian and $h$ linearized, the correction
+is the Chapter 6 algebra unchanged: $S_t = H\bar\Sigma H\T + Q$, $K_t = \bar\Sigma H\T S_t^{-1}$,
+and the two update lines. $\blacksquare$
+
+---
+
+**The Jacobian entries in full.** Write $c = \cos\mu_{t-1,\theta}$, $s = \sin\mu_{t-1,\theta}$,
+$c' = \cos(\mu_{t-1,\theta} + \omega_t\Delta t)$, $s' = \sin(\mu_{t-1,\theta} + \omega_t\Delta t)$.
+Then
+
+$$
+G_t = \begin{pmatrix}
+1 & 0 & \frac{v_t}{\omega_t}(-c + c')\\
+0 & 1 & \frac{v_t}{\omega_t}(-s + s')\\
+0 & 0 & 1
+\end{pmatrix},
+\qquad
+V_t = \begin{pmatrix}
+\frac{-s + s'}{\omega_t} & \frac{v_t(s - s')}{\omega_t^2} + \frac{v_t c' \Delta t}{\omega_t}\\[4pt]
+\frac{c - c'}{\omega_t} & \frac{-v_t(c - c')}{\omega_t^2} + \frac{v_t s' \Delta t}{\omega_t}\\[4pt]
+0 & \Delta t
+\end{pmatrix}
+$$
+
+Every entry of both matrices divides by $\omega_t$, and a robot driving down a corridor commands
+$\omega_t = 0$. The straight-line limits are not optional; take them analytically rather than
+hoping the floating point cancels:
+
+$$
+\lim_{\omega \to 0} G_t = \begin{pmatrix}1 & 0 & -v\Delta t\, s\\ 0 & 1 & v\Delta t\, c\\ 0&0&1\end{pmatrix},
+\qquad
+\lim_{\omega \to 0} V_t = \begin{pmatrix}\Delta t\, c & -\tfrac12 v \Delta t^2 s\\ \Delta t\, s & \tfrac12 v \Delta t^2 c \\ 0 & \Delta t\end{pmatrix}
+$$
+
+(The second column of $V_t$ needs the *second*-order term of the expansion, since the first order
+cancels; that is why $\Delta t^2/2$ appears where you might have expected $\Delta t$.)
+
+For the measurement Jacobian, differentiate $r = \sqrt{q}$ and
+$\phi = \operatorname{atan2}(\delta_y, \delta_x) - \theta$ with $\delta = m_j - (x, y)$, so that
+$\partial \delta / \partial x = (-1, 0)\T$ and $\partial \delta / \partial y = (0, -1)\T$:
+
+$$
+\frac{\partial r}{\partial x} = -\frac{\delta_x}{\sqrt q},\quad
+\frac{\partial r}{\partial y} = -\frac{\delta_y}{\sqrt q},\quad
+\frac{\partial r}{\partial \theta} = 0
+$$
+
+$$
+\frac{\partial \phi}{\partial x} = \frac{\delta_y}{q},\quad
+\frac{\partial \phi}{\partial y} = -\frac{\delta_x}{q},\quad
+\frac{\partial \phi}{\partial \theta} = -1
+$$
+
+which is the $H_t^j$ printed above. Check the signs against your intuition: moving the robot
+*toward* the landmark ($+\delta_x$ direction) decreases the range, hence the leading minus.
+
+**A caveat on the summed form.** Thrun's Table 7.2 computes all $K_t^i$ against the *same*
+$\bar\Sigma_t$ and adds them. That is correct to first order and wrong beyond it: two features that
+each halve the along-corridor variance do not, when summed, quarter it — they can drive
+$I - \sum_i K^i H^i$ indefinite. Sequential updating avoids the question entirely and costs one
+extra 3×3 multiply per feature.
+</Derivation>
+
+### A worked example you can check by hand
+
+Put Rusty at $\bar\mu_t = (2,\ 3,\ 0)$ with
+
+$$
+\bar\Sigma_t = \diag(0.25,\ 0.25,\ 0.01)
+\qquad (\sigma_x = \sigma_y = 0.5\ \text{m},\ \ \sigma_\theta = 0.1\ \text{rad})
+$$
+
+and a single landmark at $m_j = (5, 3)$ — three metres straight ahead. The sensor has
+$\sigma_r = 0.2$ m and $\sigma_\phi = 0.05$ rad, so $Q_t = \diag(0.04,\ 0.0025)$.
+
+Then $\delta = (3, 0)$, $q = 9$, $\sqrt q = 3$, and everything below is arithmetic you can do on
+paper.
+
+$$
+\hat z_t = \begin{pmatrix}3\\0\end{pmatrix},
+\qquad
+H_t = \begin{pmatrix}-1 & 0 & 0\\ 0 & -\tfrac13 & -1\end{pmatrix}
+$$
+
+$$
+S_t = H_t \bar\Sigma_t H_t\T + Q_t
+= \begin{pmatrix}0.25 & 0\\ 0 & 0.0277\overline{7}\end{pmatrix} + \begin{pmatrix}0.04 & 0\\ 0 & 0.0025\end{pmatrix}
+= \begin{pmatrix}0.29 & 0\\ 0 & 0.0402\overline{7}\end{pmatrix}
+$$
+
+$S_t$ came out diagonal, which is not a coincidence: with an isotropic position block the range and
+bearing rows of $H$ are orthogonal. The predicted spreads are $\sigma_{r,\text{pred}} = 0.539$ m and
+$\sigma_{\phi,\text{pred}} = 0.201$ rad — note that the *predicted* range spread is more than twice
+the sensor's own $0.2$ m, because most of it is the robot's ignorance about where it is, not the
+sensor's about what it saw.
+
+$$
+K_t = \bar\Sigma_t H_t\T S_t^{-1} =
+\begin{pmatrix}-0.8621 & 0\\ 0 & -2.0690\\ 0 & -0.2483\end{pmatrix}
+$$
+
+Now suppose the robot measures $z_t = (3.2,\ 0.05)$: twenty centimetres farther than expected, and
+fifty milliradians to the left. The innovation is $\nu = (0.2,\ 0.05)$, so
+
+$$
+d_M^2 = \frac{0.2^2}{0.29} + \frac{0.05^2}{0.040\overline{27}} = 0.1379 + 0.0621 = \boxed{0.200}
+$$
+
+comfortably inside any sane gate. The correction is $K_t \nu = (-0.1724,\ -0.1034,\ -0.01241)$:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\mu_t} = (1.8276,\ 2.8966,\ -0.01241),
+\qquad
+\htmlClass{term-posterior}{\Sigma_t} = \begin{pmatrix}
+0.03448 & 0 & 0\\
+0 & 0.07759 & -0.02069\\
+0 & -0.02069 & 0.007517
+\end{pmatrix}
+$$
+</LinkedMath>
+
+Every number in that posterior tells you something.
+
+The robot moved **backwards** in $x$, because it measured a longer range than expected and the
+landmark is straight ahead. $\sigma_x$ collapsed from 0.5 m to $\sqrt{0.03448} = 0.186$ m — the
+range measurement acted almost entirely along the line of sight, exactly as the first row of $H$
+promised. $\sigma_y$ fell only to 0.279 m and $\sigma_\theta$ to 0.087 rad, because the bearing
+measurement had to explain a lateral offset and a heading error at once and cannot tell them apart:
+that inability is the $-0.0207$ correlation term, and it is negative because moving the robot down
+and turning it left produce the same bearing.
+
+### Data association: the actual problem
+
+The algorithm above took $c_t$ as an input. Nothing supplies it.
+
+The maximum-likelihood answer is to pick, for each observed feature, the landmark that makes the
+reading least surprising:
+
+<LinkedMath>
+$$
+\hat c_t^i \;=\; \arg\max_j\ \Normal\!\left(\htmlClass{term-measurement}{z_t^i};\ \htmlClass{term-prediction}{\hat z_t^j},\ S_t^j\right)
+\;=\; \arg\min_j\ \Big[\underbrace{d_M^2(z_t^i, \hat z_t^j)}_{\text{fit}} + \underbrace{\ln\det S_t^j}_{\text{tie-break}}\Big]
+$$
+</LinkedMath>
+
+and then to accept it only if it survives a gate:
+
+$$
+d_M^2(z_t^i, \hat z_t^{\hat c}) \le \gamma = \chi^2_{d,\,1-\epsilon},
+\qquad
+\chi^2_{2, 0.95} = 5.991,\quad \chi^2_{2, 0.99} = 9.210
+$$
+
+The set $\{z : d_M^2(z, \hat z^j) \le \gamma\}$ is the **validation region** — an ellipse in
+measurement space, drawn in orange in the widget below. It is the geometric object the whole
+section is about.
+
+<Deferred>
+  <AssociationGate />
+</Deferred>
+
+Spend a minute dragging the green dot before reading on, because the widget makes three points
+that are hard to make in prose.
+
+**The gate is not round, and its shape is a prediction.** The robot's belief there is
+$\bar\Sigma = \diag(0.64,\ 0.04,\ 0.0025)$ — 0.8 m of uncertainty along the heading, 0.2 m across
+it, the shape a corridor always produces — so the validation ellipses come out long in range and
+thin in bearing. Landmark m0 sits exactly 4 m straight ahead, which makes it checkable by hand:
+$S^{m0} = \diag(0.64 + 0.04,\ 0.04/16 + 0.0025 + 0.0025) = \diag(0.68,\ 0.0075)$. Its 95% gate
+therefore extends $\sqrt{5.99 \times 0.68} = 2.02$ m along the line of sight and
+$\sqrt{5.99 \times 0.0075} = 0.212$ rad across it, which at 4 m is 0.85 m of arc. That is a
+2.4 : 1 ellipse, and any two landmarks closer together than about two metres *along the ray* are
+candidates for the same reading.
+
+**Euclidean and Mahalanobis disagree over a large region.** Toggle the metric and drag. Take the
+reading $z = (3.55\ \text{m},\ 0.05\ \text{rad})$, which the autoplay tour passes through. Its
+projected endpoint is 0.488 m from landmark m0 and 0.466 m from m1 — so a nearest-neighbour rule
+in metres picks m1. In the filter's own metric, $d_M^2(m0) = 0.631$ and $d_M^2(m1) = 1.872$, so
+maximum likelihood picks m0, by a factor of three. Both cannot be right, and only one of them used
+the information the filter has been carefully accumulating for the last hundred steps.
+
+**The $\ln\det S$ term is a real term, not a constant.** It is dropped in Thrun's Table 7.3 and in
+most implementations, on the grounds that maximizing a Gaussian density and minimizing a
+Mahalanobis distance are the same thing. They are the same thing only when the candidates share a
+covariance. When they do not, the log-determinant penalizes candidates whose gates are wide —
+a landmark whose validation ellipse is twice as large in each axis pays $2\ln 4 \approx 2.77$,
+which outweighs a full standard deviation of mismatch. Toggling it in the widget moves the decision
+boundary between m0 and m1 by a visible margin. It rarely overturns a clear winner; it always moves
+the boundary, and the boundary is precisely where a filter with two close landmarks lives.
+
+<Derivation title="ML correspondence as marginal maximization" result="\hat c_t = \arg\min_j\ d_M^2(z^i_t, \hat z^j_t) + \ln\det S^j_t">
+
+**Step 1 — write down what is actually being maximized.** The ML estimator chooses the
+correspondence vector that makes the data most likely, marginalizing the pose out:
+
+$$
+\hat c_t = \arg\max_{c_t}\ p(z_t \mid c_{1:t}, m, z_{1:t-1}, u_{1:t})
+= \arg\max_{c_t} \int p(z_t \mid c_t, x_t, m)\, \belbar(x_t)\, dx_t
+$$
+
+**Step 2 — do the integral.** Under the EKF's own approximations this is a Gaussian integral. With
+$\belbar = \Normal(\bar\mu_t, \bar\Sigma_t)$ and $z_t^i = h(x_t, m_j) + \delta$, linearizing $h$
+about $\bar\mu_t$ makes the predictive distribution of the reading
+
+$$
+p(z_t^i \mid c_t^i = j, \cdot) = \Normal\!\left(\hat z_t^j,\ \underbrace{H_t^j \bar\Sigma_t (H_t^j)\T + Q_t}_{S_t^j}\right)
+$$
+
+This is worth pausing on: $S_t^j$ is not the sensor's covariance. It is the sensor's covariance
+*plus* the robot's own uncertainty projected into measurement space. A robot that is unsure where
+it is has wide gates and confuses landmarks; a robot that is sure has narrow gates and rejects true
+matches. That trade-off is the entire practical art of gating.
+
+**Step 3 — take logs.** Dropping the $-\tfrac{d}{2}\ln 2\pi$ that is common to all candidates,
+
+$$
+-2 \ln \Normal(z; \hat z^j, S^j) = d_M^2(z, \hat z^j) + \ln\det S^j + \text{const}
+$$
+
+which is the score in the box above. Maximizing the density and minimizing Mahalanobis distance
+coincide **only** if $\det S^j$ is the same for all $j$.
+
+**Step 4 — factor over features, and notice what that costs.** Maximizing over the whole vector
+$c_t$ is exponential in the number of features. Every practical implementation, including Table
+7.3, maximizes each $c_t^i$ separately. That factorization is *wrong*, in a specific and knowable
+way: the features share a pose, so their prediction errors are correlated, and independent
+per-feature decisions can produce a joint assignment that no single pose explains. Two symptoms
+follow. First, two different features can be assigned to the same landmark — a violation of the
+*mutual exclusion* constraint that most sensors guarantee physically. Second, a set of individually
+plausible matches can be jointly absurd.
+
+The classical fix is **joint compatibility** (Neira & Tardós): gate the *stacked* innovation of a
+set of pairings against its full covariance, including the cross-blocks that per-feature gating
+throws away, and search for the largest jointly compatible set by branch and bound. Exercise 6
+builds a two-feature version. The modern fix is to stop treating the discrete variable as something
+to be guessed before the continuous one is estimated, and instead to optimize over both — which is
+where [Chapter 15](/chapters/ch15-factor-graphs) picks the thread up.
+</Derivation>
+
+<Algorithm
+  name="EKF_localization(μ_{t-1}, Σ_{t-1}, u_t, z_t, m)"
+  inputs="previous belief, control, features (correspondences unknown), the map"
+  outputs="μ_t, Σ_t, and one association verdict per feature"
+  complexity="O(N · n) gate evaluations for N features and n map landmarks"
+>
+1. $\bar\mu_t = g(u_t, \mu_{t-1})$; &nbsp; $\bar\Sigma_t = G_t \Sigma_{t-1} G_t\T + V_t M_t V_t\T$
+2. for all landmarks $k$ in the map $m$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\delta_k = m_k - \bar\mu_{t,xy}$, &nbsp; $q_k = \delta_k\T\delta_k$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$\hat z_t^k, H_t^k$ as in Table 7.2; &nbsp; $S_t^k = H_t^k \bar\Sigma_t (H_t^k)\T + Q_t$
+5. endfor
+6. for all observed features $z_t^i$ do
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\nu^k = z_t^i \bminus \hat z_t^k$ for each $k$ &nbsp; *(bearing wrapped)*
+8. &nbsp;&nbsp;&nbsp;&nbsp;$j(i) = \arg\min_k\ (\nu^k)\T (S_t^k)^{-1} \nu^k + \ln\det S_t^k$
+9. &nbsp;&nbsp;&nbsp;&nbsp;**if** $(\nu^{j(i)})\T (S_t^{j(i)})^{-1} \nu^{j(i)} > \gamma$ **then** discard $z_t^i$ as an outlier; continue
+10. &nbsp;&nbsp;&nbsp;&nbsp;$K_t^i = \bar\Sigma_t (H_t^{j(i)})\T (S_t^{j(i)})^{-1}$
+11. &nbsp;&nbsp;&nbsp;&nbsp;$\bar\mu_t \leftarrow \bar\mu_t \bplus K_t^i \nu^{j(i)}$; &nbsp; $\bar\Sigma_t \leftarrow (I - K_t^i H_t^{j(i)})\bar\Sigma_t$
+12. &nbsp;&nbsp;&nbsp;&nbsp;recompute lines 2–5 against the updated belief
+13. endfor
+14. return $\mu_t = \bar\mu_t,\ \Sigma_t = \bar\Sigma_t$
+</Algorithm>
+
+Line 9 is the one line Table 7.3 does not have, and it is the difference between a filter that
+survives a corridor and one that does not. Gaussians fall off exponentially, so a single outlier
+can dominate the entire correction; the baseline's own practical-considerations section is blunt
+about the remedy — *"In practice, thresholding adds an important layer of robustness to the
+algorithm without which EKF localization tends to be brittle."*
+
+But notice what the gate can and cannot do. It rejects readings that are *surprising*. It is
+completely blind to readings that are unsurprising and wrong.
+
+### Why one wrong association is catastrophic
+
+Here is the same worked example, poisoned. Everything is as before — Rusty at $(2, 3, 0)$ with
+$\bar\Sigma = \diag(0.25, 0.25, 0.01)$, a mapped landmark at $(5, 3)$ — except that the feature was
+generated by a *different* object at $(5.6, 3)$, which the surveyor never recorded. The robot
+measures a range of $3.6$ m and the filter attributes it to the landmark at $(5,3)$.
+
+**Step 1.** $\nu = (0.6, 0)$, so $d_M^2 = 0.36 / 0.29 = 1.24$. The gate is 5.99. **The wrong match
+is accepted, and it is not even close.** The gate's range half-width here is
+$\sqrt{5.99 \times 0.29} = 1.32$ m; a landmark 0.6 m out of place is less than half of that. This
+is arithmetic, not bad luck.
+
+The correction is $K\nu = (-0.517, 0, 0)$, so $\mu_x$ moves to $1.483$ while the truth is still $2$:
+an error of 0.517 m. And $\sigma_x$ shrinks from 0.5 m to 0.186 m. The filter is now wrong by
+2.8 of its own standard deviations, and its NEES is 7.76 against an expectation of 3.
+
+**Step 2.** The robot observes the same object again from the same place. Its predicted range to the
+landmark at $(5,3)$ is now $5 - 1.483 = 3.517$, and the measurement is again $3.6$. Innovation:
+$0.083$. Predicted spread: $\sqrt{0.0345 + 0.04} = 0.273$. So
+
+$$
+d_M^2 = \frac{0.083^2}{0.0745} = 0.092
+$$
+
+The reading now looks *better* than a typical correct one. This is the mechanism, and it is worth
+saying out loud: **the filter has moved to the pose that makes its own mistake look right.** Error
+grows to 0.556 m, $\sigma_x$ falls to 0.136 m, NEES reaches 16.7.
+
+**Step 3.** $d_M^2 = 0.034$. Error 0.570 m, $\sigma_x = 0.113$ m, NEES 25.6, and climbing.
+
+<Derivation title="The poisoning cascade, in three steps" result="\mu_x \to m_{j,x} - r_{\text{meas}},\quad \sigma_x \to 0">
+
+**Step 1 — a wrong match injects a bias, not noise.** Let the accepted feature come from an object
+at $m_j + b$ while the filter attributes it to $m_j$. The innovation has expectation
+$\E[\nu] = -H b \neq 0$, so the update has expectation $\E[\Delta\mu] = -KHb$. Unlike measurement
+noise, this does not average out over repeated observations: it is the *same* $b$ every time.
+
+**Step 2 — the covariance shrinks regardless.** $\Sigma \leftarrow (I - KH)\Sigma$ depends only on
+$H$, $\bar\Sigma$ and $Q$. It has no idea whether the innovation was right. The filter therefore
+becomes *more* certain while becoming *less* correct — the definition of inconsistency, and the
+reason NEES catches this while RMSE does not.
+
+**Step 3 — the feedback closes.** A smaller $\Sigma$ means a smaller $S = H\Sigma H\T + Q$, hence a
+tighter gate; and the mean has already moved toward the bias, so the next observation of the same
+wrong object has a smaller residual against a smaller gate. Both effects push $d_M^2$ down. The
+recursion has a fixed point, and it is exactly the pose at which the wrong landmark perfectly
+explains the reading:
+
+$$
+\mu_x \to m_{j,x} - r_{\text{measured}}, \qquad \Sigma_{xx} \sim \frac{\sigma_r^2}{k} \to 0
+$$
+
+The filter converges — confidently, quietly, and to the wrong answer. Meanwhile every *true*
+landmark's residual is now large against a shrinking gate, so genuine features start failing line 9
+and being discarded as outliers. The `close pair` preset in [w11.2](#w11.2) shows the rejection
+counter climbing while the error grows: the filter starves itself of exactly the evidence that
+would have saved it.
+
+Contrast this with an honest outlier *test* that also inflates the covariance when it fires
+(sometimes called a "covariance inflation" or robust-cost response — see
+[Chapter 15](/chapters/ch15-factor-graphs)). Widening $\Sigma$ after a suspicious reading widens the
+gate, which lets the true landmark back in. The Gaussian-filter version of robustness is not
+"reject harder"; it is "reject, and admit that you are now less certain".
+</Derivation>
+
+<Callout type="warn">
+This is why the design rule for landmark maps is a *separation* rule, not a density rule. Two
+landmarks are confusable when their separation along the line of sight is smaller than roughly
+$2\sqrt{\gamma\,\lambda_{\max}(S)}$ — which, for a robot that is 0.8 m uncertain along a corridor,
+is about four metres. The corresponding advice in the literature is exactly Thrun's: choose
+landmarks far apart, *and* keep pose uncertainty small; and those two goals fight each other,
+because keeping uncertainty small requires seeing landmarks often.
+</Callout>
+
+## Hedging: multi-hypothesis tracking
+
+If the filter cannot decide safely, it can decline to decide. Represent the belief as a Gaussian
+mixture over association histories:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)} = \frac{1}{\sum_h w_t^{(h)}} \sum_h w_t^{(h)}\,
+\Normal\!\left(x_t;\ \mu_t^{(h)},\ \Sigma_t^{(h)}\right)
+$$
+</LinkedMath>
+
+Each component is a full EKF localizer conditioned on one history of choices. When a feature has
+several landmarks inside its gate, the component **branches**, once per candidate, and each child
+takes its parent's weight scaled by how well that candidate explained the reading:
+
+$$
+w_t^{(h,j)} = w_{t-1}^{(h)} \cdot \Normal\!\left(z_t;\ \hat z_t^{j,(h)},\ S_t^{j,(h)}\right)
+$$
+
+<Algorithm
+  name="mht_localization({(μ, Σ, w)^{(h)}}, u_t, z_t, m)"
+  inputs="a weighted set of Gaussians, control, features, the map"
+  outputs="a pruned, renormalized weighted set"
+  complexity="O(H · N · n) before pruning; the unpruned tree is O(J^T) in the run length"
+>
+1. for each hypothesis $h$: predict $(\mu^{(h)}, \Sigma^{(h)})$ with Table 7.2 lines 1–2
+2. for each feature $z_t^i$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;children $\leftarrow \varnothing$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for each hypothesis $h$ and each landmark $j$ with $d_M^2(z_t^i, \hat z^{j,(h)}) \le \gamma$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;child $\leftarrow$ EKF update of $h$ with $c = j$; &nbsp; $w \leftarrow w^{(h)} \Normal(z_t^i; \hat z^{j,(h)}, S^{j,(h)})$
+6. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+7. &nbsp;&nbsp;&nbsp;&nbsp;any hypothesis with no candidate in its gate survives with $w \leftarrow w^{(h)} \lambda_{\text{clutter}}$
+8. &nbsp;&nbsp;&nbsp;&nbsp;normalize; merge pairs whose means agree within $d_{\text{merge}}$; drop $w < \rho\, w_{\max}$; keep the best $H_{\max}$
+9. endfor
+10. return the surviving set, renormalized
+</Algorithm>
+
+Line 7 matters more than it looks. A hypothesis that can explain *nothing* must pay for that, or it
+lives forever at its old weight and the mixture never collapses. Charging it a clutter density is
+the standard device, and it is what turns "no landmark fits" from silence into evidence.
+
+<Deferred>
+  <HypothesisForest />
+</Deferred>
+
+<Derivation title="Weight recursion, exponential growth, and what pruning costs" result="\text{pruned mass} \le \rho H_{\max} \text{ per step}">
+
+**Step 1 — the recursion is just Bayes, with a discrete variable.** Treat the association history
+$c_{1:t}$ as a latent variable and expand the posterior:
+
+$$
+p(x_t, c_{1:t} \mid z_{1:t}, u_{1:t}, m) \propto
+p(z_t \mid x_t, c_t, m)\; p(c_t)\; p(x_t, c_{1:t-1} \mid z_{1:t-1}, u_{1:t}, m)
+$$
+
+Conditioned on a *fixed* history, the continuous part is exactly the Gaussian filter of Table 7.2.
+So the joint posterior is a mixture with one Gaussian per history, and the mixture weight of a
+history is the product of the predictive likelihoods it accumulated — the recursion in the box
+above. Nothing is approximated yet.
+
+**Step 2 — count the components.** If each of $T$ features has $J$ candidates inside its gate, the
+exact posterior has $J^T$ components. At $J = 2$ and one ambiguous feature per second, that is a
+billion Gaussians after half a minute. Exactness is not on the table.
+
+**Step 3 — bound what pruning throws away.** With ratio pruning at threshold $\rho$ (drop anything
+below $\rho\,w_{\max}$) and a cap of $H_{\max}$, each reduction step discards at most $\rho$ of the
+peak weight per pruned component, so the discarded normalized mass at that step is bounded by
+$\rho H_{\max}$ — small, and controllable. What is *not* controllable is that the bound applies per
+step and compounds: the probability that the true history is discarded at some point over a long
+run grows, and once discarded it is gone. No later evidence can revive a branch that no longer
+exists. This is the exact sense in which MHT is a stopgap: it defers the decision, it does not
+avoid it.
+
+Merging is the other approximation. Two components whose means agree to within $d_{\text{merge}}$
+(measured, of course, in a Mahalanobis metric) are replaced by one with the summed weight. This is
+a moment-matching approximation of a bimodal density by a unimodal one — exactly the operation
+[Chapter 12](/chapters/ch12-localization-global) refuses to perform, which is why it can do global
+localization and this cannot.
+</Derivation>
+
+MHT is where Gaussian localization runs out of road, and it is worth being blunt about why. It
+represents ambiguity by *enumerating* it, which works when the ambiguity is two landmarks and fails
+when it is "somewhere in this building". Its modern successors split the problem in two: for
+representation, Chapter 12's particle filters carry arbitrary multi-modality for a fixed cost; for
+association, Chapter 15's robust factor graphs keep the whole trajectory available so a bad match
+can be *undone* later rather than merely hedged against. Recent work makes the discrete variable a
+first-class citizen of the optimization — discrete-continuous factor graphs (Doherty et al.), or
+semidefinite relaxations that solve for pose and association simultaneously and certifiably
+(Korotkine et al.). Every one of those is a descendant of the score function in this chapter.
+
+## Implementation in Rust
+
+The crate layout follows the chapter. `localize` owns the filter; `motion` and `sensor` are the
+Chapter 9 and 10 crates, imported rather than reimplemented.
+
+```
+crates/localize/src/
+  lib.rs            // the Localizer trait, implemented three more times in Ch. 12
+  ekf/mod.rs        // EkfLocalizer: predict, correct_known, correct
+  ekf/jacobians.rs  // G_t, V_t, M_t, H_t — one function per equation
+  ekf/associate.rs  // Mahalanobis, χ² gates, ml_associate
+  ekf/mht.rs        // feature "mht": branch, weight, prune, merge
+```
+
+### The Jacobians
+
+```rust title="crates/localize/src/ekf/jacobians.rs"
+use nalgebra::{Matrix2, Matrix2x3, Matrix3, Matrix3x2, Vector2};
+use pr_core::geom::se2::SE2;
+use motion::{Alphas, VelocityCmd};
+use sensor::Landmark;
+
+/// Below this |ω| the arc formulae are 0/0. A robot in a corridor commands
+/// exactly this, so the limit is the common case, not the edge case.
+const STRAIGHT: f64 = 1e-6;
+
+/// M_t: control noise, in *control* space. Rank 2 by construction — which is
+/// why it needs V_t to reach pose space, and why the γ̂ term of Chapter 9 has
+/// to be added separately.
+pub fn control_noise(u: &VelocityCmd, a: &Alphas) -> Matrix2<f64> {
+    let (v2, w2) = (u.v * u.v, u.omega * u.omega);
+    Matrix2::new(
+        a.0[0] * v2 + a.0[1] * w2, 0.0,
+        0.0,                       a.0[2] * v2 + a.0[3] * w2,
+    )
+}
+
+/// (G_t, V_t) for the exact-arc velocity model, evaluated at μ_{t−1}.
+pub fn motion_jacobians(mu: &SE2, u: &VelocityCmd) -> (Matrix3<f64>, Matrix3x2<f64>) {
+    let (c, s) = (mu.theta().cos(), mu.theta().sin());
+    let dt = u.dt;
+
+    if u.omega.abs() < STRAIGHT {
+        let g = Matrix3::new(
+            1.0, 0.0, -u.v * dt * s,
+            0.0, 1.0,  u.v * dt * c,
+            0.0, 0.0,  1.0,
+        );
+        // The ∂/∂ω column needs the *second* order term: the first order of
+        // (sin(θ+ωΔt) − sin θ)/ω cancels, leaving −½ v Δt² sin θ.
+        let v_jac = Matrix3x2::new(
+            dt * c, -0.5 * u.v * dt * dt * s,
+            dt * s,  0.5 * u.v * dt * dt * c,
+            0.0,     dt,
+        );
+        return (g, v_jac);
+    }
+
+    let nt = mu.theta() + u.omega * dt;
+    let (cn, sn) = (nt.cos(), nt.sin());
+    let r = u.v / u.omega;
+    let w = u.omega;
+
+    let g = Matrix3::new(
+        1.0, 0.0, r * (-c + cn),
+        0.0, 1.0, r * (-s + sn),
+        0.0, 0.0, 1.0,
+    );
+    let v_jac = Matrix3x2::new(
+        (-s + sn) / w,  u.v * (s - sn) / (w * w) + u.v * cn * dt / w,
+        ( c - cn) / w, -u.v * (c - cn) / (w * w) + u.v * sn * dt / w,
+        0.0,            dt,
+    );
+    (g, v_jac)
+}
+
+/// ẑ and H for one landmark. Returned together because they are always used
+/// together and both need the same δ and q — computing them apart is how the
+/// two drift out of sync during a refactor.
+pub fn landmark_prediction(mu: &SE2, lm: &Landmark) -> (Vector2<f64>, Matrix2x3<f64>) {
+    let dx = lm.x - mu.x();
+    let dy = lm.y - mu.y();
+    let q = dx * dx + dy * dy;
+    let sq = q.sqrt();
+
+    let z_hat = Vector2::new(sq, wrap_pi(dy.atan2(dx) - mu.theta()));
+    let h = Matrix2x3::new(
+        -dx / sq, -dy / sq,  0.0,
+         dy / q,  -dx / q,  -1.0,
+    );
+    (z_hat, h)
+}
+
+/// Wrap to (−π, π]. Used on every bearing residual, without exception.
+#[inline]
+pub fn wrap_pi(a: f64) -> f64 {
+    let x = (a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU);
+    x - std::f64::consts::PI
+}
+```
+
+### Gates and association, with the dimension in the type
+
+Association code is where measurement dimensions get mixed up: a range–bearing feature is 2-D, a
+range–bearing–signature feature is 3-D, and a gate built for one is silently wrong for the other.
+Const generics make that a compile error.
+
+```rust title="crates/localize/src/ekf/associate.rs" {12-22,55-70}
+use nalgebra::{SMatrix, SVector};
+use statrs::distribution::{ChiSquared, ContinuousCDF};
+
+/// Everything the filter predicts about one landmark, before seeing anything.
+pub struct Prediction<const Z: usize> {
+    pub landmark: usize,
+    pub z_hat: SVector<f64, Z>,
+    pub s: SMatrix<f64, Z, Z>,
+}
+
+/// A χ² gate. The dimension is in the type, so a 2-D gate cannot be applied to
+/// a 3-D innovation — the mistake that produces a filter which "works but
+/// rejects too much" and takes a week to find.
+#[derive(Clone, Copy, Debug)]
+pub struct Gate<const Z: usize> {
+    pub gamma: f64,
+}
+
+impl<const Z: usize> Gate<Z> {
+    /// γ = χ²_{Z, p}. At Z = 2: 5.991 for p = 0.95, 9.210 for p = 0.99.
+    pub fn at_confidence(p: f64) -> Self {
+        let chi2 = ChiSquared::new(Z as f64).expect("Z ≥ 1");
+        Self { gamma: chi2.inverse_cdf(p) }
+    }
+
+    #[inline]
+    pub fn accepts(&self, d2: f64) -> bool {
+        d2 <= self.gamma
+    }
+}
+
+/// νᵀ S⁻¹ ν, via the Cholesky factor rather than an explicit inverse: same
+/// answer, half the flops, and it fails loudly if S is not positive definite.
+pub fn mahalanobis2<const Z: usize>(nu: &SVector<f64, Z>, s: &SMatrix<f64, Z, Z>) -> f64 {
+    let chol = s.clone().cholesky().expect("S = H Σ Hᵀ + Q is positive definite");
+    let y = chol.l().solve_lower_triangular(nu).expect("L is nonsingular");
+    y.norm_squared()
+}
+
+/// ln det S, from the same factor: 2 Σ ln L_ii.
+pub fn log_det<const Z: usize>(s: &SMatrix<f64, Z, Z>) -> f64 {
+    let chol = s.clone().cholesky().expect("S is positive definite");
+    2.0 * chol.l().diagonal().iter().map(|d| d.ln()).sum::<f64>()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Association {
+    Matched { landmark: usize, d2: f64 },
+    /// Kept rather than discarded: the *closest* candidate and its distance are
+    /// what you need to debug a filter that is rejecting everything.
+    Outlier { nearest: usize, d2: f64 },
+}
+
+/// arg-min over landmarks of d²_M + ln det S, accepted only if it passes the
+/// gate. `residual` is a parameter because a bearing must be wrapped and a
+/// range must not — the caller owns that knowledge, not this function.
+pub fn ml_associate<const Z: usize>(
+    z: &SVector<f64, Z>,
+    preds: &[Prediction<Z>],
+    gate: &Gate<Z>,
+    residual: impl Fn(&SVector<f64, Z>, &SVector<f64, Z>) -> SVector<f64, Z>,
+) -> Association {
+    let mut best = f64::INFINITY;
+    let mut best_idx = usize::MAX;
+    let mut best_d2 = f64::INFINITY;
+
+    for p in preds {
+        let nu = residual(z, &p.z_hat);
+        let d2 = mahalanobis2(&nu, &p.s);
+        // The log-determinant term is *not* optional when candidates have
+        // different gate sizes. Dropping it is the most common silent bug in
+        // nearest-neighbour association.
+        let score = d2 + log_det(&p.s);
+        if score < best {
+            best = score;
+            best_idx = p.landmark;
+            best_d2 = d2;
+        }
+    }
+
+    if gate.accepts(best_d2) {
+        Association::Matched { landmark: best_idx, d2: best_d2 }
+    } else {
+        Association::Outlier { nearest: best_idx, d2: best_d2 }
+    }
+}
+```
+
+The dimension really is enforced. Feeding a 3-D feature to a 2-D gate does not compile:
+
+```rust title="a deliberate compile error"
+let gate = Gate::<2>::at_confidence(0.95);
+let z3: SVector<f64, 3> = feature.with_signature();
+let a = ml_associate(&z3, &preds3, &gate, wrap_bearing_row);
+```
+
+```text
+error[E0308]: mismatched types
+  --> src/ekf/associate.rs:98:37
+   |
+98 |     let a = ml_associate(&z3, &preds3, &gate, wrap_bearing_row);
+   |             ------------              ^^^^^ expected `&Gate<3>`, found `&Gate<2>`
+   |             |
+   |             arguments to this function are incorrect
+   |
+   = note: expected reference `&Gate<3usize>`
+              found reference `&Gate<2usize>`
+```
+
+That is the Chapter 7 tradition continued: the type system knows the difference between a
+2-DOF χ² threshold and a 3-DOF one, and it should, because a human staring at `5.99` versus `7.81`
+will not.
+
+### The localizer
+
+```rust title="crates/localize/src/ekf/mod.rs" {33-45,62-79}
+use nalgebra::{Matrix2, Matrix3, Vector2, Vector3};
+use pr_core::geom::se2::SE2;
+use motion::{Alphas, VelocityCmd};
+use sensor::{Feature, Landmark};
+
+use super::jacobians::{control_noise, landmark_prediction, motion_jacobians, wrap_pi};
+use super::associate::{ml_associate, Association, Gate, Prediction};
+
+/// A Gaussian over pose: mean on SE(2), covariance in (x, y, θ).
+#[derive(Clone, Debug)]
+pub struct GaussianBelief {
+    pub mean: SE2,
+    pub cov: Matrix3<f64>,
+}
+
+pub struct EkfLocalizer {
+    pub bel: GaussianBelief,
+    pub landmarks: Vec<Landmark>,
+    /// Sensor noise diag(σ_r², σ_φ²).
+    pub q: Matrix2<f64>,
+    pub alphas: Alphas,
+    pub gate: Gate<2>,
+    /// The γ̂ floor of Chapter 9: heading noise that V M Vᵀ structurally cannot
+    /// represent, because M has rank 2 and this direction is not in its range.
+    pub gamma_alphas: (f64, f64),
+}
+
+impl EkfLocalizer {
+    /// Table 7.2, lines 1–2.
+    pub fn predict(&mut self, u: &VelocityCmd) {
+        let (g, v) = motion_jacobians(&self.bel.mean, u);
+        let m = control_noise(u, &self.alphas);
+
+        let mut cov = g * self.bel.cov * g.transpose() + v * m * v.transpose();
+        let gamma_var =
+            (self.gamma_alphas.0 * u.v * u.v + self.gamma_alphas.1 * u.omega * u.omega)
+                * u.dt * u.dt;
+        cov[(2, 2)] += gamma_var;
+
+        self.bel.mean = u.integrate(&self.bel.mean); // exact arc, Chapter 9
+        self.bel.cov = symmetrize(cov);
+    }
+
+    /// Table 7.2, lines 4–13, for one feature whose correspondence is given.
+    pub fn correct_known(&mut self, f: &Feature, j: usize) -> f64 {
+        let (z_hat, h) = landmark_prediction(&self.bel.mean, &self.landmarks[j]);
+        let nu = residual(&Vector2::new(f.r, f.phi), &z_hat);
+        self.apply(&nu, &h)
+    }
+
+    /// Table 7.3: predict every landmark, choose by ML, gate, apply, repeat.
+    /// Returns one verdict per feature so a caller can plot precision/recall.
+    pub fn correct(&mut self, features: &[Feature]) -> Vec<Association> {
+        let mut out = Vec::with_capacity(features.len());
+
+        for f in features {
+            // Re-linearised for *every* feature, so this feature's gate already
+            // reflects the information the previous one contributed. It is also
+            // why the order features arrive in stops mattering.
+            let preds = self.predictions();
+            let z = Vector2::new(f.r, f.phi);
+            let assoc = ml_associate(&z, &preds, &self.gate, residual);
+            out.push(assoc);
+
+            if let Association::Matched { landmark, .. } = assoc {
+                let (z_hat, h) = landmark_prediction(&self.bel.mean, &self.landmarks[landmark]);
+                let nu = residual(&z, &z_hat);
+                self.apply(&nu, &h);
+            }
+        }
+        out
+    }
+
+    fn predictions(&self) -> Vec<Prediction<2>> {
+        self.landmarks
+            .iter()
+            .enumerate()
+            .map(|(k, lm)| {
+                let (z_hat, h) = landmark_prediction(&self.bel.mean, lm);
+                Prediction { landmark: k, z_hat, s: h * self.bel.cov * h.transpose() + self.q }
+            })
+            .collect()
+    }
+
+    /// K = Σ Hᵀ S⁻¹; μ ⊞ Kν; Σ ← (I − KH)Σ. Returns d²_M, the NIS of this update.
+    fn apply(&mut self, nu: &Vector2<f64>, h: &nalgebra::Matrix2x3<f64>) -> f64 {
+        let s = h * self.bel.cov * h.transpose() + self.q;
+        let s_inv = s.try_inverse().expect("S is positive definite");
+        let k = self.bel.cov * h.transpose() * s_inv;
+
+        let dx: Vector3<f64> = k * nu;
+        // ⊞, not +: the third component is an angle and lives on a circle.
+        self.bel.mean = self.bel.mean.boxplus(&dx);
+        self.bel.cov = symmetrize((Matrix3::identity() - k * h) * self.bel.cov);
+
+        (nu.transpose() * s_inv * nu)[(0, 0)]
+    }
+}
+
+/// z ⊟ ẑ: the range component subtracts, the bearing component wraps.
+fn residual(z: &Vector2<f64>, z_hat: &Vector2<f64>) -> Vector2<f64> {
+    Vector2::new(z[0] - z_hat[0], wrap_pi(z[1] - z_hat[1]))
+}
+
+#[inline]
+fn symmetrize(m: Matrix3<f64>) -> Matrix3<f64> {
+    0.5 * (m + m.transpose())
+}
+```
+
+The multi-hypothesis version lives behind a feature flag, because most deployments do not want it
+and the ones that do want it want it configurable:
+
+```rust title="crates/localize/src/ekf/mht.rs (excerpt)"
+#[cfg(feature = "mht")]
+pub struct MhtLocalizer {
+    pub hyps: Vec<(GaussianBelief, f64, Vec<usize>)>, // belief, weight, history
+    pub prune_ratio: f64,
+    pub max_hyps: usize,
+    pub merge_d2: f64,
+    /// The likelihood a hypothesis pays for calling a feature clutter. Without
+    /// it, a hypothesis that explains nothing survives forever at its old
+    /// weight and the mixture never collapses.
+    pub clutter_density: f64,
+}
+```
+
+### The visibility model, with `parry2d`
+
+The simulator needs to know which landmarks a robot can actually see, which is a ray-cast against
+the floorplan — the one place in this chapter where a geometry crate earns its keep:
+
+```rust title="crates/sim/src/visibility.rs"
+use parry2d::query::Ray;
+use parry2d::shape::Polyline;
+use nalgebra::{Point2, Vector2};
+
+/// Is `lm` visible from `pose`: inside the cone, within range, and with no wall
+/// between? The third test is the one people forget, and it is what makes the
+/// Apartment a real localization problem rather than a point cloud in a void.
+pub fn visible(walls: &Polyline, pose: &SE2, lm: &Landmark, max_range: f64, fov: f64) -> bool {
+    let dx = lm.x - pose.x();
+    let dy = lm.y - pose.y();
+    let range = (dx * dx + dy * dy).sqrt();
+    if range > max_range || wrap_pi(dy.atan2(dx) - pose.theta()).abs() > 0.5 * fov {
+        return false;
+    }
+    let ray = Ray::new(Point2::new(pose.x(), pose.y()), Vector2::new(dx / range, dy / range));
+    // A hit strictly before the landmark means a wall is in the way.
+    walls
+        .cast_local_ray(&ray, range - 1e-6, true)
+        .is_none()
+}
+```
+
+### The worked example, pinned by a test
+
+Every number printed in the worked example above is reproduced by a unit test. If the prose and the
+code ever disagree, the test is what settles it.
+
+```rust title="crates/localize/src/ekf/tests.rs"
+use approx::assert_relative_eq;
+
+/// The Chapter 11 worked example: μ̄ = (2, 3, 0), Σ̄ = diag(0.25, 0.25, 0.01),
+/// one landmark at (5, 3), σ_r = 0.2, σ_φ = 0.05, measurement (3.2, 0.05).
+#[test]
+fn worked_example_ch11_single_landmark_update() {
+    let mut loc = EkfLocalizer::at(
+        SE2::new(2.0, 3.0, 0.0),
+        Matrix3::from_diagonal(&Vector3::new(0.25, 0.25, 0.01)),
+        vec![Landmark::new(5.0, 3.0)],
+        Matrix2::from_diagonal(&Vector2::new(0.04, 0.0025)),
+    );
+
+    let (z_hat, h) = landmark_prediction(&loc.bel.mean, &loc.landmarks[0]);
+    assert_relative_eq!(z_hat[0], 3.0, epsilon = 1e-12);
+    assert_relative_eq!(z_hat[1], 0.0, epsilon = 1e-12);
+    assert_relative_eq!(h[(0, 0)], -1.0, epsilon = 1e-12);
+    assert_relative_eq!(h[(1, 1)], -1.0 / 3.0, epsilon = 1e-12);
+
+    let s = h * loc.bel.cov * h.transpose() + loc.q;
+    assert_relative_eq!(s[(0, 0)], 0.29, epsilon = 1e-12);
+    assert_relative_eq!(s[(1, 1)], 0.29 / 7.2, epsilon = 1e-12); // = 0.0402777…
+
+    let d2 = loc.correct_known(&Feature { r: 3.2, phi: 0.05, s: None }, 0);
+    assert_relative_eq!(d2, 0.2, epsilon = 1e-12); // exactly 0.2, pleasingly
+
+    assert_relative_eq!(loc.bel.mean.x(), 1.827_586_206_896_55, epsilon = 1e-9);
+    assert_relative_eq!(loc.bel.mean.y(), 2.896_551_724_137_93, epsilon = 1e-9);
+    assert_relative_eq!(loc.bel.cov[(0, 0)], 0.034_482_758_620_69, epsilon = 1e-9);
+    assert_relative_eq!(loc.bel.cov[(1, 2)], -0.020_689_655_172_41, epsilon = 1e-9);
+}
+
+/// The poisoning cascade of the derivation above: a decoy 0.6 m behind the
+/// mapped landmark passes the 95% gate on every one of three sightings, while
+/// the error grows and the covariance shrinks.
+#[test]
+fn one_wrong_match_is_self_reinforcing() {
+    let mut loc = poisoned_setup();
+    let truth_x = 2.0;
+    let expected = [(1.2414, 0.5172, 7.759), (0.0920, 0.5556, 16.667), (0.0338, 0.5696, 25.633)];
+
+    for (d2_want, err_want, nees_want) in expected {
+        let d2 = loc.correct_known(&Feature { r: 3.6, phi: 0.0, s: None }, 0);
+        assert!(loc.gate.accepts(d2), "the wrong match is accepted every time");
+        assert_relative_eq!(d2, d2_want, epsilon = 1e-3);
+        assert_relative_eq!(truth_x - loc.bel.mean.x(), err_want, epsilon = 1e-3);
+        assert_relative_eq!(nees(&SE2::new(2.0, 3.0, 0.0), &loc.bel), nees_want, epsilon = 1e-2);
+    }
+    // The point: d² fell by a factor of thirty-six while the error grew by 10%.
+}
+```
+
+Run the lab end to end and it prints the numbers the chapter has been arguing about:
+
+```text title="cargo run --release --example ekf_loc_lab -- --seed 11"
+Apartment, 400 steps, 10 landmarks, ML association, χ²₂ gate at 95%
+  position RMSE        0.094 m
+  heading  RMSE        2.26 deg
+  mean NEES            3.04        (consistent: 3.00)
+  NEES inside 95%      94% of steps (expected 95%)
+  features matched     413
+  wrong associations   0
+  outliers rejected    18
+  steps with no feature in view   42%
+
+$ cargo run --release --example ekf_loc_lab -- --seed 11 --pathological-pair
+Apartment, 400 steps, 10 landmarks (two of them 0.30 m apart), ML association
+  position RMSE        1.232 m
+  heading  RMSE       11.54 deg
+  mean NEES           71.83        <-- the filter is lying
+  NEES inside 95%      75% of steps
+  features matched     244
+  wrong associations    23
+  outliers rejected     55          <-- it has started refusing the truth
+  steps with no feature in view   65%
+  next: see Chapter 12. A Gaussian cannot represent "one of these two".
+```
+
+Twenty-three wrong associations out of two hundred and forty-four: a 9% error rate on a discrete
+decision, which multiplied the RMSE by thirteen. And note the last line of each block. The healthy
+run is blind 42% of the time; the poisoned one is blind 65% of the time, because it has started
+rejecting the very landmarks that would have saved it.
+
+## Putting it together
+
+Three instruments, and only one of them is any good.
+
+**RMSE** is what everyone reports and it answers the wrong question. It is an average, so a filter
+that behaves for three hundred steps and diverges over the last hundred still reports a
+respectable number — and it says nothing at all about whether the covariance beside it is
+trustworthy.
+
+**The covariance** is what the filter reports about itself, and the poisoning derivation showed
+precisely why it cannot be trusted: $\Sigma \leftarrow (I - KH)\Sigma$ never once looks at whether
+the innovation was correct. A shrinking ellipse is evidence that measurements arrived, not that
+they were the right ones.
+
+**NEES** is the instrument that works, and it is the modernization this chapter insists on:
+
+<LinkedMath>
+$$
+\varepsilon_t = \left(\htmlClass{term-truth}{x_t} \bminus \htmlClass{term-posterior}{\mu_t}\right)\T
+\htmlClass{term-posterior}{\Sigma_t^{-1}}
+\left(\htmlClass{term-truth}{x_t} \bminus \htmlClass{term-posterior}{\mu_t}\right)
+\;\sim\; \chi^2_3 \quad\text{if the filter is consistent}
+$$
+</LinkedMath>
+
+It compares the error the filter *makes* to the error it *claims*, so it catches exactly the
+failure mode that RMSE and covariance both miss. Under a consistent 3-DOF filter each $\varepsilon_t$
+is marginally $\chi^2_3$: expectation 3, and a 95% interval of $[0.216, 9.348]$. The `dense` run
+above lands inside that interval on 94% of steps and averages 3.04 — as close to honest as a
+linearized filter gets. The poisoned run lands inside on 75% of steps and averages 71.8.
+
+Two warnings about reading it. First, consecutive NEES values are strongly correlated — the pose
+error persists across steps, especially through a landmark-free stretch — so the average of a
+25-step window is *not* $\chi^2_{75}/25$, and a band drawn on that assumption will be crossed far
+more often than 5% of the time. Judge the single-step trace against the single-step interval, and
+use the running mean only as a trend. Second, NEES needs ground truth, so it is a simulation
+instrument. Its deployable cousin is **NIS**, $\nu\T S^{-1}\nu$, which needs only the data — and
+which you have already met, because NIS *is* the gate statistic. Line 9 of `EKF_localization` is a
+per-measurement consistency test that happens to be used for rejection.
+
+Everything this chapter can do now fails in one specific way, and it fails on purpose. Set the lab
+to `close pair`. Watch the wrong-association counter tick, the ellipse tighten, NEES leave the
+planet, and then watch the rejection counter climb as the filter begins discarding true landmarks
+because they no longer fit the story it has told itself. There is no parameter setting that fixes
+this. The gate cannot be tightened (it would reject the truth first) and cannot be loosened (it
+would admit more phantoms). MHT can hedge for a while, at a price in Gaussians, and then it prunes
+and the hedge is gone.
+
+The problem is not the gate, and it is not the tuning. It is the representation. A belief with one
+mean and one covariance cannot say *"I am at one of these two places"* — and that is the sentence
+the robot needs to be able to say. [Chapter 12](/chapters/ch12-localization-global) gives it the
+vocabulary, at the cost of everything cheap and closed-form about this chapter.
+
+<Callout type="info">
+Two forward pointers worth holding onto. [Chapter 14](/chapters/ch14-ekf-slam) is this chapter with
+the map promoted into the state vector — the same $H_t$, the same gate, the same ML association,
+now with landmarks whose positions are also uncertain, which makes $S^j$ larger and the gates wider
+exactly when you least want them to be. And a margin note the design of this chapter promised: to
+run a UKF localizer instead, swap `Ekf` for `Ukf` behind the `Localizer` trait and delete
+`jacobians.rs`. It is a one-line change because [Chapter 7](/chapters/ch07-ekf-ukf-manifolds) did
+the work.
+</Callout>
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Derive H by hand, all six entries">
+    Derive $H_t^j$ for the range–bearing model from scratch, being careful with the sign of
+    $\partial \delta/\partial x$. Verify each entry against a central-difference Jacobian at
+    $\bar\mu = (2, 3, 0)$, $m_j = (5, 3)$.
+
+    Then answer the question the second row poses: the bearing entries decay as $1/\sqrt q$ while
+    the $\theta$ entry is $-1$ regardless of range. What does that imply about which landmarks
+    constrain heading and which constrain position? Design a five-landmark map for a 12 m corridor
+    that keeps *both* well constrained, and say which of the two your map compromises.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="How much clutter is too much?">
+    Suppose false detections arrive uniformly at density $\lambda$ per square metre of measurement
+    space, and the 95% validation region of a landmark has area $A_j$ (compute it: the ellipse
+    $d_M^2 \le \gamma$ has area $\pi\gamma\sqrt{\det S^j}$).
+
+    (a) Give the probability that at least one clutter detection falls inside a given gate.
+    (b) With $n = 10$ landmarks in view, give the expected number of gates containing at least one
+    false detection.
+    (c) The true detection also falls in the correct gate with probability $1 - \epsilon$. Derive
+    the clutter density at which nearest-neighbour association is wrong more often than right, and
+    evaluate it for the widget's numbers ($\det S \approx 0.0051$, $\gamma = 5.99$).
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The fixed point of a poisoned filter">
+    In the poisoning derivation, the mapped landmark is at $m_j$ and the object generating the
+    feature is at $m_j + b$ with $b$ along the line of sight. Assume the robot is stationary and
+    observes repeatedly.
+
+    Show that $\mu_x$ converges to $m_{j,x} - r$ where $r$ is the measured range, and that
+    $\Sigma_{xx} \to 0$ like $O(1/k)$ after $k$ observations. Then explain, in one sentence each,
+    why (i) NEES diverges, (ii) $d_M^2$ converges to a value *smaller* than a correct match would
+    typically produce, and (iii) genuine landmarks begin to fail the gate.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict the gate, then check (w11.1)">
+    In the Association Gate, set the confidence to 0.99 and predict — before you drag anything —
+    whether the region where Euclidean and Mahalanobis disagree grows, shrinks, or stays the same.
+    Now predict what happens to the *outlier* verdict in that same region. Check both.
+
+    Then answer the harder version for [w11.2](#w11.2): during a long landmark-free stretch the
+    ellipse grows, so the gates grow. Does a *tighter* gate help or hurt there? Reconcile your two
+    answers into one rule about when gates should be tight.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="The cheapest hedge that works (w11.4)">
+    In the Hypothesis Forest, find the smallest $H_{\max}$ that still recovers the correct
+    hypothesis, and the largest prune ratio. Then press *look at the beacon* at three different
+    moments and note how the collapse differs.
+
+    Finally: what information actually breaks the symmetry, and how much did it cost to get? Frame
+    your answer as an expected-value calculation — the reduction in belief entropy against the
+    detour needed to obtain it. You have just written down the objective of active localization
+    ([Chapter 22](/chapters/ch22-pomdps)).
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Sequential versus summed updates">
+    The `EkfLocalizer` above re-linearizes after every accepted feature; Thrun's Table 7.2 sums the
+    corrections against a single $\bar\Sigma_t$. Implement both behind a flag and measure, on a
+    seeded 400-step Apartment run with the `dense` preset: position RMSE, mean NEES, and
+    association precision.
+
+    Then find a configuration where the difference is large rather than negligible. (Hint: the two
+    agree when each correction is small. Make one correction large — a very informative landmark
+    seen after a long blind stretch — and process several features in the same step.)
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A two-feature JCBB">
+    Implement joint compatibility for pairs. Given two features $z^1, z^2$ and candidate landmarks
+    $j, k$, stack the innovations into a 4-vector and build the full $4\times4$ covariance —
+    including the cross-block $H^j \bar\Sigma_t (H^k)\T$, which per-feature gating discards — then
+    gate against $\chi^2_{4, 0.95} = 9.488$.
+
+    Show one seeded scenario in the `close pair` preset where both individual gates accept a
+    pairing that the joint gate rejects, and explain geometrically why the cross-covariance knows
+    something the marginals do not. Compare your rejection rate against plain per-feature gating
+    over ten seeds.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Make the filter admit it is lost">
+    Add a `LostDetector` to `EkfLocalizer`: track a running average of the fraction of features
+    rejected by the gate, and the mean NIS of the accepted ones. Trigger a `Lost` state when
+    rejections exceed a threshold for several consecutive steps.
+
+    Test it by teleporting the true robot two metres mid-run. Then implement the honest response:
+    on `Lost`, inflate $\Sigma$ by a factor $\kappa$ (which widens every gate) rather than
+    tightening anything, and measure how large $\kappa$ must be to recover, as a function of the
+    teleport distance. At what distance does no finite $\kappa$ work? That number is the boundary
+    of this chapter.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 7 is this chapter's baseline: the taxonomy (§7.2), Markov localization (§7.3–7.4), EKF localization with known and unknown correspondence (Tables 7.2 and 7.3), MHT (§7.7), and the practical-considerations section quoted above."
+  />
+  <Reference
+    authors="Reid, D. B."
+    year={1979}
+    title="An Algorithm for Tracking Multiple Targets"
+    venue="IEEE Transactions on Automatic Control 24(6), 843–854"
+    doi="10.1109/TAC.1979.1102177"
+    note="The original multiple-hypothesis tracker. The branch–weight–prune recursion in w11.4 is Reid's, transplanted from target tracking into localization; the pruning and merging heuristics are still the ones in use."
+  />
+  <Reference
+    authors="Bar-Shalom, Y., Li, X.-R., and Kirubarajan, T."
+    year={2001}
+    title="Estimation with Applications to Tracking and Navigation: Theory, Algorithms and Software"
+    venue="Wiley-Interscience"
+    doi="10.1002/0471221279"
+    note="The source for validation gating and for NEES/NIS as consistency tests (§5.4). Where the robotics literature reports RMSE, this book reports whether the filter's covariance is honest — the standard this chapter adopts."
+  />
+  <Reference
+    authors="Neira, J. and Tardós, J. D."
+    year={2001}
+    title="Data Association in Stochastic Mapping Using the Joint Compatibility Test"
+    venue="IEEE Transactions on Robotics and Automation 17(6), 890–897"
+    doi="10.1109/70.976019"
+    note="JCBB: the paper that showed individually compatible pairings can be jointly impossible, because measurement prediction errors share a pose and are therefore correlated. Exercise 7 builds its two-feature case."
+  />
+  <Reference
+    authors="Solà, J., Deray, J., and Atchuthan, D."
+    year={2021}
+    title="A micro Lie theory for state estimation in robotics"
+    venue="arXiv:1812.01537 (v9)"
+    url="https://arxiv.org/abs/1812.01537"
+    note="The reference for the ⊞/⊟ discipline that fixes the heading-wrap and near-±π bearing bugs the 2005 presentation silently carries. Its Jacobian conventions are the ones Chapter 7 and this chapter follow."
+  />
+  <Reference
+    authors="Antonante, P., Tzoumas, V., Yang, H., and Carlone, L."
+    year={2022}
+    title="Outlier-Robust Estimation: Hardness, Minimally Tuned Algorithms, and Applications"
+    venue="IEEE Transactions on Robotics 38(1), 281–301"
+    doi="10.1109/TRO.2021.3094984"
+    note="Why gating alone can never be enough: outlier-robust estimation is inapproximable in the worst case. The modern answer is a robust cost that can *revise* a bad match, not a threshold that must get it right first time — the route Chapter 15 takes."
+  />
+  <Reference
+    authors="Doherty, K. J., Lu, Z., Singh, K., and Leonard, J. J."
+    year={2022}
+    title="Discrete-Continuous Smoothing and Mapping"
+    venue="IEEE Robotics and Automation Letters 7(4), 12395–12402"
+    doi="10.1109/LRA.2022.3216938"
+    note="The contemporary treatment of the variable this chapter guesses: associations are estimated jointly with the continuous state in a discrete-continuous factor graph, rather than fixed by an argmax and never revisited."
+  />
+  <Reference
+    authors="Korotkine, V., Cohen, M., and Forbes, J. R."
+    year={2025}
+    title="Globally Optimal Data-Association-Free Landmark-Based Localization Using Semidefinite Relaxations"
+    venue="IEEE Robotics and Automation Letters (accepted); arXiv:2504.08547"
+    url="https://arxiv.org/abs/2504.08547"
+    note="Exactly this chapter's problem — landmark localization with unknown correspondences — solved to certified global optimality by convex relaxation, with no gate and no initial guess. The clearest statement of how far the field has moved past maximum-likelihood nearest neighbour."
+  />
+</References>

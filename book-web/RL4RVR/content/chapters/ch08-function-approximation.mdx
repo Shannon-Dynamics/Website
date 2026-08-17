@@ -1,0 +1,296 @@
+---
+title: Function Approximation & the Deadly Triad
+chapter: 8
+quote:
+  text: In robotics, the state and action spaces are continuous and high-dimensional. Tabular representations are hopeless; the question is not whether to approximate but how.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On why robot RL cannot use tables
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Part I built a complete theory that assumes one number per state. Chapter 5's arithmetic already showed a modest robot arm has more states than a sweep can touch before the sun burns out. So we replace the table with a parameterized function and generalize across states — and discover that the guarantees do not survive intact. This chapter is about what breaks: the objective becomes a projection rather than an equality, the update stops being a gradient of anything, and three individually-harmless ingredients combine into a mechanism that makes learning diverge outright."
+  outcomes={[
+    'State the value-error objective and explain why the on-policy distribution appears in it',
+    'Derive the semi-gradient TD update and explain precisely which term is dropped and why',
+    'Construct tile-coded features and reason about generalization versus resolution',
+    'Name the three members of the deadly triad and explain the divergence mechanism',
+    'Explain why Baird’s counterexample diverges even though the true value function is representable',
+    'Choose sensibly between on-policy stability and off-policy sample efficiency for a robot problem',
+  ]}
+  foundation="The VE objective, semi-gradient TD and the dropped term, the linear TD fixed point, tile coding, and the deadly-triad divergence analysis."
+  conceptual="Baird's counterexample running live, with each triad ingredient switchable — removing any one restores stability."
+  practical="Tile coding in pure ndarray and the first burn network: linear methods on Pendle, then a nonlinear value function."
+/>
+
+## 8.1 The end of tables
+
+Pendle's state is $(\theta, \dot\theta)$ — two real numbers. There are uncountably many of them. A table has no entry for $\theta = 0.7231847\ldots$, and it never will.
+
+Discretizing does not rescue us. Chapter 5's widget made the arithmetic concrete: even a coarse 10-bin discretization of a 7-degree-of-freedom arm produces more states than could be swept in the lifetime of the universe. And a discretization fine enough to control well is far worse than coarse.
+
+The deeper problem is that tables **cannot generalize**. Rusty learning that a cell three metres from a shelf is safe tells a table nothing about the cell one centimetre away. Every state must be visited to be learned. For a robot that is not a slow path to success; it is no path at all.
+
+So we replace the table with a parameterized function
+
+$$\hat v(s, \mathbf{w}) \approx v_\pi(s), \qquad \mathbf{w} \in \mathbb{R}^d, \quad d \ll |\mathcal{S}|,$$
+
+and accept the consequence: **changing one weight changes the value of many states at once.** That is the entire point — it is how generalization happens — and it is also the source of every difficulty in this chapter.
+
+## 8.2 What are we even optimizing?
+
+With a table, we could hit the Bellman equation exactly. With $d \ll |\mathcal{S}|$ parameters we generally cannot, so we must decide which errors matter.
+
+The standard choice is the **mean squared value error**, weighted by how often each state is actually visited:
+
+$$\overline{\text{VE}}(\mathbf{w}) \doteq \sum_{s} \mu(s) \left[ v_\pi(s) - \hat v(s, \mathbf{w}) \right]^2,$$
+
+where $\mu$ is the on-policy state distribution.
+
+<Callout variant="insight" title="Why the distribution belongs in the objective">
+Accuracy in states the robot never visits is worthless. If Ferris spends his life trotting on flat ground, the value function's error while inverted mid-backflip does not matter.
+
+That weighting is not a convenience — it turns out to be the technical condition that makes on-policy learning stable. Learn under a different distribution than $\mu$, and §8.5 shows the whole thing can come apart. The distribution is load-bearing.
+</Callout>
+
+## 8.3 Semi-gradient TD, and the term we drop
+
+Gradient descent on $\overline{\text{VE}}$ would use targets $v_\pi(s)$ — which we do not have. Substituting the TD target gives the update
+
+$$\mathbf{w} \leftarrow \mathbf{w} + \alpha \left[ R_{t+1} + \gamma\, \hat v(S_{t+1}, \mathbf{w}) - \hat v(S_t, \mathbf{w}) \right] \nabla \hat v(S_t, \mathbf{w}).$$
+
+Look carefully at what happened. The target $R_{t+1} + \gamma \hat v(S_{t+1}, \mathbf{w})$ **depends on $\mathbf{w}$**, yet we did not differentiate through it. That is deliberate, and it is why this is called a **semi-gradient** method: it is the gradient of the error with respect to the prediction only, treating the target as a constant.
+
+<Callout variant="warning" title="This is not the gradient of anything">
+Semi-gradient TD is not performing gradient descent on $\overline{\text{VE}}$, or on any other objective function. There is no scalar $J(\mathbf{w})$ whose gradient this is.
+
+That matters because every reassuring intuition about gradient descent — that it goes downhill, that it converges to a local minimum, that a small enough step size makes it safe — is unavailable. We are iterating a fixed-point operator and hoping it contracts, which §8.5 shows it may not.
+
+Why not take the true gradient? Because differentiating through the target gives the **residual gradient** method, which requires two independent samples of the next state from the same state — a *double sampling* problem. In a simulator you can reset and re-sample; on a robot you cannot rewind the world. Semi-gradient is what is actually available.
+</Callout>
+
+For the **linear** case $\hat v(s,\mathbf{w}) = \mathbf{w}^\top \mathbf{x}(s)$ the gradient is just the feature vector, and there is real theory. On-policy linear semi-gradient TD(0) converges to the **TD fixed point** $\mathbf{w}_{\text{TD}}$, which satisfies
+
+$$\overline{\text{VE}}(\mathbf{w}_{\text{TD}}) \le \frac{1}{1-\gamma} \min_{\mathbf{w}} \overline{\text{VE}}(\mathbf{w}).$$
+
+So TD's answer is within a factor $1/(1-\gamma)$ of the best the function class can do. At $\gamma = 0.99$ that factor is 100 — a weak guarantee, but a guarantee, and it is more than Part II will offer once networks arrive.
+
+## 8.4 Features: tile coding and what came after
+
+Linear methods are only as good as their features. The classic robotics choice is **tile coding**: overlay several offset grids ("tilings") on the state space; a state activates exactly one tile per tiling, giving a sparse binary feature vector.
+
+Tile coding gets three things right at once. Generalization is controlled by tile *width* while resolution is controlled by the *number of tilings* — you tune them independently. Lookup is $O(\text{tilings})$ regardless of dimension. And with exactly $n$ active features, the effective learning rate is $\alpha/n$, so step sizes behave predictably.
+
+<RustSnippet title="rl-deep/src/features/tile.rs" caption="Tile coding with hashing, in pure ndarray. This is the workhorse that solved cart-pole and mountain-car for two decades before deep networks — and it still trains in milliseconds where a network takes minutes.">
+
+```rust
+/// Tile coding over a bounded continuous state space.
+/// Each tiling is offset so that a state activates a different tile in each,
+/// giving resolution finer than any single tiling's width.
+pub struct TileCoder {
+    n_tilings: usize,
+    tiles_per_dim: usize,
+    bounds: Vec<(f64, f64)>,
+    offsets: Vec<Vec<f64>>,
+}
+
+impl TileCoder {
+    /// Indices of the active features — exactly `n_tilings` of them.
+    pub fn active(&self, state: &[f64]) -> Vec<usize> {
+        let mut idx = Vec::with_capacity(self.n_tilings);
+
+        for (t, offset) in self.offsets.iter().enumerate() {
+            let mut coords = Vec::with_capacity(state.len());
+
+            for (d, &x) in state.iter().enumerate() {
+                let (lo, hi) = self.bounds[d];
+                let scaled = (x - lo) / (hi - lo) * self.tiles_per_dim as f64;
+                let c = (scaled + offset[d]).floor() as isize;
+                coords.push(c.clamp(0, self.tiles_per_dim as isize - 1) as usize);
+            }
+
+            // Flatten (tiling, coords) into one feature index.
+            let mut flat = t;
+            for c in coords {
+                flat = flat * self.tiles_per_dim + c;
+            }
+            idx.push(flat);
+        }
+        idx
+    }
+}
+
+/// Semi-gradient SARSA with binary features: the update touches only the
+/// active tiles, so it costs O(n_tilings) regardless of the table's size.
+pub fn sarsa_update(w: &mut [f64], active: &[usize], delta: f64, alpha: f64) {
+    let step = alpha / active.len() as f64;
+    for &i in active {
+        w[i] += step * delta;
+    }
+}
+```
+
+</RustSnippet>
+
+Neural networks replace hand-designed features with learned ones. The trade is stark: networks handle raw pixels and high dimensions where tile coding cannot, at the cost of every theoretical guarantee in this section and orders of magnitude more compute. For a 2-D state like Pendle's, **tile coding is still the better engineering choice** — a fact worth knowing before reaching for a GPU.
+
+## 8.5 The deadly triad
+
+Now the central result of the chapter, and the reason Part II is engineered the way it is.
+
+Three ingredients, each individually fine:
+
+1. **Function approximation** — required, since tables do not scale.
+2. **Bootstrapping** — targets built from your own estimates, as in TD. Gives efficiency and low variance.
+3. **Off-policy training** — learning about one policy from data generated by another. Essential for sample efficiency, which robots cannot do without.
+
+Any two are safe. All three together can make the parameters diverge to infinity.
+
+<DeadlyTriad />
+
+Baird's counterexample is the cleanest demonstration. Every reward is zero, so the true value function is $v = 0$ everywhere — and it is **exactly representable** by the feature set. There is nothing to approximate badly. Yet the weights grow without bound.
+
+<Callout variant="warning" title="The mechanism, stated plainly">
+Under off-policy training, the states you *update* are distributed differently from the states the target policy *visits*. Semi-gradient updates at state $s$ change the value of $s'$ through shared features, but nothing corrects the resulting error at $s'$ — because the update distribution does not weight $s'$ appropriately.
+
+Bootstrapping then feeds that uncorrected error back into the next target, which inflates the next update. The loop has positive gain and no stabilizing term. Since the update is not the gradient of any objective, there is no potential function decreasing along the way to stop it.
+
+Switch off any single ingredient in the widget and the loop breaks. Without bootstrapping, targets are real returns and carry no inherited error. Without off-policy, the update distribution matches the target policy's and the errors are corrected where they occur. Without approximation, changing one state's value cannot corrupt another's.
+</Callout>
+
+Three families of response exist, and Part II uses all of them:
+
+**Live with it, carefully.** DQN (Chapter 9) is squarely in the triad and works anyway — because target networks slow the feedback loop and replay buffers keep the update distribution broad. It is engineering, not theory, and it is honest to say so.
+
+**Stay on-policy.** PPO (Chapter 10) avoids the third ingredient entirely, which is a large part of why it is the workhorse of real-world robot RL despite being less sample-efficient. Tang's survey finds on-policy methods dominating the successful sim-to-real results, and this is the reason.
+
+**Fix the objective.** Gradient-TD methods (GTD2, TDC) perform true stochastic gradient descent on a *projected* Bellman error, and converge under all three conditions. They are theoretically satisfying, somewhat more complex, and less used in practice than they deserve.
+
+## 8.6 Control with approximation
+
+For control, parameterize $\hat q(s,a,\mathbf{w})$ and run the same GPI loop from Chapter 5, with semi-gradient SARSA updates and $\varepsilon$-greedy action selection.
+
+Two new difficulties appear immediately. **The policy is no longer stable:** a small weight change can flip the argmax at many states at once, so the policy can oscillate even when the values are nearly converged. And **the state distribution shifts as the policy changes**, so the $\mu$ that made $\overline{\text{VE}}$ meaningful is a moving target — a control problem is a non-stationary prediction problem wearing a disguise.
+
+Despite this, semi-gradient SARSA with tile coding is remarkably robust in practice and remains a strong baseline. Before assuming a robot problem needs deep RL, it is worth trying: it trains in seconds, has few hyperparameters, and when it works you are done.
+
+## 8.7 Chapter bridge
+
+We gave up tables and got generalization. We also gave up exact convergence guarantees, learned that our update is not a gradient of anything, and met a mechanism that can make training diverge on a problem with zero rewards and a representable answer.
+
+Chapter 9 takes the triad on anyway. Deep Q-networks put a neural network in the value function, train off-policy from a replay buffer, and bootstrap — all three ingredients at maximum strength. It works, and understanding *why* it works is understanding the two pieces of engineering that make it work: replay buffers that decorrelate the update distribution, and target networks that slow the feedback loop enough that the loop's gain drops below one. Both are direct responses to what this chapter diagnosed.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'The dropped term',
+    difficulty: 2,
+    body: 'Write out the true gradient of the squared TD error, including the term that differentiates through the target. Show that estimating it from a single sample gives a biased estimate, and explain why two independent successor samples would be needed.',
+  },
+  {
+    layer: 'F',
+    title: 'The TD fixed point bound',
+    difficulty: 3,
+    body: 'State the linear TD fixed-point bound precisely and evaluate the factor 1/(1−γ) at γ = 0.9, 0.99, 0.999. At what point does the guarantee stop being informative for a robot task?',
+  },
+  {
+    layer: 'F',
+    title: 'Why Baird diverges',
+    difficulty: 3,
+    body: 'Analyze Baird’s counterexample directly: write the expected update as a linear map on w, and show that its iteration matrix has an eigenvalue with magnitude greater than one. Then verify that restricting to the on-policy distribution makes all eigenvalues sub-unit.',
+  },
+  {
+    layer: 'F',
+    title: 'Tile coding arithmetic',
+    difficulty: 2,
+    body: 'For a 2-D state with 8 tilings of 8×8 tiles each, compute the total feature count, the number active at any state, and the effective per-feature learning rate for a nominal α. Then redo it for a 6-D state and say what breaks.',
+  },
+  {
+    layer: 'C',
+    title: 'Break the triad three ways',
+    difficulty: 1,
+    body: 'In the deadly-triad widget, disable each ingredient in turn and record the final parameter norm. Confirm that removing ANY one stabilizes learning, then explain each stabilization in one sentence.',
+  },
+  {
+    layer: 'C',
+    title: 'Does a smaller step size save you?',
+    difficulty: 2,
+    body: 'With all three ingredients active, reduce α as far as the slider allows. Does divergence stop, or merely slow? Explain what this tells you about the difference between instability and slow convergence.',
+  },
+  {
+    layer: 'P',
+    title: 'Tile-coded cart-pole',
+    difficulty: 2,
+    body: 'Implement semi-gradient SARSA with tile coding on Pendle’s swing-up. Sweep the number of tilings and tile width, and plot the resolution/generalization frontier. Note the wall-clock time — it should embarrass a neural network.',
+  },
+  {
+    layer: 'P',
+    title: 'Linear versus nonlinear',
+    difficulty: 3,
+    body: 'Replace the tile-coded value function with a small burn MLP on the same task, holding everything else fixed. Compare sample efficiency, wall-clock time, and stability across five seeds. Report honestly which you would ship.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapters 9–11: on-policy prediction with approximation, on-policy control, and off-policy methods with approximation — where the deadly triad is named and analyzed.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§4.2 value-function approximation in robotics, and §2.4 on why representation choice dominates algorithm choice.',
+  },
+  {
+    key: 'baird1995',
+    authors: 'Baird, L.',
+    year: 1995,
+    title: 'Residual Algorithms: Reinforcement Learning with Function Approximation',
+    venue: 'ICML 1995',
+    note: 'The counterexample, and the residual-gradient alternative that avoids it at the cost of double sampling.',
+  },
+  {
+    key: 'tsitsiklis1997',
+    authors: 'Tsitsiklis, J. N. & Van Roy, B.',
+    year: 1997,
+    title: 'An Analysis of Temporal-Difference Learning with Function Approximation',
+    venue: 'IEEE Transactions on Automatic Control 42(5)',
+    note: 'The convergence proof for on-policy linear TD, and the 1/(1−γ) error bound quoted in §8.3.',
+  },
+  {
+    key: 'sutton1996',
+    authors: 'Sutton, R. S.',
+    year: 1996,
+    title: 'Generalization in Reinforcement Learning: Successful Examples Using Sparse Coarse Coding',
+    venue: 'NeurIPS 8',
+    note: 'Tile coding as it is actually used.',
+  },
+  {
+    key: 'sutton2009',
+    authors: 'Sutton, R. S., Maei, H. R., Precup, D., Bhatnagar, S., Silver, D., Szepesvári, C. & Wiewiora, E.',
+    year: 2009,
+    title: 'Fast gradient-descent methods for temporal-difference learning with linear function approximation',
+    venue: 'ICML 2009',
+    note: 'GTD2 and TDC — true gradient methods that converge under all three triad conditions.',
+  },
+  {
+    key: 'vanhasselt2018',
+    authors: 'van Hasselt, H., Doron, Y., Strub, F., Hessel, M., Sonnerat, N. & Modayil, J.',
+    year: 2018,
+    title: 'Deep Reinforcement Learning and the Deadly Triad',
+    venue: 'arXiv:1812.02648',
+    url: 'https://arxiv.org/abs/1812.02648',
+    note: 'An empirical study of when the triad actually bites in deep RL — essential reading before Chapter 9.',
+  },
+]} />

@@ -1,0 +1,412 @@
+---
+title: 'Markov Decision Processes: The Formalism'
+chapter: 4
+quote:
+  text: The Markov property recapitulates the idea of state — a state is a sufficient statistic for predicting the future.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: TU Delft · Carnegie Mellon · TU Darmstadt
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Chapter 3 removed state to isolate exploration. Now we put it back, and the whole subject changes character. Once an action influences what you face next, the value of an action must account for the future it leads to — and that self-reference, embraced rather than avoided, is the Bellman equation. This chapter derives it in full, proves the fixed-point machinery of Chapter 2 applies to it, and then confesses the thing most textbooks postpone: robots never see the state, so the honest formalism is a POMDP."
+  outcomes={[
+    'Write down a finite MDP and compute its dynamics, expected rewards, and returns from the four-argument function p(s′,r|s,a)',
+    'Derive the Bellman expectation equations for v_π and q_π line by line, naming every step',
+    'Derive the Bellman optimality equations and explain exactly where linearity dies',
+    'Prove that both Bellman operators are γ-contractions, and cash the Chapter 2 theorem for existence and uniqueness',
+    'Explain what a belief state is and why partial observability is the normal case in robotics, not the exception',
+    'Recognize the same robot task as a different MDP depending on the action-space level you choose',
+  ]}
+  foundation="The finite MDP tuple, returns and discounting, value functions, Bellman expectation and optimality equations derived in full, γ-contraction proofs, and the belief-MDP construction."
+  conceptual="Rusty's warehouse as a formal object: click any cell to read its transition distribution, and watch the optimal policy respond to the model rather than to a hyperparameter."
+  practical="The rl-core gym — Space, Env and Mdp traits — the abstraction every later chapter builds on, plus exact value solving by linear algebra."
+/>
+
+## 4.1 The finite MDP
+
+A **finite Markov decision process** is a tuple $(\mathcal{S}, \mathcal{A}, p, \gamma)$ where $\mathcal{S}$ and $\mathcal{A}$ are finite sets of states and actions, $\gamma \in [0,1)$ is a discount factor, and the dynamics are captured by a single function
+
+$$p(s', r \mid s, a) \doteq \mathbb{P}\big(S_{t+1} = s',\, R_{t+1} = r \mid S_t = s,\, A_t = a\big),$$
+
+satisfying $\sum_{s'}\sum_r p(s',r \mid s,a) = 1$ for every $(s,a)$. Everything else is derived from it. Marginalizing the reward gives the state-transition probabilities,
+
+$$p(s' \mid s, a) = \sum_r p(s', r \mid s, a),$$
+
+and weighting by reward gives the expected immediate reward,
+
+$$r(s,a) = \mathbb{E}[R_{t+1} \mid S_t = s, A_t = a] = \sum_r r \sum_{s'} p(s', r \mid s, a).$$
+
+Note the indexing convention, inherited from Chapter 1: the reward $R_{t+1}$ arrives *after* action $A_t$. It is a consequence, not a property of the state you were in.
+
+<Callout variant="note" title="Where to draw the agent–environment boundary">
+The boundary sits at the limit of the agent's *arbitrary control*, not at the robot's skin. Rusty's motors are part of the environment: he commands a wheel velocity, and whether the wheels deliver it depends on friction, battery voltage and load. Anything the agent cannot change at will by fiat belongs on the environment side of the line.
+
+This is not pedantry. It is why "the robot's own body" appears in the transition function, and why Chapter 13 spends a chapter on what that body actually does.
+</Callout>
+
+**Rusty's warehouse, fixed once for the rest of Part I.** A $12 \times 9$ grid with shelf blocks removed, leaving about 80 traversable cells. Four actions $\{N, E, S, W\}$. Slip probability $p_{\text{slip}} = 0.2$, split evenly between the two lateral directions. Rewards: $+25$ for reaching the dock, $-1$ per step, $-10$ for bumping a shelf. Discount $\gamma = 0.95$. Chapters 5, 6 and 7 use these exact numbers, so results are comparable across algorithms.
+
+<MdpExplorer />
+
+## 4.2 Returns, and why we discount
+
+The agent's goal is not to maximize immediate reward but the **return** — the accumulated reward from time $t$ onward:
+
+$$G_t \doteq R_{t+1} + \gamma R_{t+2} + \gamma^2 R_{t+3} + \cdots = \sum_{k=0}^{\infty} \gamma^k R_{t+k+1}.$$
+
+For a continuing task this is an infinite sum, and we need it to be finite. If rewards are bounded by $R_{\max}$, the geometric series gives
+
+$$|G_t| \le \sum_{k=0}^{\infty} \gamma^k R_{\max} = \frac{R_{\max}}{1 - \gamma},$$
+
+which is finite exactly because $\gamma < 1$. Discounting is not a modelling nicety; without it the objective may not be defined.
+
+The single most useful property of the return is its recursion, obtained by factoring $\gamma$ out of everything after the first term:
+
+$$
+\begin{aligned}
+G_t &= R_{t+1} + \gamma R_{t+2} + \gamma^2 R_{t+3} + \cdots \\
+&= R_{t+1} + \gamma\left(R_{t+2} + \gamma R_{t+3} + \cdots\right) \\
+&= R_{t+1} + \gamma\, G_{t+1}.
+\end{aligned}
+$$
+
+Everything that follows in this book is, in some sense, this one line taken seriously.
+
+<Callout variant="insight" title="γ is a modelling decision, not a hyperparameter">
+The quantity $1/(1-\gamma)$ is the **effective horizon** — roughly how many steps into the future the agent meaningfully cares about. At $\gamma = 0.9$ that is 10 steps; at $\gamma = 0.99$ it is 100.
+
+For a robot this is a physical statement. A battery-limited patrol has a real horizon; setting $\gamma$ to match it is modelling. Setting $\gamma = 0.999$ because it made a benchmark number look better is not. Drag $\gamma$ in the widget above and watch how far value propagates from the dock — that reach *is* the horizon, drawn.
+</Callout>
+
+## 4.3 Value functions and the Bellman expectation equations
+
+A **policy** $\pi(a \mid s)$ is a distribution over actions in each state. The **state-value function** is the expected return from following it:
+
+$$v_\pi(s) \doteq \mathbb{E}_\pi\left[G_t \mid S_t = s\right],$$
+
+and the **action-value function** fixes the first action before following $\pi$ thereafter:
+
+$$q_\pi(s,a) \doteq \mathbb{E}_\pi\left[G_t \mid S_t = s, A_t = a\right].$$
+
+Now the derivation. Every step is either the return recursion, the tower property from Chapter 2, or the definition of expectation.
+
+<Theorem kind="Theorem" n="4.1" title="Bellman expectation equation for v_π">
+For any policy $\pi$ and all $s \in \mathcal{S}$,
+
+$$v_\pi(s) = \sum_a \pi(a \mid s) \sum_{s', r} p(s', r \mid s, a)\Big[r + \gamma\, v_\pi(s')\Big].$$
+</Theorem>
+
+<Proof>
+Start from the definition and substitute the return recursion $G_t = R_{t+1} + \gamma G_{t+1}$:
+
+$$v_\pi(s) = \mathbb{E}_\pi[G_t \mid S_t = s] = \mathbb{E}_\pi\left[R_{t+1} + \gamma G_{t+1} \,\middle|\, S_t = s\right].$$
+
+Expand the expectation over the immediate randomness — which action $\pi$ chooses, and which $(s', r)$ the environment returns:
+
+$$= \sum_a \pi(a \mid s) \sum_{s', r} p(s', r \mid s, a) \Big[ r + \gamma\, \mathbb{E}_\pi\left[G_{t+1} \mid S_{t+1} = s'\right] \Big].$$
+
+Two justifications are needed for that line. First, conditioning on $S_{t+1} = s'$ inside the bracket is the **tower property** (Theorem 2.2): we average the return-from-next-step over where we land. Second, replacing $\mathbb{E}_\pi[G_{t+1} \mid S_{t+1} = s', S_t = s, A_t = a]$ with $\mathbb{E}_\pi[G_{t+1} \mid S_{t+1} = s']$ uses the **Markov property** — given $s'$, the past is irrelevant.
+
+The inner expectation is $v_\pi(s')$ by definition, giving the result. $\qquad \blacksquare$
+</Proof>
+
+The same argument applied to $q_\pi$ yields its twin:
+
+$$q_\pi(s,a) = \sum_{s',r} p(s',r \mid s,a)\left[r + \gamma \sum_{a'} \pi(a' \mid s')\, q_\pi(s', a')\right].$$
+
+**This is a linear system.** With $|\mathcal{S}|$ unknowns and $|\mathcal{S}|$ equations, we can write it in matrix form as $v_\pi = r_\pi + \gamma P_\pi v_\pi$ and solve directly:
+
+$$v_\pi = (I - \gamma P_\pi)^{-1} r_\pi,$$
+
+with the inverse guaranteed to exist by the Neumann-series argument from §2.6. For Rusty's 80-state warehouse this is a trivial linear solve. For a robot with a continuous state space it is hopeless, which is what drives Part II.
+
+## 4.4 Optimality, and the moment linearity dies
+
+Define a partial order on policies: $\pi \ge \pi'$ if $v_\pi(s) \ge v_{\pi'}(s)$ for **all** states. There always exists an **optimal policy** $\pi_*$ that is at least as good as every other, and all optimal policies share the same value functions:
+
+$$v_*(s) = \max_\pi v_\pi(s), \qquad q_*(s,a) = \max_\pi q_\pi(s,a).$$
+
+The optimal value function satisfies a self-consistency condition of its own — but now with a maximum where the policy average used to be.
+
+<Theorem kind="Theorem" n="4.2" title="Bellman optimality equations">
+$$v_*(s) = \max_a \sum_{s',r} p(s',r\mid s,a)\Big[r + \gamma\, v_*(s')\Big],$$
+
+$$q_*(s,a) = \sum_{s',r} p(s',r \mid s,a)\Big[r + \gamma \max_{a'} q_*(s',a')\Big].$$
+</Theorem>
+
+The argument is that $v_*(s)$ must equal the value of the best action available at $s$, evaluated under optimal behaviour thereafter. If some action had a higher one-step-lookahead value, the policy that took it and then behaved optimally would beat $\pi_*$ — contradiction.
+
+Two consequences follow immediately, and they are the reason this equation is worth its fame.
+
+**Greedy is optimal.** Any policy that acts greedily with respect to $v_*$ is optimal. A one-step lookahead using $v_*$ already accounts for all future consequences, because that is what $v_*$ encodes. With $q_*$ it is even easier — no lookahead at all, just $\pi_*(s) = \arg\max_a q_*(s,a)$. This is why so much of RL is the pursuit of $q_*$: get it, and the policy is free.
+
+**A deterministic optimal policy always exists** for a finite MDP: pick any argmax at each state.
+
+<Callout variant="warning" title="Where the trouble starts">
+The $\max$ operator destroys linearity. There is no matrix inverse for the optimality equation, no closed-form solve. For $|\mathcal{S}|$ states with $|\mathcal{A}|$ actions each, the number of deterministic policies is $|\mathcal{A}|^{|\mathcal{S}|}$ — for Rusty's modest warehouse, $4^{80}$, which is around $10^{48}$.
+
+Iteration is therefore not a concession to practicality. It is the method, and Chapter 5 is about making it work.
+</Callout>
+
+## 4.5 The contraction, at last
+
+Chapter 2 built the fixed-point machinery. Here is what it was for.
+
+Define the **Bellman optimality operator** $T_*$ on value functions by
+
+$$(T_* v)(s) \doteq \max_a \sum_{s',r} p(s',r \mid s,a)\left[r + \gamma\, v(s')\right],$$
+
+and the policy-evaluation operator $T_\pi$ analogously with $\sum_a \pi(a\mid s)$ in place of the max. The Bellman equations say precisely that $v_*$ and $v_\pi$ are the **fixed points** of these operators.
+
+<Theorem kind="Theorem" n="4.3" title="Both Bellman operators are γ-contractions in the sup norm">
+For any value functions $u, v$,
+
+$$\|T_* u - T_* v\|_\infty \le \gamma\, \|u - v\|_\infty,$$
+
+and likewise for $T_\pi$.
+</Theorem>
+
+<Proof>
+Fix a state $s$. We use the elementary inequality $\left|\max_a f(a) - \max_a g(a)\right| \le \max_a |f(a) - g(a)|$, which holds because the maximizer of one function is a feasible choice for the other.
+
+$$
+\begin{aligned}
+\left|(T_* u)(s) - (T_* v)(s)\right|
+&\le \max_a \left| \sum_{s',r} p(s',r\mid s,a)\Big[r + \gamma u(s')\Big] - \sum_{s',r} p(s',r\mid s,a)\Big[r + \gamma v(s')\Big] \right| \\[4pt]
+&= \max_a \left| \gamma \sum_{s'} p(s' \mid s,a)\big[u(s') - v(s')\big] \right| \\[4pt]
+&\le \gamma \max_a \sum_{s'} p(s'\mid s,a) \left| u(s') - v(s') \right| \\[4pt]
+&\le \gamma \max_a \sum_{s'} p(s'\mid s,a)\, \|u - v\|_\infty
+= \gamma\, \|u - v\|_\infty,
+\end{aligned}
+$$
+
+using $\sum_{s'} p(s'\mid s,a) = 1$ in the last step. The rewards cancel exactly because they do not depend on the value function. Taking the maximum over $s$ on the left gives the claim. $\qquad \blacksquare$
+</Proof>
+
+Now cash Chapter 2's theorem. The space of bounded value functions with the sup norm is complete, so Banach applies and delivers, at no additional cost:
+
+1. **$v_*$ exists** and is the unique fixed point of $T_*$;
+2. **iterating $v_{k+1} = T_* v_k$ converges to it from any starting point** — including the all-zeros initialization every implementation uses;
+3. **convergence is geometric at rate $\gamma$**, with a computable error bound that tells you when to stop.
+
+That last item is not decoration: it is the stopping rule for value iteration, and Chapter 5's dashboard displays it live.
+
+<Callout variant="insight" title="The pun resolved">
+Chapter 2 noted that the contraction modulus and the discount factor share the letter $\gamma$, and promised it was not a coincidence. Theorem 4.3 is the promised statement: **the Bellman operator's contraction modulus IS the discount factor.**
+
+Discounting the future is what makes the mathematics converge. Push $\gamma \to 1$ and the contraction weakens, convergence slows, and the error bound $2\gamma\Delta/(1-\gamma)$ blows up. A robot that cares equally about all future time is a robot whose planning problem may be ill-posed.
+</Callout>
+
+## 4.6 The confession: robots never see the state
+
+Everything above assumes the agent observes $S_t$. Rusty does not. He has wheel encoders that drift, a lidar that returns noisy ranges, and no oracle telling him which cell he occupies.
+
+The honest formalism is a **partially observable MDP** — an MDP plus an observation space $\Omega$ and an observation model $O(o \mid s', a)$. The agent sees $o_t$, never $s_t$.
+
+The standard repair is to maintain a **belief** $b_t(s) = \mathbb{P}(S_t = s \mid o_{1:t}, a_{1:t-1})$, a distribution over states. It updates by Bayes' rule: after taking $a$ and observing $o$,
+
+$$b'(s') = \frac{O(o \mid s', a) \sum_s p(s' \mid s, a)\, b(s)}{\sum_{s''} O(o \mid s'', a) \sum_s p(s'' \mid s, a)\, b(s)},$$
+
+where the numerator predicts forward and reweights by the observation likelihood, and the denominator normalizes.
+
+The remarkable fact is that **the belief is Markov even though the observation is not**: $b_{t+1}$ depends only on $b_t$, $a_t$ and $o_{t+1}$. So a POMDP is an MDP over beliefs — all the theory above still applies. The catch is that the belief space is continuous even when $\mathcal{S}$ is finite, and solving POMDPs exactly is PSPACE-hard.
+
+<Callout variant="warning" title="What practitioners actually do">
+Nobody solves belief MDPs exactly on robots. The three practical answers, each developed later in this book:
+
+**Enlarge the observation** until it is approximately Markov — stack recent frames, append velocities. Cheap, and works more often than it has any right to.
+
+**Learn a belief tracker** — give the policy a recurrent network and let it discover what to remember. Chapter 19 does this for lidar navigation.
+
+**Train with privileged information** — let a teacher policy see the true state in simulation, then distill into a student that sees only what the real robot sees. This is the ANYmal recipe, and Chapter 15 builds it.
+</Callout>
+
+## 4.7 The same robot, different MDPs
+
+One more idea before the code, because it reframes everything: **the MDP is a modelling choice, not a property of the robot.**
+
+Tang and colleagues organize this along three axes. The **action-space level** may be low (joint torques), mid (task-space velocity commands), or high (temporally extended subroutines). The **observation space** may be a low-dimensional estimated state vector or raw high-dimensional sensing. The **reward** may be sparse or dense.
+
+Each combination is a *different MDP for the same physical task*. Rusty at grid level — this chapter — has 80 states and four actions. Rusty at velocity level has a continuous state and continuous actions. Rusty at torque level, Chapter 13's territory, adds motor dynamics.
+
+<WarehouseEditor />
+
+<Callout variant="insight" title="Difficulty moves; it does not vanish">
+Choosing a high-level action space makes the RL problem easier — but only because a hand-written low-level controller is absorbing the difficulty. The composite system is exactly as complicated as it was; you have decided which part learns and which part you write.
+
+That decision has more effect on whether a robot project succeeds than the choice of algorithm. Chapter 17 studies it directly, and Chapters 18–20 show what each competency actually settled on.
+</Callout>
+
+<RustSnippet title="rl-core/src/env.rs" caption="The book's gym. Note that Mdp extends Env with the transition distribution: Chapter 5 plans against the white-box view, Chapter 6 learns against the black-box one, and the same warehouse implements both.">
+
+```rust
+/// A set an observation or action can be drawn from.
+pub trait Space {
+    type Item;
+    fn contains(&self, x: &Self::Item) -> bool;
+    fn sample<R: rand::Rng>(&self, rng: &mut R) -> Self::Item;
+}
+
+pub struct Transition<S> {
+    pub next_state: S,
+    pub reward: f64,
+    pub done: bool,
+}
+
+/// The black-box view: you may sample the dynamics, never inspect them.
+/// This is all a real robot ever offers.
+pub trait Env {
+    type State: Clone;
+    type Action: Copy;
+
+    fn reset<R: rand::Rng>(&mut self, rng: &mut R) -> Self::State;
+    fn step<R: rand::Rng>(
+        &mut self,
+        state: &Self::State,
+        action: Self::Action,
+        rng: &mut R,
+    ) -> Transition<Self::State>;
+    fn gamma(&self) -> f64;
+}
+
+/// The white-box view: the full distribution p(s′, r | s, a) is available.
+/// Simulators can offer this; reality cannot.
+pub trait Mdp: Env {
+    fn states(&self) -> &[Self::State];
+    fn actions(&self, state: &Self::State) -> &[Self::Action];
+
+    /// Every (next_state, reward, probability) triple, summing to 1.
+    fn transitions(
+        &self,
+        state: &Self::State,
+        action: Self::Action,
+    ) -> Vec<(Self::State, f64, f64)>;
+}
+```
+
+</RustSnippet>
+
+## 4.8 Chapter bridge
+
+The formalism is complete. An MDP is four objects; the return has a recursion; value functions satisfy Bellman equations; those equations are fixed-point conditions for operators that contract at rate $\gamma$; and Banach hands us existence, uniqueness, and a convergent algorithm with a stopping rule.
+
+We also admitted that the state is not observable, that solving the honest version is intractable, and that the MDP itself is something an engineer chooses rather than discovers.
+
+Chapter 5 takes the algorithm Banach promised and makes it real. With $p$ and $r$ known, we can compute $v_*$ by iteration and watch value ripple outward from Rusty's dock — and we will find that evaluation and improvement, alternated, form a pattern so general that every remaining algorithm in this book is a variation on it.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Derive the marginals',
+    difficulty: 1,
+    body: 'From p(s′,r|s,a), derive expressions for p(s′|s,a), r(s,a), and r(s,a,s′). Then compute all three by hand for a slip cell of Rusty’s warehouse using the constants in §4.1.',
+  },
+  {
+    layer: 'F',
+    title: 'The return bound is tight',
+    difficulty: 2,
+    body: 'Prove |G_t| ≤ R_max/(1−γ) and construct an MDP where the bound is attained exactly. What does that MDP look like physically?',
+  },
+  {
+    layer: 'F',
+    title: 'Bellman for q_π',
+    difficulty: 2,
+    body: 'Carry out the derivation of the Bellman expectation equation for q_π in the same detail as Theorem 4.1, naming where the tower property and the Markov property are each used.',
+  },
+  {
+    layer: 'F',
+    title: 'The max inequality',
+    difficulty: 2,
+    body: 'Prove the lemma used in Theorem 4.3: |max_a f(a) − max_a g(a)| ≤ max_a |f(a) − g(a)|. Where would the contraction proof fail without it?',
+  },
+  {
+    layer: 'C',
+    title: 'Find the risk-aversion threshold',
+    difficulty: 2,
+    body: 'In the MDP explorer, start at p_slip = 0 and increase it. Find the slip probability at which the optimal policy first stops hugging the shelves. Explain the trade-off in terms of the q-values shown for that cell.',
+  },
+  {
+    layer: 'C',
+    title: 'Horizon and reach',
+    difficulty: 1,
+    body: 'Set γ to 0.5, 0.9, and 0.99 in the explorer and record how many cells away from the dock the value function remains meaningfully non-zero. Compare against the effective horizon 1/(1−γ).',
+  },
+  {
+    layer: 'P',
+    title: 'Exact policy evaluation',
+    difficulty: 2,
+    body: 'Implement solve_v_pi using the matrix form v_π = (I − γP_π)⁻¹ r_π with nalgebra, and verify it satisfies the Bellman equation pointwise to 1e−10 with a property test over random MDPs.',
+  },
+  {
+    layer: 'P',
+    title: 'A POMDP wrapper',
+    difficulty: 3,
+    body: 'Write NoisyOdometryEnv: a wrapper that hides the true state and emits a noisy observation. Implement a discrete Bayes filter over cells, and measure how localization entropy evolves after a "kidnapping" that teleports Rusty without telling him.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 3 in full: §3.1 the agent–environment interface and the Markov property, §3.3 returns, §3.5 policies and value functions, §3.6 optimal value functions.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§1.3 and §2 — the state-as-sufficient-statistic framing, and why robotic state is never fully observed.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.2 problem formulation — the action-space level, observation space, and reward-density axes used in §4.7.',
+  },
+  {
+    key: 'bellman1957',
+    authors: 'Bellman, R.',
+    year: 1957,
+    title: 'Dynamic Programming',
+    venue: 'Princeton University Press',
+    note: 'The origin of the principle of optimality and the equations that carry his name.',
+  },
+  {
+    key: 'puterman1994',
+    authors: 'Puterman, M. L.',
+    year: 1994,
+    title: 'Markov Decision Processes: Discrete Stochastic Dynamic Programming',
+    venue: 'Wiley',
+    note: 'The definitive reference. Existence of optimal stationary deterministic policies, and the contraction analysis, in complete rigour.',
+  },
+  {
+    key: 'kaelbling1998',
+    authors: 'Kaelbling, L. P., Littman, M. L. & Cassandra, A. R.',
+    year: 1998,
+    title: 'Planning and acting in partially observable stochastic domains',
+    venue: 'Artificial Intelligence 101(1–2)',
+    note: 'The belief-MDP construction of §4.6, and the classical algorithms for exact POMDP solution.',
+  },
+  {
+    key: 'papadimitriou1987',
+    authors: 'Papadimitriou, C. H. & Tsitsiklis, J. N.',
+    year: 1987,
+    title: 'The Complexity of Markov Decision Processes',
+    venue: 'Mathematics of Operations Research 12(3)',
+    note: 'The PSPACE-hardness result that explains why nobody solves POMDPs exactly on hardware.',
+  },
+]} />

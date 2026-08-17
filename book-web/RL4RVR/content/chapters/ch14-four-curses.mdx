@@ -1,0 +1,318 @@
+---
+title: The Four Curses of Robot RL
+chapter: 14
+quote:
+  text: The high dimensionality of robot state and action spaces, the cost of real-world experience, model uncertainty, and the difficulty of specifying goals — these four curses shape every practical decision in robot reinforcement learning.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: The organizing framework of Part III
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Nothing in this chapter is an algorithm. It is about the four structural difficulties that make robot reinforcement learning hard regardless of which algorithm you choose — and that decide, more often than algorithmic choices do, whether a project succeeds. Three of them we have met in passing. The fourth we have carefully avoided: reward functions are the interface between human intent and an optimizer that will exploit any gap in your phrasing, and the results are a catalogue of instructive disasters."
+  outcomes={[
+    'Quantify the dimensionality curse and explain why generalization, not computation, is the answer',
+    'Account honestly for the true cost of a real-world sample, including resets and wear',
+    'Explain how model error compounds and why it caps how far simulation can be trusted',
+    'Prove the potential-based shaping theorem and use it to add guidance without changing the optimum',
+    'Recognize reward hacking and diagnose which gap in the specification produced it',
+    'Formulate a constrained MDP and explain why safety belongs in the constraint, not the reward',
+  ]}
+  foundation="Sample-complexity intuition, delay-augmented MDPs, the compounding transfer bound, Ng's potential-based shaping invariance theorem with proof, and the constrained-MDP Lagrangian."
+  conceptual="The exponential wall in arithmetic you can set yourself, and a reward-hacking gallery where each specification produces its own pathology."
+  practical="A reward-design lab — one Reacher task, six reward functions, six trained behaviours — plus sample-cost accounting and a Lagrangian-SAC prototype."
+/>
+
+## 14.1 The curse of dimensionality
+
+Kober's first curse we have already met twice: Chapter 5 computed the wall, Chapter 8 responded to it.
+
+A 7-DoF arm has a 14-dimensional state before you add an object. Discretize each dimension into 10 bins and you have $10^{14}$ states. The number is not merely large — it is large in a way that no hardware advance touches, because it grows exponentially in the exponent.
+
+<CurseOfDimensionality />
+
+The correct response is not more computation but **generalization**: function approximation (Chapter 8) so that experience in one state informs nearby states, and structured policy representations (Chapter 17) so that the space of behaviours the robot considers is far smaller than the space of behaviours it could physically produce.
+
+There is also a **curse of dimensionality in exploration** that function approximation does not address. Random torques on a 7-DoF arm produce flailing that never reaches anything interesting. The volume of state space reachable by a random walk is a vanishing fraction of the whole, and no amount of ε-greedy fixes that. This is why demonstrations (Chapter 16) and structured primitives (Chapter 17) matter so much in practice.
+
+## 14.2 The curse of real-world samples
+
+Chapter 11 motivated off-policy learning with sample cost. It is worth accounting honestly for what a sample actually costs, because the accounting changes decisions.
+
+A single episode on a physical arm consumes wall-clock time (seconds to minutes), mechanical wear on gearboxes and cable harnesses, energy, and — most expensively — **a reset**. Something must return the robot and the objects to a start state. Often that something is a human, and human attention is the binding constraint on nearly every real-robot learning project.
+
+Add safety: some transitions damage the robot, the environment, or a person. You cannot sample those freely, which means the very transitions most informative about failure are the ones you must not collect.
+
+<Callout variant="warning" title="Latency is a modelling error, not an annoyance">
+Real robots have delay: sensing, computation, communication, and actuator response together give tens of milliseconds between an observation and its action taking effect. The action executed at time $t$ was chosen from the state at $t - d$.
+
+A delayed MDP is **not Markov in the instantaneous state**. The honest formulation augments the state with the actions still in flight, $\tilde s_t = (s_t, a_{t-d}, \ldots, a_{t-1})$, which restores the Markov property at the cost of state dimension.
+
+Ignoring this is one of the most common causes of a policy that works in simulation and oscillates on hardware. Chapter 15's randomization includes latency for exactly this reason.
+</Callout>
+
+The responses are the architecture of this book's Part III: **simulate** (Chapter 15), **reuse data off-policy** (Chapter 11), **learn from demonstrations** (Chapter 16), and **learn a model** to extract more from each transition (Chapter 12).
+
+## 14.3 The curse of under-modelling
+
+Simulation is the standard escape from sample cost, and it introduces its own curse: the simulator is wrong.
+
+Contact is where it is most wrong. Rigid-body contact involves complementarity conditions, friction cones, and impacts — phenomena that simulators approximate with solver parameters chosen for numerical stability rather than physical fidelity. Chapter 2 already showed a version of this in miniature: an integrator that manufactures energy.
+
+The consequence compounds. If per-step model error is $\varepsilon$ and the dynamics have Lipschitz constant $L > 1$, then trajectory error after $H$ steps grows like $\varepsilon(L^H - 1)/(L-1)$ — the same geometric bound as Chapter 12's imagination fan, now applied to the gap between simulation and reality. A policy that exploits simulator artifacts over a long horizon will fail on hardware in exactly the way it succeeded in simulation.
+
+## 14.4 The curse of goal specification
+
+The fourth curse is the one we have avoided, and it is where most real projects actually founder.
+
+Reward is the entire interface between what you want and what the robot optimizes. It must be a scalar, it must be computable from things the robot can sense, and it will be optimized *literally* — including any gap between what you wrote and what you meant.
+
+**Sparse rewards** ($+1$ on success, 0 otherwise) are easy to specify honestly and nearly impossible to learn from: random exploration essentially never succeeds, so there is no gradient. **Dense rewards** are learnable but must be engineered, and every engineered term is a new opportunity for the optimizer to find something you did not intend.
+
+<Callout variant="warning" title="A gallery of specification failures">
+Each of these is a real pattern, and each traces to a specific gap:
+
+**Reward the distance to the goal decreasing** → the robot learns to oscillate, collecting the decrease repeatedly. *Gap: you rewarded a rate, not a state.*
+
+**Reward object height for a lifting task** → the robot flips the table. *Gap: you specified the measurement, not the intent.*
+
+**Reward forward velocity for locomotion** → the robot learns to fall forward repeatedly. *Gap: no term for staying upright afterwards.*
+
+**Penalize collisions detected by the sensor** → the robot learns to avoid the sensor's field of view. *Gap: you rewarded the observation, not the fact.*
+
+**Reward task completion time** → the robot moves violently, damaging itself within its warranty period. *Gap: no cost on effort or wear.*
+
+The common structure is that reward hacking is not the optimizer misbehaving. It is the optimizer working correctly on the objective you actually specified.
+</Callout>
+
+<RewardDesigner />
+
+There is one principled tool, and it is worth knowing precisely because it is the only shaping that is guaranteed safe.
+
+<Theorem kind="Theorem" n="14.1" title="Potential-based shaping invariance (Ng, Harada & Russell, 1999)">
+Let $\Phi : \mathcal{S} \to \mathbb{R}$ be any function of state, and define the shaped reward
+
+$$r'(s,a,s') = r(s,a,s') + \gamma\,\Phi(s') - \Phi(s).$$
+
+Then the optimal policy of the shaped MDP is identical to that of the original. Moreover, this form is the **only** state-dependent shaping with that guarantee.
+</Theorem>
+
+<Proof>
+Compute the shaped return along any trajectory. The shaping terms telescope:
+
+$$
+\begin{aligned}
+G'_t &= \sum_{k=0}^{\infty} \gamma^k \big[ r_{t+k+1} + \gamma\Phi(s_{t+k+1}) - \Phi(s_{t+k}) \big] \\
+&= G_t + \sum_{k=0}^{\infty} \Big( \gamma^{k+1}\Phi(s_{t+k+1}) - \gamma^{k}\Phi(s_{t+k}) \Big) \\
+&= G_t - \Phi(s_t),
+\end{aligned}
+$$
+
+since all intermediate terms cancel and $\gamma^{k}\Phi(s_{t+k}) \to 0$. So $v'_\pi(s) = v_\pi(s) - \Phi(s)$ for every policy: the shaped value differs from the original by a quantity that **does not depend on the policy**. Ordering between policies is therefore preserved, and the argmax is unchanged. $\qquad \blacksquare$
+</Proof>
+
+<Callout variant="insight" title="How to use this in practice">
+Want to hint that being closer to the goal is better? Set $\Phi(s) = -c \cdot \text{distance}(s, \text{goal})$ and shape with $\gamma\Phi(s') - \Phi(s)$. The hint accelerates learning and the theorem guarantees you have not changed what "optimal" means.
+
+Compare with adding $-c \cdot \text{distance}$ directly to the reward. That *does* change the optimal policy — it now trades goal-reaching against staying near the goal, and can produce a robot that hovers near the target rather than completing the task. The difference between these two is one of the highest-leverage pieces of theory in applied robot RL.
+
+The limitation is real, though: potential-based shaping only helps when you can write a $\Phi$ that reflects genuine progress. For a long-horizon assembly task, you often cannot, and Chapter 16's demonstrations become the practical answer instead.
+</Callout>
+
+## 14.5 Safety belongs in constraints
+
+Practitioners routinely encode safety as a large negative reward. This is a mistake, and the reason is structural: a scalar reward forces you to price safety against task success, so there always exists a task reward large enough to justify a violation. That is precisely the wrong semantics.
+
+The right formulation is a **constrained MDP**: maximize return subject to expected cost constraints,
+
+$$\max_\pi\; \mathbb{E}_\pi\!\left[\sum_t \gamma^t r_t\right] \quad \text{subject to} \quad \mathbb{E}_\pi\!\left[\sum_t \gamma^t c_i(s_t,a_t)\right] \le d_i.$$
+
+The Lagrangian $\mathcal{L}(\pi,\lambda) = J_r(\pi) - \sum_i \lambda_i (J_{c_i}(\pi) - d_i)$ turns this into a saddle-point problem: ascend on $\pi$, descend on $\lambda$. The multipliers adapt automatically — when a constraint is violated, its price rises until the policy respects it.
+
+Notice this is the same mechanism as SAC's automatic temperature tuning in Chapter 11. Entropy there was a constraint with an adaptively priced multiplier, and safety here is the same construction with a different constrained quantity.
+
+<RustSnippet title="rl-deep/src/safety/lagrangian.rs" caption="A Lagrangian dual for constrained RL. The multiplier is the price of violating the constraint, and it is learned rather than tuned — the same construction as SAC's temperature.">
+
+```rust
+/// Adaptive multiplier for a single expected-cost constraint E[Σ γᵗ c] ≤ d.
+pub struct LagrangianDual {
+    log_lambda: f64,
+    limit: f64,       // the budget d
+    lr: f64,
+}
+
+impl LagrangianDual {
+    pub fn multiplier(&self) -> f64 {
+        self.log_lambda.exp()
+    }
+
+    /// Dual ascent: raise the price when the constraint is violated,
+    /// lower it (toward zero) when there is slack.
+    pub fn update(&mut self, measured_cost: f64) {
+        let violation = measured_cost - self.limit;
+        self.log_lambda += self.lr * violation;
+        // Clamp to keep the price finite when a constraint is badly violated.
+        self.log_lambda = self.log_lambda.clamp(-8.0, 4.0);
+    }
+
+    /// The effective reward the policy optimizes.
+    pub fn shaped_reward(&self, reward: f64, cost: f64) -> f64 {
+        reward - self.multiplier() * cost
+    }
+}
+```
+
+</RustSnippet>
+
+## 14.6 Evaluating claims honestly
+
+The last section of this chapter is methodological, and it is the one most often skipped.
+
+Robot RL results are hard to evaluate because runs are expensive, so sample sizes are small; seeds matter enormously, so single runs mislead; and success is often reported without confidence intervals or without stating how many attempts were made.
+
+The standards this book holds itself to, and recommends:
+
+**Report the level of real-world success.** Chapter 1's L0–L5 rubric is a checkable claim, unlike "we demonstrate real-world capability".
+
+**Report seeds.** Five minimum, with the spread shown, not just the mean. Deep RL's seed variance is large enough that a three-seed comparison frequently reverses on the fourth.
+
+**Report the classical baseline.** Chapter 13 built the suite for this reason.
+
+**Report the sample budget in real units.** Not "500k steps" but "14 hours of robot time and 62 human-supervised resets".
+
+**Report failures.** A 90% success rate means one attempt in ten failed, and how it failed is more informative than the nine that worked.
+
+<Callout variant="note" title="Small-sample statistics">
+With 20 trials and 18 successes, the naive rate is 90%. The Wilson score interval — appropriate for proportions near the boundary, where the normal approximation is poor — gives roughly [70%, 97%]. Reporting "90%" without that interval overstates what 20 trials can establish.
+
+Chapter 22's capstone reports Wilson intervals throughout, because the alternative is to claim precision the experiment did not buy.
+</Callout>
+
+## 14.7 Chapter bridge
+
+Four curses, each with a response. Dimensionality is answered by generalization and structure. Sample cost is answered by simulation, off-policy reuse, demonstrations, and models. Under-modelling is answered by randomization and system identification. Goal specification is answered by potential-based shaping where possible, by demonstrations where reward cannot be written, and by constraints where safety is at stake.
+
+Chapter 15 takes the second and third curses head-on. If simulation is the escape from sample cost, and simulation is wrong, then the central question of practical robot learning is: **how do you train in a simulator you know to be wrong, and get a policy that works anyway?** The answers — domain randomization, system identification, teacher–student distillation — are the machinery behind essentially every L4 result in Chapter 1's ladder. Ferris arrives to carry them.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Prove the shaping theorem',
+    difficulty: 3,
+    body: 'Reproduce the proof of Theorem 14.1 with every step justified. Then construct a non-potential-based shaping and exhibit a concrete MDP where it changes the optimal policy.',
+  },
+  {
+    layer: 'F',
+    title: 'Delay breaks Markov',
+    difficulty: 2,
+    body: 'Show that a system with one-step actuation delay is not Markov in the instantaneous state, and that augmenting with the in-flight action restores it. What is the state-dimension cost for a delay of d steps on an n-dimensional action?',
+  },
+  {
+    layer: 'F',
+    title: 'The transfer bound',
+    difficulty: 2,
+    body: 'Derive the compounding bound for the sim-to-real gap and evaluate it for ε = 0.001 with L = 1.05 at horizons of 100, 500 and 2000 steps. At what horizon does simulation stop being informative?',
+  },
+  {
+    layer: 'F',
+    title: 'Why a scalar cannot encode safety',
+    difficulty: 2,
+    body: 'Show that for any finite safety penalty, there exists a task reward scale at which the optimal policy accepts the violation. Then show the constrained formulation does not have this property.',
+  },
+  {
+    layer: 'C',
+    title: 'Set the wall yourself',
+    difficulty: 1,
+    body: 'Using the dimensionality widget, find the largest robot (in DoF) for which a tabular sweep at 10 bins per dimension completes within one hour at a million states per second. Compare with the smallest robot you would call interesting.',
+  },
+  {
+    layer: 'C',
+    title: 'Hack your own reward',
+    difficulty: 2,
+    body: 'Design a reward for a Reacher task that you believe is unhackable. Then find the exploit — there is almost always one. Write down which gap in the specification you missed.',
+  },
+  {
+    layer: 'P',
+    title: 'The reward-design lab',
+    difficulty: 3,
+    body: 'Train SAC on the same Reacher task under six reward functions: sparse, dense-distance, potential-shaped, velocity-penalized, effort-penalized, and one you design. Record the resulting behaviours and rank them by what a user would actually want — which will not match the returns.',
+  },
+  {
+    layer: 'P',
+    title: 'Constrained SAC',
+    difficulty: 3,
+    body: 'Implement Lagrangian-SAC with a joint-velocity constraint. Verify the multiplier rises when the constraint is violated and settles when it is satisfied. Then compare against encoding the same limit as a fixed reward penalty, and report which one respects the limit reliably.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§3 in full: §3.1 dimensionality, §3.2 real-world samples, §3.3 under-modelling and model uncertainty, §3.4 goal specification. This chapter is that section, updated.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.4 the L0–L5 rubric adopted in §14.6, and §5 on real-world learning, reward design and safe exploration as open challenges.',
+  },
+  {
+    key: 'ng1999',
+    authors: 'Ng, A. Y., Harada, D. & Russell, S.',
+    year: 1999,
+    title: 'Policy invariance under reward transformations: Theory and application to reward shaping',
+    venue: 'ICML 1999',
+    note: 'Theorem 14.1, including the converse that potential-based shaping is the only safe form.',
+  },
+  {
+    key: 'altman1999',
+    authors: 'Altman, E.',
+    year: 1999,
+    title: 'Constrained Markov Decision Processes',
+    venue: 'Chapman & Hall/CRC',
+    note: 'The CMDP formalism and its Lagrangian theory.',
+  },
+  {
+    key: 'achiam2017',
+    authors: 'Achiam, J., Held, D., Tamar, A. & Abbeel, P.',
+    year: 2017,
+    title: 'Constrained Policy Optimization',
+    venue: 'ICML 2017',
+    note: 'A trust-region method with constraint satisfaction guarantees during training, not merely at convergence.',
+  },
+  {
+    key: 'dulacarnold2021',
+    authors: 'Dulac-Arnold, G., Levine, N., Mankowitz, D. J., Li, J., Paduraru, C., Gowal, S. & Hester, T.',
+    year: 2021,
+    title: 'Challenges of real-world reinforcement learning: definitions, benchmarks and analyses',
+    venue: 'Machine Learning 110',
+    note: 'A systematic catalogue of the practical obstacles surveyed here, with benchmarks that isolate each.',
+  },
+  {
+    key: 'brunke2022',
+    authors: 'Brunke, L., Greeff, M., Hall, A. W., Yuan, Z., Zhou, S., Panerati, J. & Schoellig, A. P.',
+    year: 2022,
+    title: 'Safe Learning in Robotics: From Learning-Based Control to Safe Reinforcement Learning',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems 5',
+    note: 'The modern survey of §14.5’s territory, bridging control-theoretic safety and constrained RL.',
+  },
+  {
+    key: 'agarwal2021',
+    authors: 'Agarwal, R., Schwarzer, M., Castro, P. S., Courville, A. & Bellemare, M. G.',
+    year: 2021,
+    title: 'Deep Reinforcement Learning at the Edge of the Statistical Precipice',
+    venue: 'NeurIPS 34',
+    note: 'Why small-sample RL comparisons mislead, and what to report instead — the basis for §14.6.',
+  },
+]} />

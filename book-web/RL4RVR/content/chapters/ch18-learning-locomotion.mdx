@@ -1,0 +1,335 @@
+---
+title: Learning Locomotion
+chapter: 18
+quote:
+  text: DRL has shown effectiveness in synthesizing robust and adaptive locomotion controllers for challenging conditions — the dynamics involved are relatively stable and easy to simulate, and dense shaped rewards simplify exploration.
+  author: Chen Tang and colleagues
+  affiliation: UT Austin · University of Virginia · Sony AI
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Locomotion is the competency where robot RL genuinely won. Learned controllers ship in commercial quadrupeds, and rough-terrain walking that defeated three decades of model-based control fell to a fairly standard PPO pipeline. This chapter explains why locomotion and not something else, then builds the full recipe on Ferris: observation and action design, the reward function term by term with its units, terrain curricula, and the teacher–student transfer of Chapter 15. It closes on bipeds and flight, where the same recipe meets harder problems."
+  outcomes={[
+    'Explain why locomotion transferred to hardware before manipulation did',
+    'Design a locomotion observation and action space, and justify each choice',
+    'Write a locomotion reward term by term with correct units and defensible weights',
+    'Construct a terrain curriculum and explain it as scheduling a distribution',
+    'Assemble the full teacher–student pipeline and say what each stage contributes',
+    'Explain what makes bipeds and quadrotors harder than quadrupeds',
+  ]}
+  foundation="Gait phase formalism, reward-term algebra with dimensional analysis, curricula as distribution scheduling, and the privileged-information argument specialized to terrain."
+  conceptual="The reward mixer: slide the weights and watch the gait that would emerge, with each term's physical units shown."
+  practical="Ferris as a 12-DoF rapier3d quadruped with PD joints, PPO over rayon-parallel randomized environments, and a terrain generator with difficulty scheduling."
+/>
+
+## 18.1 Why locomotion won first
+
+Chapter 1's maturity ladder put locomotion at L4–L5 while manipulation sat at L2. That gap is not about effort or talent — it follows from four structural properties, and knowing them tells you when to expect RL to work on a new problem.
+
+**The dynamics simulate well.** A walking robot is rigid bodies under gravity with intermittent point contacts. Physics engines are good at exactly that. Chapter 15 explained where they are bad — sustained sliding contact, deformation, precise friction — and locomotion mostly avoids those regimes.
+
+**Rewards are dense and writable.** "Track this velocity command" gives a signal at every timestep. Compare with "assemble this device", where the reward is a single bit arriving minutes later.
+
+**Failure is cheap and recoverable.** A quadruped that falls gets up. A manipulator that misjudges contact can destroy the workpiece, itself, or a person. That difference decides how freely you can explore.
+
+**The task is naturally continuous and repetitive.** Millions of gait cycles are one long trajectory, which is exactly the regime where on-policy methods with massive parallelism shine.
+
+<Callout variant="insight" title="The transferable lesson">
+Before starting an RL robot project, score it on those four axes. A task that simulates faithfully, admits a dense reward, tolerates failure, and repeats is a task where the Chapter 15 pipeline will probably work.
+
+A task failing two or more — cloth manipulation, physical human interaction, one-shot assembly of an expensive part — needs a different plan, and the honest options are Chapter 16's demonstrations and offline data rather than a better algorithm.
+</Callout>
+
+## 18.2 Ferris: observations and actions
+
+Ferris has 12 actuated joints — hip abduction, hip flexion and knee per leg.
+
+**Observations** (the deployable set, what the student policy sees):
+
+| Component | Dimension | Why |
+|---|---|---|
+| Base angular velocity | 3 | IMU gyro, directly measured |
+| Projected gravity | 3 | Orientation without an absolute heading — invariant to yaw |
+| Velocity command | 3 | $(v_x, v_y, \omega_z)$ — the task |
+| Joint positions | 12 | Encoders |
+| Joint velocities | 12 | Differentiated encoders |
+| Previous action | 12 | Gives the policy access to its own recent output |
+| Gait phase | 2 | $(\sin\phi, \cos\phi)$ — Chapter 17's CPG clock |
+
+That is 47 numbers, all available on real hardware at 50 Hz.
+
+<Callout variant="note" title="Two design choices worth explaining">
+**Projected gravity instead of orientation.** The gravity vector expressed in the body frame tells the policy which way is down without telling it which way is north. A policy conditioned on absolute yaw would learn direction-dependent behaviour and fail when the robot is placed facing a different way. Removing the information removes the failure mode.
+
+**Previous action in the observation.** This lets the policy produce smooth outputs — it can see what it just did. Without it, policies tend to chatter, which is hard on gearboxes and is a common cause of a simulation-trained policy sounding alarming on real hardware.
+</Callout>
+
+**Actions** are joint position targets at 50 Hz, tracked by a 1 kHz PD loop with $K_p \approx 40$, $K_d \approx 1$. This is the mid-level choice from Chapter 17, and essentially the entire field has converged on it: the PD loop absorbs high-frequency dynamics, bounds the force the policy can command, and gives well-behaved gradients. Torque-level policies exist and learn much more slowly for no demonstrated benefit.
+
+## 18.3 The reward function, term by term
+
+Here is where locomotion papers actually differ from one another, and where most of the engineering time goes.
+
+$$r = w_1 r_{\text{vel}} + w_2 r_{\text{yaw}} - w_3 c_{\text{effort}} - w_4 c_{\text{orient}} + w_5 r_{\text{air}} - w_6 c_{\text{slip}} - w_7 c_{\text{smooth}}$$
+
+| Term | Formula | Units | Purpose |
+|---|---|---|---|
+| Velocity tracking | $\exp(-\|v_{xy} - v^*_{xy}\|^2/\sigma)$ | dimensionless | The task |
+| Yaw tracking | $\exp(-(\omega_z - \omega^*_z)^2/\sigma)$ | dimensionless | Turn as commanded |
+| Effort | $\|\tau\|^2$ | N²·m² | Do not slam the actuators |
+| Orientation | $\|g_{\text{proj},xy}\|^2$ | dimensionless | Stay level |
+| Foot air time | $\sum_f (t_{\text{air},f} - 0.5)$ | s | Take real steps, do not shuffle |
+| Foot slip | $\sum_f \|v_f\|^2 \cdot \mathbb{1}[\text{contact}]$ | m²/s² | Walk, do not skate |
+| Action smoothness | $\|a_t - a_{t-1}\|^2$ | rad² | Protect the gearboxes |
+
+<Callout variant="warning" title="The weights are unit conversions that also express preferences">
+Those terms have genuinely different physical units. Summing them requires weights that convert everything to a common scale — so a weight is never purely a preference; it is a preference entangled with a unit conversion.
+
+That is why locomotion reward tuning is the reproducibility problem of the subfield. Two papers with identical algorithms and different weights produce visibly different gaits, and a paper that does not publish its weights has not published its method. Chapter 14's warning about goal specification is not abstract here: it is most of the work.
+</Callout>
+
+<RewardMixer />
+
+Set the effort penalty high and Ferris creeps. Set the air-time reward high and he prances, wasting energy on exaggerated swings. Drop the orientation term and he pitches forward until he falls. None of those is an algorithm failure — each is the optimizer correctly serving the objective it was given.
+
+## 18.4 Gait as phase
+
+A gait is a phase relationship between limbs. Give each foot $f$ a phase $\phi_f \in [0, 2\pi)$ advancing at frequency $\omega$, with a fixed offset $\Phi_f$ defining the gait:
+
+$$\phi_f(t) = \omega t + \Phi_f \pmod{2\pi}.$$
+
+A **trot** sets diagonal pairs together: $\Phi = (0, \pi, \pi, 0)$. A **bound** pairs front and rear: $(0, 0, \pi, \pi)$. Whether a foot should be in stance or swing is then a function of its phase.
+
+Two ways to use this. **Prescribe it** — feed $(\sin\phi_f, \cos\phi_f)$ as observations and reward matching the intended contact schedule, giving fast, predictable learning of a specific gait. Or **let it emerge** — provide only a velocity-tracking reward and let the policy discover its own footfall pattern, which yields gaits that transition naturally with speed but takes longer and needs more careful reward shaping.
+
+Modern systems typically prescribe a phase clock as an *input* while leaving the contact schedule unrewarded, getting organization without over-constraining the solution.
+
+## 18.5 The terrain curriculum
+
+Ferris cannot learn stairs by starting on stairs — he falls immediately, every episode, and there is no gradient. He must start on flat ground and progress.
+
+Formally a curriculum schedules a distribution: at training stage $k$, terrain parameters are drawn from $p_k(\xi)$, and the schedule advances only when performance justifies it. The standard mechanism is per-environment difficulty with promotion and demotion: an environment whose robot traversed most of its terrain advances a level; one whose robot fell drops a level. Difficulty tracks competence automatically, and no global schedule needs tuning.
+
+Terrain types progress roughly as: flat → rough (Perlin noise) → gentle slopes → steps → stairs → discrete obstacles → gaps.
+
+<Callout variant="insight" title="Curricula are exploration, not convenience">
+It is tempting to see a curriculum as a training speed-up. It is more fundamental than that: **it is how the agent gets any learning signal at all on a task where naive exploration never succeeds.**
+
+This is Chapter 14's dimensionality-of-exploration curse, addressed structurally. Random actions on stairs produce falls with no information. Random actions on flat ground produce a spread of outcomes with real gradient. The curriculum manufactures a path of solvable problems from one that is not.
+</Callout>
+
+## 18.6 The full pipeline
+
+Assembling everything from Part III:
+
+1. **Build the simulation** — Ferris in `rapier3d`, 12 PD joints, procedural terrain, 4096 parallel environments.
+2. **Randomize** (Chapter 15) — masses ±20%, friction 0.4–1.2, motor gains ±30%, latency 0–30 ms, plus random pushes.
+3. **Train a teacher with privileged access** — exact terrain heights under each foot, true friction, contact states. PPO (Chapter 10), a few billion simulated steps, hours on a GPU.
+4. **Distill into a student** (Chapter 15) — the student sees only the 47 deployable observations plus a history window, trained by DAgger-style imitation on its own state distribution (Chapter 16).
+5. **Deploy zero-shot.**
+
+<RustSnippet title="rl-envs/src/ferris/reward.rs" caption="Composable reward terms with their units declared. Making units explicit in the type is not decoration — it is what lets the logging distinguish 'the weight is wrong' from 'the term is wrong'.">
+
+```rust
+/// One additive term of the locomotion reward, with its physical units
+/// recorded so logs and ablations remain interpretable.
+pub struct RewardTerm {
+    pub name: &'static str,
+    pub units: &'static str,
+    pub weight: f64,
+    pub eval: fn(&FerrisState, &Command) -> f64,
+}
+
+pub fn velocity_tracking(s: &FerrisState, cmd: &Command) -> f64 {
+    let err = (s.base_lin_vel[0] - cmd.vx).powi(2) + (s.base_lin_vel[1] - cmd.vy).powi(2);
+    (-err / 0.25).exp()          // dimensionless, in [0, 1]
+}
+
+pub fn foot_air_time(s: &FerrisState, _cmd: &Command) -> f64 {
+    // Reward deliberate swings — the standard cure for shuffling. Credited
+    // only at touchdown, so it cannot be farmed by holding a foot up forever.
+    s.feet
+        .iter()
+        .filter(|f| f.just_landed)
+        .map(|f| f.air_time - 0.5)
+        .sum::<f64>()
+}
+
+pub fn foot_slip(s: &FerrisState, _cmd: &Command) -> f64 {
+    s.feet
+        .iter()
+        .filter(|f| f.in_contact)
+        .map(|f| f.lin_vel.norm_squared())
+        .sum::<f64>()
+}
+
+pub fn default_terms() -> Vec<RewardTerm> {
+    vec![
+        RewardTerm { name: "vel_track",  units: "-",      weight:  1.0,   eval: velocity_tracking },
+        RewardTerm { name: "yaw_track",  units: "-",      weight:  0.5,   eval: yaw_tracking },
+        RewardTerm { name: "effort",     units: "N²m²",   weight: -2.0e-4, eval: torque_squared },
+        RewardTerm { name: "orient",     units: "-",      weight: -5.0,   eval: gravity_xy_squared },
+        RewardTerm { name: "air_time",   units: "s",      weight:  1.0,   eval: foot_air_time },
+        RewardTerm { name: "slip",       units: "m²/s²",  weight: -0.1,   eval: foot_slip },
+        RewardTerm { name: "smooth",     units: "rad²",   weight: -0.01,  eval: action_rate_squared },
+    ]
+}
+
+/// Sum the terms, and return the per-term breakdown for the dashboard.
+/// Logging terms separately is what makes reward debugging tractable.
+pub fn total(terms: &[RewardTerm], s: &FerrisState, cmd: &Command) -> (f64, Vec<f64>) {
+    let parts: Vec<f64> = terms.iter().map(|t| t.weight * (t.eval)(s, cmd)).collect();
+    (parts.iter().sum(), parts)
+}
+```
+
+</RustSnippet>
+
+## 18.7 Bipeds and flight
+
+**Bipeds** are harder for reasons that are structural rather than incidental. A quadruped in a trot always has two feet down and is statically stable much of the time; a biped in walking has long single-support phases and is never statically stable during them. Its support polygon is small — the area of one foot. Falling is expensive, since humanoids are top-heavy and fragile. And angular momentum management matters: arms and torso are not decoration, they are part of the control problem.
+
+The recipe still applies, with more careful reward design (foot placement, centre-of-mass tracking, contact scheduling) and heavier reliance on reference motions — often motion-captured human walking — as either an imitation objective or a curriculum.
+
+**Quadrotors** are the other end of the spectrum: fast, underactuated in translation, but with clean, well-modelled dynamics and no contact at all. That combination made them the setting for the most striking single result in the field — a learned policy beating human champions at drone racing on a physical track. The interesting detail is that its residual dynamics model was fitted from real flight data, which is Chapter 15's system identification doing the decisive work.
+
+## 18.8 Chapter bridge
+
+Locomotion's recipe is complete: mid-level actions on a PD loop, a dense multi-term reward whose weights are unit conversions, a terrain curriculum that manufactures a learnable gradient, randomization for transfer, and teacher–student distillation to reach a deployable observation set.
+
+What Ferris does not have is anywhere to go. He tracks a velocity command; someone else decides what the command should be.
+
+Chapter 19 supplies that. Navigation is the perception-heavy competency — partial observability in its natural habitat, where the state is a map the robot has never seen. Rusty graduates from Chapter 4's gridworld to continuous lidar-based navigation, and we confront the architectural question the survey finds genuinely unsettled: how much of the stack should be learned at all?
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Dimensional audit',
+    difficulty: 2,
+    body: 'For each reward term in §18.3, verify the units and determine what the weight’s units must be for the sum to be dimensionally consistent. Then explain why a paper reporting weights without units is not fully reproducible.',
+  },
+  {
+    layer: 'F',
+    title: 'Gait phases',
+    difficulty: 2,
+    body: 'Write phase offsets for trot, pace, bound and gallop. For each, state the number of feet in contact over a cycle and relate it to static stability. Which gaits require dynamic balance throughout?',
+  },
+  {
+    layer: 'F',
+    title: 'Curriculum as scheduling',
+    difficulty: 2,
+    body: 'Formalize a terrain curriculum as a sequence of distributions p_k(ξ) with a promotion rule. Then state a condition under which the curriculum could stall — the robot neither promoting nor demoting — and propose a fix.',
+  },
+  {
+    layer: 'F',
+    title: 'Why privileged terrain helps',
+    difficulty: 3,
+    body: 'Argue why a teacher with exact terrain heights learns faster than a student with only proprioception. Frame it as the difference between a nearly-fully-observed MDP and a POMDP, using Chapter 4’s belief formalism.',
+  },
+  {
+    layer: 'C',
+    title: 'Break the gait four ways',
+    difficulty: 1,
+    body: 'In the reward mixer, produce four distinct failures: standing still, creeping, prancing, and falling. Record the weight settings for each and name the term responsible.',
+  },
+  {
+    layer: 'C',
+    title: 'Find the trotting region',
+    difficulty: 2,
+    body: 'Identify the region of weight space that yields a plausible trot. Is it a broad basin or a narrow ridge? Relate your answer to how much tuning effort locomotion papers actually report.',
+  },
+  {
+    layer: 'P',
+    title: 'Ferris walks',
+    difficulty: 3,
+    body: 'Build Ferris in rapier3d with PD joints and train PPO on flat ground with velocity tracking only. Then add terms one at a time and record the gait change from each. Report which single term most improved the result.',
+  },
+  {
+    layer: 'P',
+    title: 'Curriculum ablation',
+    difficulty: 3,
+    body: 'Train two policies on stairs: one with the terrain curriculum, one starting directly on the hardest terrain. Report the sample count each needs to reach a 50% traversal rate — the second may never get there, which is itself the finding.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§4.1 in full — quadruped, biped and quadrotor locomotion, with the trend analysis behind §18.1.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: 'The pre-deep-learning locomotion lineage, including Kohl & Stone’s policy-gradient gait optimization.',
+  },
+  {
+    key: 'hwangbo2019',
+    authors: 'Hwangbo, J. et al.',
+    year: 2019,
+    title: 'Learning agile and dynamic motor skills for legged robots',
+    venue: 'Science Robotics 4(26)',
+    note: 'Where the modern pipeline begins, including the learned actuator model.',
+  },
+  {
+    key: 'lee2020',
+    authors: 'Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2020,
+    title: 'Learning quadrupedal locomotion over challenging terrain',
+    venue: 'Science Robotics 5(47)',
+    note: 'The teacher–student pipeline assembled in §18.6.',
+  },
+  {
+    key: 'miki2022',
+    authors: 'Miki, T., Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2022,
+    title: 'Learning robust perceptive locomotion for quadrupedal robots in the wild',
+    venue: 'Science Robotics 7(62)',
+    note: 'Adding exteroception while keeping proprioceptive fallback — L4 in the wild.',
+  },
+  {
+    key: 'rudin2022',
+    authors: 'Rudin, N., Hoeller, D., Reist, P. & Hutter, M.',
+    year: 2022,
+    title: 'Learning to Walk in Minutes Using Massively Parallel Deep Reinforcement Learning',
+    venue: 'CoRL 2021',
+    note: 'The parallel-simulation regime and the per-environment terrain curriculum of §18.5.',
+  },
+  {
+    key: 'kumar2021',
+    authors: 'Kumar, A., Fu, Z., Pathak, D. & Malik, J.',
+    year: 2021,
+    title: 'RMA: Rapid Motor Adaptation for Legged Robots',
+    venue: 'RSS 2021',
+    note: 'Explicit estimation of dynamics parameters from proprioceptive history.',
+  },
+  {
+    key: 'kaufmann2023',
+    authors: 'Kaufmann, E., Bauersfeld, L., Loquercio, A., Müller, M., Koltun, V. & Scaramuzza, D.',
+    year: 2023,
+    title: 'Champion-level drone racing using deep reinforcement learning',
+    venue: 'Nature 620',
+    url: 'https://www.nature.com/articles/s41586-023-06419-4',
+    note: 'The flight result of §18.7, with residual dynamics identified from real flight data.',
+  },
+  {
+    key: 'peng2018deepmimic',
+    authors: 'Peng, X. B., Abbeel, P., Levine, S. & van de Panne, M.',
+    year: 2018,
+    title: 'DeepMimic: Example-Guided Deep Reinforcement Learning of Physics-Based Character Skills',
+    venue: 'ACM Transactions on Graphics 37(4)',
+    note: 'Reference-motion imitation — the technique bipedal work leans on most heavily.',
+  },
+]} />

@@ -1,0 +1,1691 @@
+---
+title: "Motion Planning: From Geometry to Probability"
+description: Configuration space, A* done properly, potential fields and the local minima that kill them, and the sampling-based planners that are only probably complete — with the guarantees stated precisely enough to be worth having.
+chapter: 20
+part: PART VI
+partTitle: Planning and Acting under Uncertainty
+difficulty: Intermediate
+readingTime: 60 min
+quote: Motion planning, however, does not usually occur in the workspace. Instead, it occurs in the configuration space Q (also called C-space), the set of all robot configurations.
+quoteAuthor: Howie Choset, Kevin Lynch, Seth Hutchinson, George Kantor, Wolfram Burgard, Lydia Kavraki, and Sebastian Thrun
+quoteSource: Principles of Robot Motion, Chapter 1
+---
+
+import { PotentialWell } from '@/components/ch/ch20/potential-well';
+import { PlannerArena } from '@/components/ch/ch20/planner-arena';
+import { NarrowPassage } from '@/components/ch/ch20/narrow-passage';
+import { DubinsDial } from '@/components/ch/ch20/dubins-dial';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Reduce a robot with a shape to a point, by building the configuration space and its C-obstacles',
+    'Prove A* returns an optimal path under admissibility, and bound weighted A* by ε',
+    'Explain why an additive potential field must have traps, and why the wave-front cannot',
+    'State probabilistic completeness and asymptotic optimality precisely — including their constants',
+    'Implement RRT and RRT* in Rust so that the second is the first plus two operations',
+    'Plan for a car: Dubins words, the U-turn worked by hand, and where hybrid A* fits',
+  ]}
+  prerequisites={[
+    'SE(2) poses and the ⊞/⊟ operators (Chapter 3)',
+    'The Apartment world and parry2d collision queries (Chapter 4)',
+    'Sampling as a representation of a set you cannot enumerate (Chapter 8)',
+    'Occupancy grids as a planning substrate (Chapter 13) and distance fields (Chapter 19)',
+  ]}
+>
+Parts II through V taught Rusty to *know* things: where it is, what the room looks like, how sure
+it should be. This chapter is the first one that makes it *go somewhere*. It is also, deliberately,
+the least probabilistic chapter in Part VI. Uncertainty steps back for one chapter so you can
+master the deterministic skeleton of acting — configuration space, graph search, potential fields,
+sampling-based planners — before Chapters 21 through 24 wrap all of it back up in probability.
+
+The word "probability" earns its place in the title twice, and the chapter is careful about the
+difference. First, randomness appears as an *algorithmic device*: PRM and RRT sample configurations
+the way the particle filter sampled states, and they trade an exact guarantee for one that holds
+with probability approaching one. Second, everything here is the deterministic core that the
+uncertainty-aware layers drive — the MDP of [Chapter 21](/chapters/ch21-mdps) generalizes the
+wave-front planner you will build below, and the MPPI controller of
+[Chapter 23](/chapters/ch23-mppi) tracks paths that come from this chapter.
+
+There is one idea underneath all of it. A planner searches a space the robot never physically
+visits. Once you see obstacles as *C-obstacles* — subsets of the space of configurations rather
+than the space the robot moves through — every planner in the zoo collapses into the same
+two-line recipe: build a graph in the free part of that space, then search it.
+</Overview>
+
+## A goal is not a plan
+
+Put Rusty at one end of a room, put a goal at the other, and write the first controller anyone
+writes: drive toward the goal, and push away from whatever you are about to hit. It is two lines of
+code, it needs no map beyond a range sensor, and it is exactly right — until it is catastrophically
+wrong.
+
+<Deferred>
+  <PotentialWell />
+</Deferred>
+
+Watch the bead until it stops. Then read the readout: the status is not *failed*, it is *stuck*,
+and the gradient norm is essentially zero. Nothing has gone wrong with the code. The controller has
+arrived at a point where the pull of the goal and the push of the wall cancel exactly, and by its
+own definition of success — descend the potential — it has *succeeded*. It is standing in the
+middle of a cup, reporting that there is nowhere better to go, and it is telling the truth.
+
+This is the failure mode that motivates every other algorithm in the chapter. A reactive controller
+knows the world only through its local gradient. Escaping the cup requires going *up* the
+potential — moving away from the goal for a while — and a rule that only ever descends can never
+decide to do that. To decide to do it, something has to have looked at the whole room first.
+
+Now flip on **wave-front mode**. The shading changes, the identical greedy descent runs again, and
+the bead walks out of the cup and around the obstacle. Nothing about the controller changed; the
+field it descends did. That single toggle is the arc of this chapter compressed into one control,
+and by the end of the Foundation section you will know exactly why the second field cannot have a
+trap and the first one must.
+
+<KeyIdea title="The one sentence version">
+A planner is a search over the *configuration space* — the space of everything the robot could be,
+not the space it moves through — and the only real questions are how you build a graph in the free
+part of it and what guarantee you get back when you search that graph.
+</KeyIdea>
+
+## Four planners, one query
+
+Before any formalism, watch the four algorithms this chapter derives race on a single query: from
+room A in the south-west corner of the Apartment to the bedroom in the north-east, out through one
+doorway, down the corridor, and in through another. Every planner sees the same map, the same
+start, the same goal, and the same sample budget.
+
+<Deferred>
+  <PlannerArena />
+</Deferred>
+
+Four things are worth noticing, and each becomes a theorem later.
+
+**A\* is exhaustive and it shows.** The blue wash is every lattice cell A\* has opened or closed —
+about eight hundred of them at the default resolution. It returns the best path the lattice
+contains, and it pays for that with memory proportional to the area it searched.
+
+**RRT answers first and answers badly.** The tree lunges into open space, finds *a* path, and
+stops improving. Its answer is jagged, it usually goes through a doorway a person would not have
+chosen, and depending on the seed it costs 14–32% more than A\*'s. That is not a bug; it is the
+contract. RRT promises *feasibility*, fast, and nothing else.
+
+**RRT\* starts identical to RRT and then bends.** Same samples, same seed, same first solution at
+the same iteration — and then the cost curve walks steadily downward as the rewiring ball shrinks.
+Optimality here is not a property of the answer at any moment. It is a limit.
+
+**PRM builds something none of the others build: a reusable structure.** On this one query the
+roadmap is mostly wasted work. Ask a thousand queries in the same apartment and it is the only
+planner here that is not starting from scratch each time.
+
+One number in the scoreboard should look wrong. RRT\* ends up *cheaper* than A\*'s "optimum" —
+around 14.0 m against 15.06 m. Both are correct. A\* is optimal on the lattice, and the lattice is
+not the plane: an 8-connected grid can only travel in eight directions, so it pays an octile detour
+that a sampler placing nodes anywhere never pays. Keep that discrepancy in mind. It is the honest
+face of *resolution completeness*, and we make it precise below.
+
+## The mathematics
+
+<NotationTable
+  rows={[
+    { sym: '\\mathcal{W} \\subset \\R^2', meaning: 'Workspace — the physical space the robot moves through.' },
+    { sym: '\\mathcal{WO}_i', meaning: 'The i-th workspace obstacle. The free workspace is what is left after removing them all.' },
+    { sym: '\\mathcal{Q},\\; q', meaning: 'Configuration space and a configuration. For Rusty, q = (x, y, theta) in SE(2).' },
+    { sym: 'R(q) \\subset \\mathcal{W}', meaning: 'Footprint: the set of workspace points the robot occupies at configuration q.' },
+    { sym: '\\mathcal{QO}_i,\\; \\mathcal{Q}_{\\mathrm{free}}', meaning: 'C-obstacle (configurations whose footprint hits obstacle i) and everything else.' },
+    { sym: '\\tau : [0,1] \\to \\mathcal{Q}_{\\mathrm{free}}', meaning: 'A path: a continuous map into free space. Its cost is written c(tau).' },
+    { sym: 'D(q)', meaning: 'Clearance: distance from q to the nearest obstacle. This is Chapter 19’s distance field.' },
+    { sym: 'g(v),\\; h(v),\\; f(v)', meaning: 'Cost-to-come, heuristic estimate of cost-to-go, and their sum — the A* priority.' },
+    { sym: 'U(q) = U_{\\mathrm{att}}(q) + U_{\\mathrm{rep}}(q)', meaning: 'Artificial potential: an attractive well at the goal plus a repulsive barrier at obstacles.' },
+    { sym: 'r_n = \\gamma\\,(\\log n / n)^{1/d}', meaning: 'RRT* connection radius after n samples, with d the dimension of the configuration space.' },
+    { sym: '\\rho', meaning: 'Minimum turning radius of a car-like robot (Dubins and Reeds–Shepp).' },
+    { sym: '\\delta', meaning: 'Clearance of a path — the margin used in every probabilistic-completeness statement.' },
+  ]}
+/>
+
+One notational warning, made once and precisely. Throughout this book $x_t$ is the *state the
+filter believes in* — a random variable with a distribution over it. In this chapter $q$ is a
+*configuration the planner imagines* — a deterministic point it is considering, which the robot may
+never occupy. For Rusty the two are numerically the same triple $(x, y, \theta)$, and it is
+tempting to conflate them. Do not. [Chapter 22](/chapters/ch22-pomdps) plans over distributions
+rather than points, and the whole difficulty of that chapter is the difference between these two
+symbols.
+
+### The space the robot never visits
+
+The robot has a shape. That single fact is what makes planning hard, because "does this path
+collide?" is a question about a swept *area*, not a point. The configuration-space construction
+makes the shape disappear.
+
+<KeyIdea title="Definition: configuration space">
+A **configuration** $q$ is a complete specification of the robot's position: enough numbers to
+place every point of it. The **configuration space** $\mathcal{Q}$ is the set of all of them. For a
+disc robot in the plane $\mathcal{Q} = \R^2$; for Rusty, whose heading matters,
+$\mathcal{Q} = \SEtwo$.
+</KeyIdea>
+
+Write $R(q) \subset \mathcal{W}$ for the set of workspace points the robot occupies at
+configuration $q$. Then the obstacle in the workspace induces an obstacle in the configuration
+space:
+
+<LinkedMath>
+$$
+\htmlClass{term-truth}{\mathcal{QO}_i} = \{\, q \in \mathcal{Q} \;:\; R(q) \cap \mathcal{WO}_i \neq \emptyset \,\},
+\qquad
+\htmlClass{term-posterior}{\mathcal{Q}_{\mathrm{free}}} = \mathcal{Q} \setminus \bigcup_i \mathcal{QO}_i
+$$
+</LinkedMath>
+
+A **path** is a continuous map $\tau : [0,1] \to \mathcal{Q}_{\mathrm{free}}$ with
+$\tau(0) = q_{\mathrm{start}}$ and $\tau(1) = q_{\mathrm{goal}}$. A **trajectory** is a path
+parameterized by *time*, which is a strictly stronger object: it has velocities, and therefore
+dynamics. This chapter plans paths. [Chapter 23](/chapters/ch23-mppi) turns them into trajectories.
+
+The payoff is immediate for the case Rusty is closest to.
+
+<Derivation title="The C-obstacle of a disc robot is the Minkowski inflation" result="\mathcal{QO} = \mathcal{WO} \oplus B_r">
+**Statement.** For a disc robot of radius $r$ whose configuration is the position of its center,
+
+$$
+\mathcal{QO} = \mathcal{WO} \oplus B_r = \{\, w + b \;:\; w \in \mathcal{WO},\; \norm{b} \le r \,\}
+$$
+
+so planning for a disc among obstacles is *exactly* planning for a point among obstacles grown
+by $r$.
+
+**Step 1 — unfold the definition.** At configuration $q$ the footprint is the closed ball
+$R(q) = B_r(q)$. So $q \in \mathcal{QO}$ if and only if there exists $w \in \mathcal{WO}$ with
+$\norm{w - q} \le r$.
+
+**Step 2 — rewrite as a distance.** "There exists a point of the obstacle within $r$" is the
+statement $\operatorname{dist}(q, \mathcal{WO}) \le r$. Writing $D(q)$ for the distance from $q$ to
+the nearest obstacle,
+
+<LinkedMath>
+$$
+q \in \htmlClass{term-truth}{\mathcal{Q}_{\mathrm{free}}} \iff \htmlClass{term-measurement}{D(q)} > r
+$$
+</LinkedMath>
+
+**Step 3 — recognize the Minkowski sum.** $\{q : \operatorname{dist}(q, \mathcal{WO}) \le r\}$ is
+precisely the set of points expressible as an obstacle point plus a vector of length at most $r$,
+which is the definition of $\mathcal{WO} \oplus B_r$. $\blacksquare$
+
+**Why this matters computationally.** Step 2 is the whole implementation. The free-space test is a
+single lookup into a scalar field $D$, and *you already built that field*:
+[Chapter 19](/chapters/ch19-map-representations) computed the Euclidean signed distance transform
+of the map. Collision checking for a disc robot costs one array read.
+
+**What breaks for a robot that is not a disc.** If the footprint rotates, $R(q)$ depends on
+$\theta$ and the C-obstacle lives in $\SEtwo$, not $\R^2$. Its $\theta$-slice is
+$\mathcal{WO} \oplus (-R(0,0,\theta))$ — the obstacle grown by the *reflected* footprint at that
+heading — and that inflation genuinely changes as the robot turns. This is why a long rectangular
+robot can pass through a doorway diagonally that it cannot pass through square-on, and why the
+$\theta$ axis of C-space is not decoration. The practical compromise, used by nearly every 2-D
+stack including the one in this book, is to inflate by the *circumscribed* radius (conservative:
+never lets you plan a colliding path, sometimes refuses a feasible one) and fall back to an exact
+`parry2d` footprint test only in the tight places.
+</Derivation>
+
+Everything downstream inherits this reduction. When a widget in this chapter says "free", it is
+asking whether $D(q) > r$; when it draws the C-obstacle, it is drawing the inflated map. Toggle
+**show the C-obstacle** in the Planner Arena and watch the doorways narrow: the doorway that
+matters to the planner is not the one in the wall, it is the one in the inflated map.
+
+### What it means to have solved the problem
+
+Planners come with wildly different promises, and the differences are not marketing. State them
+crisply, because the rest of the chapter is a tour of who satisfies which.
+
+<KeyIdea title="The four guarantees">
+A planner is **complete** if it returns a solution in finite time whenever one exists, and reports
+failure otherwise. It is **resolution complete** if it is complete with respect to a discretization
+parameter: any solution that survives the discretization is found, and refining the discretization
+eventually captures any solution with positive clearance. It is **probabilistically complete** if
+the probability of failing to find an existing solution goes to zero as the number of samples grows.
+It is **asymptotically optimal** if the cost of its best solution converges to the optimal cost with
+probability one.
+</KeyIdea>
+
+Note what each one does *not* say. Resolution completeness says nothing about a passage narrower
+than a cell — that passage does not exist as far as the planner is concerned, and refining the grid
+is the only cure. Probabilistic completeness says nothing about *when*: the failure probability
+decays, but as we will compute below, its constants can be so bad that the guarantee is worthless
+at any budget you would actually run. And asymptotic optimality is a statement about a limit, not
+about the answer on your screen.
+
+| Planner | Guarantee | Cost of that guarantee |
+|---|---|---|
+| Visibility graph, exact cell decomposition | Complete, and optimal for polygonal worlds | Exponential in dimension; needs exact geometry |
+| A\* / Dijkstra on a lattice | Resolution complete; optimal *on the lattice* | Memory proportional to the searched area |
+| Gradient descent on $U_{\mathrm{att}} + U_{\mathrm{rep}}$ | None | Nearly free per step, and it lies to you |
+| Wave-front / value iteration | Resolution complete; optimal on the lattice | One full sweep of the grid per goal |
+| PRM, RRT | Probabilistically complete | Constants that depend on the narrowest passage |
+| RRT\*, PRM\*, BIT\* | Probabilistically complete *and* asymptotically optimal | A shrinking-ball rewire on every sample |
+
+### Search: Dijkstra, A\*, and what the heuristic actually buys
+
+Discretize $\mathcal{Q}_{\mathrm{free}}$ into an 8-connected lattice of cells and you have a graph
+$G = (V, E)$ with non-negative edge costs — one cell width for an orthogonal move,
+$\sqrt{2}$ cell widths for a diagonal. Now planning is shortest path, a solved problem since 1959.
+
+The only interesting question is how much of the graph you have to touch.
+
+<Algorithm
+  name="a_star(G, s, g, h)"
+  inputs="graph G with non-negative costs, start s, goal g, heuristic h"
+  outputs="a minimum-cost path from s to g, or failure"
+  complexity="O((V + E) log V) worst case; expansions shrink as h approaches h*"
+>
+1. $g(s) \leftarrow 0$; $\mathrm{OPEN} \leftarrow \{s\}$ keyed on $f(s) = h(s)$; $\mathrm{CLOSED} \leftarrow \emptyset$
+2. while $\mathrm{OPEN} \neq \emptyset$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$v \leftarrow \arg\min_{u \in \mathrm{OPEN}} f(u)$; move $v$ to $\mathrm{CLOSED}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;if $v = g$ then return the path recovered through the parent pointers
+5. &nbsp;&nbsp;&nbsp;&nbsp;for each neighbor $w$ of $v$ with $w \notin \mathrm{CLOSED}$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$t \leftarrow g(v) + c(v, w)$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $t < g(w)$ then $g(w) \leftarrow t$; $\mathrm{parent}(w) \leftarrow v$; insert $w$ into $\mathrm{OPEN}$ with $f(w) = g(w) + \varepsilon\, h(w)$
+8. return failure
+</Algorithm>
+
+Setting $\varepsilon = 0$ deletes the heuristic and line 3 pops in order of $g$ alone: that is
+Dijkstra. Setting $\varepsilon = 1$ is A\*. Setting $\varepsilon > 1$ is *weighted* A\*, which is
+faster and no longer optimal — by a factor you can bound exactly.
+
+The heuristic must satisfy one property to keep the answer honest.
+
+<KeyIdea title="Definition: admissible and consistent">
+Let $h^*(v)$ be the true optimal cost-to-go from $v$. A heuristic is **admissible** if
+$h(v) \le h^*(v)$ for every $v$ — it never overestimates. It is **consistent** (or monotone) if
+$h(u) \le c(u, v) + h(v)$ for every edge and $h(g) = 0$ — a triangle inequality on the graph.
+Consistency implies admissibility.
+</KeyIdea>
+
+On an 8-connected lattice with unit-square cells the natural choice is the **octile distance**,
+which is the exact cost-to-go in an *empty* grid:
+
+$$
+h(v) = \Big[\max(\Delta i, \Delta j) + (\sqrt{2} - 1)\min(\Delta i, \Delta j)\Big]\cdot \Delta x
+$$
+
+It is admissible because obstacles can only make the true path longer, and consistent because it is
+itself a metric that lower-bounds every edge cost.
+
+<Derivation title="A* returns an optimal path when h is admissible" result="g(\text{goal}) = C^* on first expansion">
+**Statement.** If $h$ is admissible, then the first time A\* selects the goal at line 3, its
+recorded cost $g(g)$ equals the optimal cost $C^*$. If $h$ is additionally consistent, no node is
+ever expanded twice.
+
+**Step 1 — suppose otherwise.** Assume A\* is about to expand $g$ with $f(g) = g(g) > C^*$
+(since $h(g) = 0$, $f(g) = g(g)$). We derive a contradiction with line 3's choice.
+
+**Step 2 — find a witness on the optimal path.** Let $\pi^* = (s = v_0, v_1, \dots, v_k = g)$ be an
+optimal path. Not every $v_i$ can be in $\mathrm{CLOSED}$, or $g$ itself would already carry the
+optimal cost. Let $v_i$ be the *first* node of $\pi^*$ still in $\mathrm{OPEN}$.
+
+**Step 3 — the witness carries its optimal cost-to-come.** Every node before $v_i$ on $\pi^*$ is
+closed, and each was relaxed toward its successor at line 7 when it was expanded. Inductively
+$g(v_{i-1}) = g^*(v_{i-1})$, and the relaxation of the edge $(v_{i-1}, v_i)$ therefore left
+$g(v_i) \le g^*(v_{i-1}) + c(v_{i-1}, v_i) = g^*(v_i)$. Since $g$ values are always the cost of
+*some* real path, $g(v_i) = g^*(v_i)$.
+
+**Step 4 — admissibility caps the witness's priority.**
+
+<LinkedMath>
+$$
+f(v_i) \;=\; \htmlClass{term-prior}{g^*(v_i)} + \htmlClass{term-prediction}{h(v_i)}
+\;\le\; g^*(v_i) + h^*(v_i) \;=\; C^*
+$$
+</LinkedMath>
+
+using $h(v_i) \le h^*(v_i)$ and the fact that $v_i$ lies on an optimal path.
+
+**Step 5 — contradiction.** So $f(v_i) \le C^* < f(g)$, and $v_i$ is in $\mathrm{OPEN}$. Line 3
+selects the minimum-$f$ node, so it would have selected $v_i$, not $g$. $\blacksquare$
+
+**The consistency half.** Admissibility alone leaves a hole: a node may be closed with a
+*suboptimal* $g$ and need reopening later, which is why line 5's "skip if closed" is unsafe for a
+merely-admissible heuristic. Consistency plugs it. Along any edge $(u, v)$ relaxed from $u$,
+
+$$
+f(v) = g(u) + c(u,v) + h(v) \;\ge\; g(u) + h(u) = f(u)
+$$
+
+so $f$ is non-decreasing along the sequence of expansions. A node is therefore expanded only after
+every node that could improve it, and its $g$ at expansion time is already final. The octile
+heuristic is consistent, so the closed-set skip in our implementation is safe.
+
+**The classic counterexample.** Make $h$ optimistic everywhere except at one node where it
+overestimates by a lot, and A\* will delay expanding that node until after it has committed to a
+worse path through the goal. Exercise 2 asks you to build a four-node instance of exactly this and
+watch the crate's own `a_star_grid` return the wrong answer.
+</Derivation>
+
+**Weighted A\* is bounded, not wild.** With $h$ admissible and priority $f = g + \varepsilon h$ for
+$\varepsilon \ge 1$, repeat Steps 2–5. When the goal is popped,
+$g(g) \le f_\varepsilon(v_i) = g^*(v_i) + \varepsilon h(v_i) \le \varepsilon (g^*(v_i) + h^*(v_i)) = \varepsilon C^*$.
+So the returned path is never worse than $\varepsilon$ times optimal.
+
+That bound is loose in practice, which is exactly why weighted A\* is everywhere in real stacks.
+Here is the Apartment query, measured on the same lattice the arena uses (0.2 m cells, 0.25 m
+robot radius, start $(1,1)$, goal $(11,8)$):
+
+| $\varepsilon$ | Path cost | Expansions | Bound says |
+|---|---|---|---|
+| 0 (Dijkstra) | 15.057 m | 1883 | — |
+| 1 (A\*) | 15.057 m | 792 | $\le$ 15.057 m |
+| 1.5 | 15.057 m | 261 | $\le$ 22.6 m |
+| 2 | 15.057 m | 373 | $\le$ 30.1 m |
+| 3 | 15.222 m | 374 | $\le$ 45.2 m |
+| 5 | 15.554 m | 392 | $\le$ 75.3 m |
+
+Read three lessons off it. The heuristic buys expansions and nothing else: A\* and Dijkstra return
+byte-identical paths, and A\* touches 42% as many cells. Weighting further is startlingly cheap —
+at $\varepsilon = 1.5$ the search expands a *third* as many cells as A\* and still happens to
+return the optimal path. And the theoretical bound is nowhere near tight: at $\varepsilon = 5$ the
+guarantee permits a five-fold blowup and the measured penalty is 3.3%.
+
+The non-monotonicity between $\varepsilon = 1.5$ and $\varepsilon = 2$ is real and worth a moment.
+Weighted A\* is not a smooth dial. Raising $\varepsilon$ changes which ties break which way, and a
+greedier search can wander into a dead-end room and pay to come back out. The only honest way to
+pick $\varepsilon$ is to measure it on your map.
+
+### Potential fields, and why they must die
+
+The controller from the hook, written down properly. Khatib's 1986 formulation puts a quadratic
+well at the goal — conic far away, so a distant goal does not produce an absurd pull:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{U_{\mathrm{att}}(q)} =
+\begin{cases}
+\tfrac{1}{2}\zeta\, d^2(q, q_{\mathrm{goal}}) & d \le d^*_{\mathrm{goal}} \\[2pt]
+d^*_{\mathrm{goal}}\,\zeta\, d(q, q_{\mathrm{goal}}) - \tfrac{1}{2}\zeta \left(d^*_{\mathrm{goal}}\right)^2 & d > d^*_{\mathrm{goal}}
+\end{cases}
+$$
+</LinkedMath>
+
+and a barrier at every obstacle that switches off entirely beyond a radius of influence $Q^*$:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{U_{\mathrm{rep}}(q)} =
+\begin{cases}
+\tfrac{1}{2}\eta \left(\dfrac{1}{D(q)} - \dfrac{1}{Q^*}\right)^{\!2} & D(q) \le Q^* \\[6pt]
+0 & D(q) > Q^*
+\end{cases}
+$$
+</LinkedMath>
+
+Note $D(q)$: the repulsive term is a function of the *distance field*, so its gradient is just the
+direction away from the nearest obstacle, scaled. Chapter 19's ESDF is doing all the geometric work
+again.
+
+<Algorithm
+  name="gradient_descent_potential(q_s, U, α)"
+  inputs="a start configuration, the potential U, a step size"
+  outputs="a path to the goal, or the announcement that it has stopped"
+  complexity="O(1) per step for a distance-field potential"
+>
+1. $q \leftarrow q_s$; $\tau \leftarrow (q)$
+2. while $\norm{\nabla U(q)} > \epsilon$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$q \leftarrow q - \alpha\, \dfrac{\nabla U(q)}{\norm{\nabla U(q)}}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;append $q$ to $\tau$
+5. return $\tau$
+</Algorithm>
+
+Line 2 is the whole tragedy. The loop terminates when the gradient vanishes — and the gradient
+vanishes at the goal *and at every other critical point of $U$*. The algorithm cannot tell the two
+apart, because locally they are the same event.
+
+<Derivation title="An additive potential must have critical points that are not the goal" result="\nabla U = 0 at some q \neq q_{goal}">
+**Statement.** $U = U_{\mathrm{att}} + U_{\mathrm{rep}}$ generally admits critical points in
+$\mathcal{Q}_{\mathrm{free}}$ other than the goal, and for a non-convex obstacle some of them are
+local minima. No choice of $\zeta$, $\eta$, $Q^*$ removes them.
+
+**Step 1 — construct the trap.** Take the widget's cup: a back wall at $x = 4.6$ spanning
+$y \in [1.4, 3.6]$, with arms along $y = 1.4$ and $y = 3.6$ reaching back toward the robot. Put the
+goal to the right of it, on the line $y = 2.5$, and start the robot to the left on the same line.
+
+**Step 2 — kill the transverse component by symmetry.** The obstacle set is symmetric about
+$y = 2.5$ and so is the goal, hence $U(x, 2.5 + s) = U(x, 2.5 - s)$. A smooth even function has zero
+derivative at its center, so $\partial U/\partial y = 0$ everywhere on the axis. The motion is
+one-dimensional.
+
+**Step 3 — find the zero of the remaining component.** Along the axis, $\partial U_{\mathrm{att}}/\partial x < 0$
+(the goal pulls right, with magnitude bounded below by $\zeta d^*_{\mathrm{goal}}$ far from the
+goal), while $\partial U_{\mathrm{rep}}/\partial x > 0$ near the back wall and grows without bound
+as $D \to 0$. It is exactly $0$ outside the radius of influence. A continuous function that is
+negative at $x = Q^*$-away-from-the-wall and $+\infty$ at the wall has a zero in between.
+
+**Step 4 — confirm it is a minimum, not a saddle.** At that zero, $\partial^2 U/\partial x^2 > 0$
+because the repulsive term's second derivative dominates $(\propto D^{-4})$. Transversally, the two
+arms of the cup push *inward* from both sides, so $\partial^2 U/\partial y^2 > 0$ as well. The
+Hessian is positive definite: a genuine local minimum inside free space, from which every direction
+is uphill. $\blacksquare$
+
+**Why no tuning saves you.** Raising $\eta$ moves the trap, it does not delete it — Step 3's
+argument only used a sign change. Try it: the widget's $\eta$ slider spans a factor of 40, and the
+bead dies for every value.
+
+**The topological version.** This is not bad luck with a formula, it is Morse theory. On a compact
+free space with holes, any smooth function has a number of critical points constrained by the
+topology; you cannot have exactly one. The best achievable object is a **navigation function** — a
+potential whose only critical points besides the goal are non-degenerate *saddles*, whose basins of
+attraction have measure zero, so almost every start still reaches the goal. Koditschek and Rimon
+(1990) constructed these for "sphere worlds" and extended them by diffeomorphism to star-shaped
+worlds. The construction is beautiful and it does not generalize to an arbitrary floorplan, which is
+why almost nobody ships it.
+</Derivation>
+
+### The cure you have already built
+
+There is a navigation function for an arbitrary floorplan, it is trivial to compute, and you have
+met it twice already. Run Dijkstra *backwards from the goal* over the whole lattice, with no early
+exit, and label every free cell with its cost-to-go.
+
+<Algorithm
+  name="wavefront(grid, q_goal)"
+  inputs="an occupancy lattice and a goal cell"
+  outputs="V(c) = cost-to-go for every free cell"
+  complexity="O(|C| log |C|) for |C| cells — one sweep, then every query is free"
+>
+1. $V(c) \leftarrow \infty$ for all cells $c$; $V(q_{\mathrm{goal}}) \leftarrow 0$
+2. push $q_{\mathrm{goal}}$ onto a min-priority queue keyed on $V$
+3. while the queue is non-empty do
+4. &nbsp;&nbsp;&nbsp;&nbsp;pop the cheapest cell $c$
+5. &nbsp;&nbsp;&nbsp;&nbsp;for each free neighbor $c'$ of $c$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $V(c) + w(c, c') < V(c')$ then $V(c') \leftarrow V(c) + w(c,c')$ and push $c'$
+7. return $V$
+</Algorithm>
+
+Every free cell except the goal now has a neighbor with strictly smaller $V$ — that is not a
+heuristic claim, it is the construction: $V(c)$ was assigned by relaxing an edge from the
+predecessor on its shortest path, and that predecessor has $V$ smaller by the edge weight. So greedy
+descent on $V$ *cannot* get stuck, and the wave-front is a discrete navigation function. The
+self-check `wavefront: every free cell has a strictly cheaper neighbour` verifies this over all
+1953 reachable cells of the Apartment.
+
+Go back to the Potential Well and toggle wave-front mode with that in mind. The bead does not get
+smarter. The field it descends stopped being an invention and started being a *computed answer*.
+
+<KeyIdea title="You have just done value iteration">
+$V$ is a value function: the cost-to-go from every state under the optimal policy, and greedy
+descent on it is the optimal policy. [Chapter 21](/chapters/ch21-mdps) replaces "distance" with
+"expected discounted reward", replaces the deterministic neighbor with a transition distribution,
+and solves the same recursion — and gets the same guarantee for the same reason.
+</KeyIdea>
+
+One more identity, and it closes a loop from the previous chapter. Run the identical Dijkstra with
+*every obstacle cell* as a source instead of the goal, and you get the distance from each free cell
+to the nearest obstacle. Choset calls that the **brushfire** algorithm and pictures it as a wave
+washing out from the obstacles. It is the Euclidean distance transform of
+[Chapter 19](/chapters/ch19-map-representations), computed by a different route — approximately,
+because the 8-connected lattice can only measure length in octile steps, and the octile metric
+overestimates Euclidean distance by up to $\cos 22.5^\circ + (\sqrt2 - 1)\sin 22.5^\circ = 1.0824$, i.e. 8.24%,
+attained at exactly $22.5^\circ$. The self-check pins both error sources: on a 0.1 m lattice, brushfire
+never *under*-estimates the true distance and never exceeds $1.0824\,D + 2\sqrt{2}\,\Delta x$.
+
+Brushfire is the same algorithm as the wave-front is the same algorithm as Dijkstra. Only the source
+set changes. That is the kind of collapse worth remembering.
+
+### Sampling: build the graph out of luck
+
+Grids die of dimension. A 3-D pose lattice at 5 cm and 5° is already 20 million cells; a 6-DOF arm
+is hopeless. The move that rescues planning is the same one
+[Chapter 8](/chapters/ch08-nonparametric-filters) made for beliefs: stop trying to represent
+$\mathcal{Q}_{\mathrm{free}}$ and *sample* it.
+
+<Algorithm
+  name="build_prm(n, k, sample, connect)"
+  inputs="a sample budget n, a neighbor count k, a sampler, a local planner"
+  outputs="a roadmap graph G whose vertices are collision-free milestones"
+  complexity="O(n log n) nearest-neighbor work plus n·k local plans"
+>
+1. $V \leftarrow \emptyset$; $E \leftarrow \emptyset$
+2. for $i = 1$ to $n$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$q \leftarrow$ sample until $q \in \mathcal{Q}_{\mathrm{free}}$; $V \leftarrow V \cup \{q\}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for each $q'$ among the $k$ nearest neighbors of $q$ in $V$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if the local planner connects $q$ to $q'$ without collision then $E \leftarrow E \cup \{(q, q')\}$
+6. **query** $(q_s, q_g)$: connect both to their nearest milestones, then run Dijkstra on $G$
+7. return the roadmap, which answers every later query for free
+</Algorithm>
+
+The learning phase and the query phase are separate on purpose. That separation is PRM's reason to
+exist — and, on the single query in the arena, its handicap.
+
+Now the guarantee. It is worth stating with its constants visible, because the constants are the
+part that bites.
+
+<Derivation title="Probabilistic completeness of PRM, with constants" result="P(\text{fail}) \le a\,e^{-b n}">
+**Statement.** Suppose the query admits a path $\tau$ of length $L$ with **clearance** $\delta > 0$
+— every point of $\tau$ is at least $\delta$ from the boundary of free space. Then a uniform-sampling
+PRM with $n$ milestones and a straight-line local planner of reach at least $\delta/2$ fails to
+answer the query with probability at most
+
+$$
+P(\text{fail}) \;\le\; \underbrace{\left\lceil 4L/\delta \right\rceil}_{a}\;
+\exp\!\left(- \underbrace{\frac{\pi \delta^2}{16\,\mu(\mathcal{Q}_{\mathrm{free}})}}_{b}\; n \right)
+$$
+
+in the plane, where $\mu$ is area. The same exponential form holds for RRT.
+
+**Step 1 — cover the path with balls.** Place centers $c_0, \dots, c_m$ along $\tau$ at arc-length
+spacing $\delta/4$, so $m = \lceil 4L/\delta \rceil$. Around each, take the ball $B_k$ of radius
+$\delta/4$. Each $B_k$ lies entirely in $\mathcal{Q}_{\mathrm{free}}$, because its center is on
+$\tau$ and $\delta/4 < \delta$.
+
+**Step 2 — samples in consecutive balls are connectable.** Take $p \in B_k$ and $p' \in B_{k+1}$.
+Then $\norm{p' - c_k} \le \norm{p' - c_{k+1}} + \norm{c_{k+1} - c_k} \le \delta/4 + \delta/4 = \delta/2$,
+and likewise $\norm{p - c_k} \le \delta/4$. The segment $\overline{pp'}$ lies in the convex hull of
+two points both within $\delta/2$ of $c_k$, so every point of it is within $\delta/2 < \delta$ of
+$c_k \in \tau$ — hence free. The local planner succeeds.
+
+**Step 3 — a chain of hits is a solution.** If every ball receives at least one milestone, the
+milestones $p_0 \in B_0, \dots, p_m \in B_m$ form a connected chain in the roadmap from a
+neighborhood of $q_s$ to a neighborhood of $q_g$. The roadmap answers the query.
+
+**Step 4 — bound one ball's failure.** A uniform sample lands in $B_k$ with probability
+$\rho = \mu(B_k)/\mu(\mathcal{Q}_{\mathrm{free}}) = \pi(\delta/4)^2/\mu(\mathcal{Q}_{\mathrm{free}})$.
+After $n$ independent samples, $P(B_k \text{ empty}) = (1-\rho)^n \le e^{-\rho n}$.
+
+**Step 5 — union bound.** $P(\text{some ball empty}) \le m\, e^{-\rho n}$, which is the claim with
+$a = m$ and $b = \rho$. $\blacksquare$
+
+**The clearance is load-bearing.** If $\delta = 0$ — the only path scrapes a wall — then $b = 0$ and
+the bound says nothing, forever. No amount of sampling finds a passage of zero volume, because
+uniform sampling hits a set with probability equal to its measure and that measure is zero. This is
+not a weakness of the proof; it is a true statement about the algorithm.
+
+**The expansiveness refinement.** Choset's treatment replaces "clearance" with
+$(\epsilon, \alpha, \beta)$-**expansiveness**, which measures how much of the free space each point
+can *see*. It gives the same exponential decay with constants that degrade as visibility shrinks,
+and it explains why the narrow-passage problem is really a visibility problem: a corridor is hard
+not because it is small but because almost nothing outside it can see into it.
+</Derivation>
+
+<Deferred>
+  <NarrowPassage />
+</Deferred>
+
+Now do the arithmetic the theorem invites, on the widget's own geometry. At a corridor width of
+0.65 m the free area is $\mu = 51.2\ \mathrm{m}^2$, Rusty's radius shrinks the clear width to
+0.35 m so the best path has clearance $\delta = 0.175$ m, and the route is about 8 m long. That
+gives $a = 183$ and $b = 1.18 \times 10^{-4}$. At the widget's budget of $n = 180$ milestones, the
+bound evaluates to $179$ — a probability bound larger than one, which is to say: *the theorem tells
+you nothing at all*. To force the bound below 0.1 you would need about **64,000** samples. At a
+corridor width of 0.35 m, you would need about **3.9 million**.
+
+Meanwhile, measure it. At $n = 180$ the roadmap connects the two rooms in roughly one run in six —
+the widget's 30-trial sweep reports 13% — and at $n = 800$ it succeeds 90% of the time. So the
+experiment reaches 90% success at **800** samples and the theorem promises 90% at **64,000**: the
+guarantee is right, and it is eighty times too slow to be useful. Shrink the corridor to 0.35 m and
+the experiment reports 0% at any budget you will wait for, which is the same fact seen from the
+other side.
+
+<Callout type="warn">
+This gap is the single most important practical fact about sampling-based planning. Probabilistic
+completeness is an asymptotic statement whose constants depend on
+$\delta^{d}/\mu(\mathcal{Q}_{\mathrm{free}})$ — a ratio that collapses as passages narrow and as
+dimension grows. "It is probabilistically complete" is never an answer to "will it work in my
+apartment at 20 Hz."
+</Callout>
+
+The escape is not more samples, it is *better-placed* ones. Toggle bridge-test sampling and watch
+the success curve stop collapsing. The bridge test of Hsu et al. (2003) draws a point, draws a
+second point a Gaussian step away, and keeps the **midpoint** only when both endpoints are in
+collision and the midpoint is free. That configuration — free point straddled by two blocked ones —
+is a geometric *signature* of a narrow passage rather than a bet on its volume, which is why the
+green curve in the widget holds at 83% where the blue one has fallen to 13%. It is also why pure
+bridge sampling is useless on its own: it finds passages and nothing else, so the library mixes it
+60/40 with uniform samples, exactly as Hsu et al. prescribe.
+
+### RRT: growing into the space instead of covering it
+
+PRM builds a graph for all queries. RRT builds a tree for one, and it grows it by repeatedly
+throwing a dart and reaching toward wherever it lands.
+
+<Algorithm
+  name="rrt_extend(T, q_rand)"
+  inputs="a tree T rooted at the start, a random configuration"
+  outputs="reached / advanced / trapped"
+  complexity="O(log n) nearest-neighbor query per iteration with a k-d tree"
+>
+1. $q_{\mathrm{near}} \leftarrow$ the vertex of $T$ nearest to $q_{\mathrm{rand}}$
+2. $q_{\mathrm{new}} \leftarrow$ steer from $q_{\mathrm{near}}$ toward $q_{\mathrm{rand}}$, at most $\epsilon$
+3. if the edge $(q_{\mathrm{near}}, q_{\mathrm{new}})$ is not collision-free then return **trapped**
+4. add $q_{\mathrm{new}}$ to $T$ with parent $q_{\mathrm{near}}$
+5. if $q_{\mathrm{new}} = q_{\mathrm{rand}}$ then return **reached** else return **advanced**
+</Algorithm>
+
+Line 1 is why it works. Nearest-neighbor selection makes the probability of extending from a given
+vertex proportional to the volume of that vertex's Voronoi cell, so the tree is *biased toward
+unexplored territory* by construction — the "rapidly exploring" in the name is a Voronoi bias, not
+a metaphor. Add a small probability (5% in the arena) of setting $q_{\mathrm{rand}} = q_{\mathrm{goal}}$
+and the tree also remembers what it is for.
+
+Line 4 is why it fails. A vertex's parent is chosen once, at insertion, from whatever was nearest
+at the time — and it is never reconsidered. The tree commits to whichever edges were cheap to reach
+early, and those commitments become the skeleton of every path it will ever return.
+
+<KeyIdea title="RRT does not converge to the optimum. Ever.">
+Karaman and Frazzoli proved something stronger than "RRT is suboptimal in practice":
+$P\left(\lim_{n\to\infty} c_n^{\mathrm{RRT}} = c^*\right) = 0$. The limit exists — the cost stops
+improving almost immediately — and it is almost surely *not* optimal. Watch the arena: RRT's line
+in the cost chart is flat after its first solution, because the only way it can improve is to
+stumble on a shorter route to the goal region through the tree it already froze.
+</KeyIdea>
+
+### RRT\*: what optimality costs
+
+The repair is two operations, inserted between lines 3 and 4, both confined to a ball of radius
+$r_n$ around the new node.
+
+<Algorithm
+  name="rrt_star(q_s, q_g, n)"
+  inputs="start, goal, sample budget"
+  outputs="a tree whose best solution converges to the optimum"
+  complexity="O(n log n) expected total"
+>
+1. as `rrt_extend`, lines 1–3, producing $q_{\mathrm{new}}$
+2. $r_n \leftarrow \min\left(\gamma (\log n / n)^{1/d},\; r_{\max}\right)$; $\; Q_{\mathrm{near}} \leftarrow$ vertices within $r_n$ of $q_{\mathrm{new}}$
+3. **choose parent**: attach $q_{\mathrm{new}}$ to the $q \in Q_{\mathrm{near}}$ minimizing $\mathrm{cost}(q) + \norm{q - q_{\mathrm{new}}}$ over collision-free edges
+4. **rewire**: for each $q \in Q_{\mathrm{near}}$, if $\mathrm{cost}(q_{\mathrm{new}}) + \norm{q_{\mathrm{new}} - q} < \mathrm{cost}(q)$ and the edge is free, re-parent $q$ to $q_{\mathrm{new}}$
+5. propagate the new cost through $q$'s subtree
+6. update the incumbent solution if $q_{\mathrm{new}}$ reaches the goal region more cheaply
+</Algorithm>
+
+Line 5 is the step everyone forgets. Re-parenting a node changes the cost-to-come of everything
+below it, and a tree whose costs are stale still *looks* rewired while silently optimizing the wrong
+objective. Our implementation pushes the update down the subtree, and the self-check
+`rrt*: cost-to-come is consistent through every edge after rewiring` asserts
+$\mathrm{cost}(v) = \mathrm{cost}(\mathrm{parent}(v)) + \norm{v - \mathrm{parent}(v)}$ at *every*
+node of the tree, to machine precision, after a full run. It is the invariant most worth testing in
+this chapter, because it is the one whose violation is invisible.
+
+<Derivation title="Asymptotic optimality of RRT*, and what γ has to be" result="P(\lim_n c_n = c^*) = 1, for \gamma above the bound">
+**Statement (Karaman and Frazzoli 2011).** Let $d = \dim \mathcal{Q}$, let $\zeta_d$ be the volume
+of the unit $d$-ball, and let the connection radius be
+$r_n = \gamma\,(\log n / n)^{1/d}$ with
+
+$$
+\gamma \;>\; 2\left(1 + \tfrac{1}{d}\right)^{1/d}
+\left(\frac{\mu(\mathcal{Q}_{\mathrm{free}})}{\zeta_d}\right)^{1/d}
+$$
+
+Then RRT\* is asymptotically optimal: $P\left(\lim_{n\to\infty} c^{\mathrm{RRT}^*}_n = c^*\right) = 1$,
+provided $c^*$ is **robustly** optimal — there is a sequence of strongly $\delta$-clear paths whose
+costs converge to $c^*$.
+
+**Step 1 — why RRT cannot and RRT\* can.** RRT's tree is a subgraph chosen greedily and never
+revised, so its path costs are determined by an early, arbitrary commitment. RRT\* instead maintains
+the shortest-path tree *of the $r_n$-disc graph on the sampled points*. That is a different object:
+it depends only on which points were sampled, not on the order.
+
+**Step 2 — the disc graph must stay connected.** The expected number of samples inside a ball of
+radius $r_n$ is
+
+$$
+n \cdot \frac{\zeta_d r_n^d}{\mu(\mathcal{Q}_{\mathrm{free}})}
+= \frac{\zeta_d \gamma^d}{\mu(\mathcal{Q}_{\mathrm{free}})} \log n
+$$
+
+which grows like $\log n$. This is the classical connectivity threshold for random geometric graphs:
+if the constant multiplying $\log n$ exceeds a critical value, the graph is connected with
+probability tending to one, and Borel–Cantelli upgrades that to *almost surely, eventually*. The
+lower bound on $\gamma$ is precisely the statement that the constant clears the threshold.
+
+**Step 3 — the radius shrinks slowly enough to stay useful and fast enough to stay cheap.**
+$r_n \to 0$, so the disc graph's edges converge to straight-line segments in
+$\mathcal{Q}_{\mathrm{free}}$ and its shortest path converges to a true shortest path. Meanwhile
+$|Q_{\mathrm{near}}| = O(\log n)$ per iteration, so the total work is $O(n \log n)$ rather than
+$O(n^2)$: optimality costs a logarithm, not a polynomial.
+
+**Step 4 — robustness is not a technicality.** If the optimal path must thread a gap of exactly zero
+clearance, no sequence of $\delta$-clear paths approaches it and the theorem does not apply — nor
+should it, since the completeness proof already showed that sampling cannot find a path of zero
+clearance at all.
+
+**What the widget actually runs.** For the Apartment with a 0.25 m disc, the free area is
+$\mu \approx 78.2\ \mathrm{m}^2$, $d = 2$, $\zeta_2 = \pi$, so the bound is
+
+$$
+\gamma > 2\left(\tfrac{3}{2}\right)^{1/2}\left(\tfrac{78.2}{\pi}\right)^{1/2} = 12.22
+$$
+
+The arena runs $\gamma = 12.3$ — above the bound, which most implementations quietly are not. It
+also caps $r_n$ at 2 m so the first few hundred iterations do not try to rewire the entire tree; the
+cap is inactive by $n \approx 300$ and therefore does not touch the limit.
+
+**The 2020 correction.** Solovey, Janson, Schmerling, Frazzoli and Pavone found a logical gap in the
+original proof — it treats as independent a family of events that the sequential construction
+correlates — and gave a rigorous replacement. Their corrected rate is
+$r_n = \gamma'(\log n / n)^{1/(d+1)}$: the extra dimension accounts for the *ordering* of the
+samples, and since $\log n / n < 1$ this radius is strictly *larger* than Karaman and Frazzoli's.
+The practical reading is reassuring — RRT\* is asymptotically optimal, and if you want the theorem
+rather than the folklore you should connect a little more generously than the 2011 formula says.
+</Derivation>
+
+## Rusty is not a point
+
+Every planner so far returned a polyline. Rusty cannot drive a polyline. A differential-drive robot
+can spin in place, so it can technically follow one — badly, stopping at every vertex — but a
+car-like robot cannot follow one at all, and even Rusty's velocity controller
+([Chapter 9](/chapters/ch09-motion-models)) turns each corner into a slow, error-accumulating pivot.
+
+The constraint is that a wheel cannot slide sideways. In the plane that is one linear equation on
+the velocity:
+
+<LinkedMath>
+$$
+\htmlClass{term-truth}{\dot{x}\sin\theta - \dot{y}\cos\theta = 0}
+$$
+</LinkedMath>
+
+This is a **Pfaffian** constraint: linear in the velocities, and *non-integrable* — there is no
+function $F(x,y,\theta)$ whose level sets it defines. That non-integrability is what makes it
+**nonholonomic**, and it has a precise and initially surprising consequence: the constraint removes
+no configurations at all. A car can reach any pose in the plane; parallel parking is the
+constructive proof. What the constraint restricts is the *set of paths*, not the set of
+destinations.
+
+So the local planner has to change. Instead of a straight line between two configurations, we need
+the shortest *drivable* curve — and for a car with a minimum turning radius, that curve has a
+closed form.
+
+<Algorithm
+  name="dubins_shortest_path(q_0, q_1, ρ)"
+  inputs="two poses in SE(2) and a minimum turning radius"
+  outputs="the shortest forward-only path, as one of six words"
+  complexity="O(1) — six closed-form evaluations, no search"
+>
+1. normalize: rotate so $q_1 - q_0$ lies along $+x$, scale by $\rho$, giving $(\alpha, \beta, d)$
+2. for each word $w \in \{LSL,\, RSR,\, LSR,\, RSL,\, RLR,\, LRL\}$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;evaluate $w$'s closed form; skip it if the discriminant is negative (that word does not exist for this query)
+4. &nbsp;&nbsp;&nbsp;&nbsp;record its total length $(t + p + q)\,\rho$
+5. return the shortest word found
+</Algorithm>
+
+Dubins proved in 1957 that the optimum is always one of exactly six words built from three
+primitives — $L$ (left at full lock), $R$ (right at full lock), $S$ (straight). The reason is
+Pontryagin's maximum principle: the steering that minimizes time is bang-bang, so the wheel is
+always hard over or dead ahead, and enumerating the possible switch structures leaves only
+$CSC$ and $CCC$ patterns.
+
+<Deferred>
+  <DubinsDial />
+</Deferred>
+
+### A worked example you can check by hand
+
+Take the hardest query a car ever faces: turn around on the spot. Start at the origin facing east,
+finish at the origin facing west, with $\rho = 1$:
+
+$$
+q_0 = (0, 0, 0), \qquad q_1 = (0, 0, \pi), \qquad \rho = 1
+$$
+
+The "obvious" answer is turn, drive, turn. Evaluate $LSL$: the left-turn circle at the start is
+centered at $(0, 1)$ and the one at the goal at $(0, -1)$, so the straight run is the $2\rho = 2$
+between their centers, and each turn is three-quarters of a circle. Segments
+$(3\pi/2,\; 2,\; 3\pi/2)$, total
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{c_{LSL} = 3\pi + 2 \approx 11.4248}
+$$
+</LinkedMath>
+
+$RSR$ ties it by reflection. $LSR$ and $RSL$ do not exist at all: an internal tangent needs the two
+circles at least $2\rho$ apart, and here the start's left circle and the goal's right circle are the
+*same* circle. Their discriminants come out negative, which is exactly how the closed form reports
+"no such word".
+
+Now the three-arc answer. Three unit circles are involved: the right-turn circle at the start, at
+$C_1 = (0, -1)$; the right-turn circle at the goal, at $C_3 = (0, +1)$; and a middle circle $C_2$
+that must be tangent to both, so $\norm{C_2 - C_1} = \norm{C_2 - C_3} = 2\rho = 2$. With $C_1$ and
+$C_3$ two apart, the solution is $C_2 = (\pm\sqrt{3},\, 0)$ — **the three centers form an
+equilateral triangle of side $2\rho$.** Take $C_2 = (\sqrt{3}, 0)$.
+
+The tangent points are the midpoints of the triangle's sides: $(\tfrac{\sqrt3}{2}, -\tfrac12)$ and
+$(\tfrac{\sqrt3}{2}, +\tfrac12)$. Measured at $C_1$, the start $(0,0)$ sits at $90^\circ$ and the first
+tangent point at $30^\circ$, so the first right arc turns $60^\circ = \pi/3$. By symmetry the last arc is
+$\pi/3$. Measured at $C_2$, the two tangent points sit at $210^\circ$ and $150^\circ$, and the middle arc is a
+*left* turn, so it goes the long way round: $360^\circ - 60^\circ = 300^\circ = 5\pi/3$. Total:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{c_{RLR} = \frac{\pi}{3} + \frac{5\pi}{3} + \frac{\pi}{3} = \frac{7\pi}{3} \approx 7.3304}
+$$
+</LinkedMath>
+
+The three-arc word wins by 36%. $LRL$ ties it by reflection. Check the heading bookkeeping: the net
+turn is $-60^\circ + 300^\circ - 60^\circ = 180^\circ$, as required. This is the fact the Dubins Dial exists to make
+visceral — bring the two poses together and the answer stops being turn–straight–turn.
+
+```rust title="crates/ch20_planning/src/steer.rs (tests)"
+#[test]
+fn worked_example_ch20_dubins_u_turn() {
+    use std::f64::consts::PI;
+    let q0 = Isometry2::new(Vector2::zeros(), 0.0);
+    let q1 = Isometry2::new(Vector2::zeros(), PI);
+
+    let best = dubins_shortest_path(&q0, &q1, 1.0).expect("a U-turn is always feasible");
+
+    // The CCC word wins, and its arcs are π/3, 5π/3, π/3 — the equilateral
+    // triangle of turning-circle centers, worked by hand in the text.
+    assert!(matches!(best.word, Word::RLR | Word::LRL));
+    assert_relative_eq!(best.segments[0], PI / 3.0, epsilon = 1e-12);
+    assert_relative_eq!(best.segments[1], 5.0 * PI / 3.0, epsilon = 1e-12);
+    assert_relative_eq!(best.length, 7.0 * PI / 3.0, epsilon = 1e-12);
+
+    // ...and the CSC alternative really is 56% longer, not merely "longer".
+    let lsl = dubins_word(Word::LSL, &q0, &q1, 1.0).unwrap();
+    assert_relative_eq!(lsl.length, 3.0 * PI + 2.0, epsilon = 1e-12);
+    assert!(dubins_word(Word::LSR, &q0, &q1, 1.0).is_none()); // circles coincide
+}
+```
+
+Allowing reverse gives the **Reeds–Shepp** family: 48 word classes, with up to two cusps where the
+car changes direction. It is never worse than Dubins and often much better at close range, which is
+what the widget's reverse toggle shows. Our library implements only the pure-reverse subset — plan
+forwards with both headings flipped, then drive the curve backwards — and says so, because a genuine
+Reeds–Shepp planner also allows switching direction *mid-path*, which the subset cannot express.
+
+### Hybrid A\*, at recipe level
+
+Dubins gives us a drivable *edge*. To get a drivable *plan* in a real map, the DARPA Urban
+Challenge produced a construction that is now the default in every parking-lot planner. It is a
+recipe rather than a theorem, and this chapter presents it as one.
+
+Search an $(x, y, \theta)$ lattice with A\*, but keep a **continuous** state in each cell instead of
+snapping to the cell center: expand by integrating a small set of motion primitives (full left, full
+right, straight — forwards and backwards) from the *actual* pose stored there. Keep only the
+cheapest continuous state per cell, which is what makes the search finite. Near the goal, attempt an
+**analytic expansion**: a single Dubins or Reeds–Shepp shot to the goal pose, accepted if it is
+collision-free. And drive it with a dual heuristic,
+
+<LinkedMath>
+$$
+h = \max\big(\,\htmlClass{term-prior}{h_{\text{nonholonomic, no obstacles}}},\ \htmlClass{term-measurement}{h_{\text{holonomic, with obstacles}}}\,\big)
+$$
+</LinkedMath>
+
+The first term is a precomputed Reeds–Shepp lookup table that knows about the turning radius but not
+the walls; the second is exactly the wave-front from earlier in this chapter, which knows about the
+walls but not the turning radius. Neither dominates, both are admissible, and their maximum is
+admissible too — so the dual heuristic is *free* accuracy. Dolgov, Thrun, Montemerlo and Diebel
+report roughly an order-of-magnitude reduction in expansions from that maximum alone.
+
+The result is not optimal — the continuous-state-per-cell pruning discards states that could have
+been part of the optimum — but it is drivable, fast, and it is what is under the hood when a car
+parks itself.
+
+<Callout type="info">
+**Where D\* went.** Choset devotes real space to D\* and D\* Lite, which repair an existing search
+when the costmap changes rather than replanning from scratch. Modern stacks mostly do not: costmaps
+change *everywhere* at sensor rate, incremental repair loses its advantage when the change is not
+local, and a receding-horizon controller ([Chapter 23](/chapters/ch23-mppi)) absorbs the reactive
+role anyway. The contemporary answer, and the one the ROS 2 navigation maintainers document, is
+"re-run A\* or hybrid A\* at costmap rate and let a sampling-based controller handle the 20 Hz."
+Know that D\* exists, and reach for it only when your map updates are genuinely sparse.
+</Callout>
+
+## Implementation in Rust
+
+Three types carry the chapter: the configuration space, the local planner, and the tree. Everything
+else is a function of them.
+
+```rust title="crates/ch20_planning/src/cspace.rs"
+use nalgebra::{Isometry2, Point2, Vector2};
+use parry2d_f64::query::intersection_test;
+use parry2d_f64::shape::{ConvexPolygon, Polyline};
+
+use ch19_maps::Esdf; // Chapter 19's Euclidean distance transform
+use sim::World;      // Chapter 4's Apartment
+
+/// Configuration space of a planar robot over a known map.
+///
+/// The whole chapter rests on one reduction (derivation F.1): a disc of radius
+/// `r` is free at `q` exactly when the distance to the nearest obstacle exceeds
+/// `r`. So `is_free` never touches geometry — it reads the distance field that
+/// Chapter 19 already built, at O(1).
+pub struct CSpace2 {
+    /// D(q). Also the clearance the potential field differentiates, and the
+    /// cost term the integration lab weights paths by.
+    esdf: Esdf,
+    /// Circumscribed radius: the conservative inflation.
+    radius: f64,
+    /// Inscribed radius: the *optimistic* one. Between the two we must ask parry.
+    inradius: f64,
+    /// `None` means the robot really is a disc, and the ESDF test is exact.
+    footprint: Option<ConvexPolygon>,
+    walls: Polyline,
+}
+
+impl CSpace2 {
+    #[inline]
+    pub fn clearance(&self, p: &Point2<f64>) -> f64 {
+        self.esdf.at(p.x, p.y)
+    }
+
+    /// Three-tier test. The cheap answers are conclusive far from walls in both
+    /// directions; only the annulus between the inscribed and circumscribed
+    /// radii costs a real collision query, and in a floorplan that is a few
+    /// percent of configurations.
+    pub fn is_free(&self, q: &Isometry2<f64>) -> bool {
+        let p = Point2::from(q.translation.vector);
+        let d = self.clearance(&p);
+        match &self.footprint {
+            None => d > self.radius,
+            Some(poly) => {
+                if d > self.radius {
+                    return true; // circumscribed disc fits: certainly free
+                }
+                if d <= self.inradius {
+                    return false; // inscribed disc does not: certainly blocked
+                }
+                !intersection_test(q, poly, &Isometry2::identity(), &self.walls)
+                    .expect("convex polygon vs polyline is supported")
+            }
+        }
+    }
+
+    /// Swept check along a segment, by **sphere marching**.
+    ///
+    /// Standing at `p` with clearance `c`, every point within `c - r` of `p` is
+    /// free, so we may advance by exactly that much and re-test. The distance
+    /// field is 1-Lipschitz, which is what makes the skip sound; `min_step`
+    /// keeps the loop terminating when the path grazes a wall. A 6 m edge
+    /// across the corridor costs about a dozen lookups instead of 300 samples.
+    pub fn edge_free(&self, a: &Point2<f64>, b: &Point2<f64>, min_step: f64) -> bool {
+        let delta = b - a;
+        let len = delta.norm();
+        if len < 1e-9 {
+            return self.clearance(a) > self.radius;
+        }
+        let u = delta / len;
+        let mut s = 0.0;
+        while s < len {
+            let c = self.clearance(&(a + u * s)) - self.radius;
+            if c <= 0.0 {
+                return false;
+            }
+            s += c.max(min_step);
+        }
+        self.clearance(b) > self.radius
+    }
+}
+
+/// The local planner, as a trait. Straight lines for a holonomic point; Dubins
+/// or Reeds–Shepp for Rusty. Every sampling planner below is generic over it,
+/// which is the entire difference between "plans a path" and "plans a path the
+/// robot can drive".
+pub trait Steer {
+    /// A curve from `a` toward `b`, truncated at `max_len`, with its cost.
+    fn steer(
+        &self,
+        a: &Isometry2<f64>,
+        b: &Isometry2<f64>,
+        max_len: f64,
+    ) -> Option<(Vec<Isometry2<f64>>, f64)>;
+}
+
+pub struct StraightLine;
+pub struct Dubins {
+    pub rho: f64,
+}
+pub struct ReedsShepp {
+    pub rho: f64,
+}
+```
+
+The lattice search is deliberately *not* a `petgraph` graph. Materializing 2700 nodes and 20,000
+edges to represent a grid whose neighbors are computable by adding $\pm 1$ to an index is a
+pessimization, and knowing when a graph library helps is part of the skill.
+
+```rust title="crates/ch20_planning/src/search.rs"
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+
+/// An open-list entry. `Ord` is deliberately reversed — `BinaryHeap` is a *max*
+/// heap — and ties break on the cell index so a run is reproducible: two cells
+/// with equal f must be expanded in a defined order, or the animated frontier
+/// flickers between frames.
+#[derive(PartialEq)]
+struct Open {
+    f: f64,
+    cell: u32,
+}
+
+impl Eq for Open {}
+impl Ord for Open {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .f
+            .partial_cmp(&self.f)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| other.cell.cmp(&self.cell))
+    }
+}
+impl PartialOrd for Open {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Octile distance in metres: exact cost-to-go on an *empty* 8-connected grid,
+/// hence admissible on any grid, hence A* stays optimal (derivation F.2).
+#[inline]
+fn octile(di: i32, dj: i32, cell: f64) -> f64 {
+    let (a, b) = ((di.abs() as f64), (dj.abs() as f64));
+    (a.max(b) + (std::f64::consts::SQRT_2 - 1.0) * a.min(b)) * cell
+}
+
+/// `a_star(G, s, g, h)` over an implicit 8-connected lattice.
+///
+/// `epsilon` is the heuristic weight: 0 is Dijkstra, 1 is A*, and ε > 1 is
+/// weighted A*, whose path is guaranteed within a factor ε of optimal.
+pub fn a_star_grid(
+    grid: &Lattice,
+    start: u32,
+    goal: u32,
+    epsilon: f64,
+) -> Option<(Vec<u32>, f64)> {
+    let n = (grid.nx * grid.ny) as usize;
+    let mut g = vec![f64::INFINITY; n];
+    let mut parent = vec![u32::MAX; n];
+    let mut closed = vec![false; n];
+    let mut heap = BinaryHeap::new();
+
+    let (gi, gj) = grid.coords(goal);
+    let h = |c: u32| {
+        let (i, j) = grid.coords(c);
+        octile(i - gi, j - gj, grid.cell)
+    };
+
+    g[start as usize] = 0.0;
+    heap.push(Open { f: epsilon * h(start), cell: start });
+
+    while let Some(Open { cell, .. }) = heap.pop() {
+        if closed[cell as usize] {
+            continue; // a stale entry: we already expanded this cell more cheaply
+        }
+        closed[cell as usize] = true;
+        if cell == goal {
+            return Some((trace(&parent, start, goal), g[goal as usize]));
+        }
+
+        let (i, j) = grid.coords(cell);
+        for &(di, dj, w) in Lattice::NEIGHBORS {
+            let (ni, nj) = (i + di, j + dj);
+            let Some(nb) = grid.index(ni, nj).filter(|&k| grid.free(k)) else { continue };
+            // No corner cutting: a diagonal move needs both orthogonal cells
+            // free, or the disc clips a corner the lattice claims is fine.
+            if di != 0 && dj != 0 && !(grid.free_at(ni, j) && grid.free_at(i, nj)) {
+                continue;
+            }
+            let tentative = g[cell as usize] + w * grid.cell;
+            if tentative < g[nb as usize] {
+                g[nb as usize] = tentative;
+                parent[nb as usize] = cell;
+                heap.push(Open { f: tentative + epsilon * h(nb), cell: nb });
+            }
+        }
+    }
+    None
+}
+```
+
+The roadmap, on the other hand, *is* a graph — an explicit one that outlives every query — and that
+is exactly the case `petgraph` is for.
+
+```rust title="crates/ch20_planning/src/prm.rs"
+use nalgebra::Point2;
+use petgraph::algo::astar;
+use petgraph::graph::{NodeIndex, UnGraph};
+use rand::rngs::SmallRng;
+
+use crate::cspace::CSpace2;
+
+/// A probabilistic roadmap: milestones as nodes, verified local plans as edges.
+///
+/// `petgraph` owns the topology and the traversal; this type owns the geometry
+/// and the collision checking. The split matters because the roadmap is built
+/// once and queried forever — which is PRM's whole reason to exist, and the
+/// reason it loses on the single query in w20.1.
+pub struct Prm {
+    graph: UnGraph<Point2<f64>, f64>,
+    k: usize,
+    max_edge: f64,
+    /// Straight-line checks attempted. The honest measure of PRM's real cost:
+    /// it is dominated by collision checking, not by graph work.
+    pub local_plans: usize,
+}
+
+impl Prm {
+    /// Draw one milestone and wire it to its k nearest neighbours.
+    pub fn step(&mut self, cs: &CSpace2, rng: &mut SmallRng) -> Option<NodeIndex> {
+        let q = cs.sample_free(rng)?;
+        let id = self.graph.add_node(q);
+
+        // A linear neighbour scan is O(n), so building the roadmap is O(n²).
+        // At the scale this chapter runs it that is not what dominates the
+        // profile — the ~14,000 swept collision checks are. Reach for a k-d
+        // tree when a profiler says to, not when the asymptotics do.
+        let mut cand: Vec<_> = self
+            .graph
+            .node_indices()
+            .filter(|&j| j != id)
+            .map(|j| (j, (self.graph[j] - q).norm()))
+            .filter(|&(_, d)| d <= self.max_edge)
+            .collect();
+        cand.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        for &(j, d) in cand.iter().take(self.k) {
+            self.local_plans += 1;
+            if cs.edge_free(&q, &self.graph[j], 0.02) {
+                self.graph.add_edge(id, j, d);
+            }
+        }
+        Some(id)
+    }
+
+    /// Attach start and goal, then let petgraph's A* answer the query. The
+    /// attachment is temporary: the roadmap itself is never modified, so the
+    /// next query pays only for its own two attachments.
+    pub fn query(&self, cs: &CSpace2, s: Point2<f64>, g: Point2<f64>) -> Option<(Vec<Point2<f64>>, f64)> {
+        let mut view = self.graph.clone();
+        let (si, gi) = (self.attach(&mut view, cs, s), self.attach(&mut view, cs, g));
+        let goal_pt = view[gi];
+        let (cost, path) = astar(
+            &view,
+            si,
+            |n| n == gi,
+            |e| *e.weight(),
+            // Euclidean distance to the goal: admissible, because no roadmap
+            // edge is shorter than the straight line it was checked along.
+            |n| (view[n] - goal_pt).norm(),
+        )?;
+        Some((path.into_iter().map(|n| view[n]).collect(), cost))
+    }
+}
+```
+
+RRT and RRT\* are one type, because they differ by exactly the two operations of the algorithm box.
+Writing them separately would hide the chapter's point.
+
+```rust title="crates/ch20_planning/src/rrt.rs"
+use nalgebra::{Isometry2, Point2};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+
+use crate::cspace::{CSpace2, Steer};
+
+pub struct Node {
+    pub q: Isometry2<f64>,
+    pub parent: Option<u32>,
+    /// Cost-to-come along tree edges. The quantity rewiring exists to lower.
+    pub cost: f64,
+}
+
+pub struct RrtStar<S: Steer> {
+    steer: S,
+    nodes: Vec<Node>,
+    children: Vec<Vec<u32>>,
+    nn: KdTree2,
+    /// γ in r_n = γ (log n / n)^{1/d}. Must exceed the Karaman–Frazzoli bound
+    /// or asymptotic optimality is forfeit — so we check, loudly, in debug.
+    gamma: f64,
+    /// `false` gives plain RRT: no choose-parent, no rewire, no guarantee.
+    rewire: bool,
+    goal: Isometry2<f64>,
+    best: Option<(u32, f64)>,
+}
+
+impl<S: Steer> RrtStar<S> {
+    pub fn new(cs: &CSpace2, steer: S, start: Isometry2<f64>, goal: Isometry2<f64>, gamma: f64) -> Self {
+        // 2 (1 + 1/d)^{1/d} (μ(Q_free)/ζ_d)^{1/d}, with d = 2 and ζ₂ = π.
+        debug_assert!(
+            gamma > 2.0 * 1.5_f64.sqrt() * (cs.free_measure() / std::f64::consts::PI).sqrt(),
+            "γ below the Karaman–Frazzoli bound: this tree is not asymptotically optimal",
+        );
+        /* ... */
+    }
+
+    /// r_n = min(γ (log n / n)^{1/d}, r_max), with d = 2. The cap keeps the
+    /// first few hundred iterations from rewiring the whole tree; with γ = 12.3
+    /// and r_max = 2 m it is inactive by n ≈ 200, so it cannot touch the limit
+    /// the theorem is about.
+    fn connection_radius(&self) -> f64 {
+        let n = self.nodes.len().max(2) as f64;
+        (self.gamma * (n.ln() / n).sqrt()).min(self.max_radius)
+    }
+
+    pub fn step(&mut self, cs: &CSpace2, rng: &mut SmallRng) -> ExtendStatus {
+        let q_rand = if rng.random_bool(self.goal_bias) {
+            self.goal
+        } else {
+            cs.sample_uniform(rng)
+        };
+
+        let near_idx = self.nn.nearest(&q_rand);
+        let Some((path, len)) = self.steer.steer(&self.nodes[near_idx].q, &q_rand, self.step_size)
+        else {
+            return ExtendStatus::Trapped;
+        };
+        let q_new = *path.last().unwrap();
+        if !cs.path_free(&path) {
+            return ExtendStatus::Trapped;
+        }
+
+        let (mut parent, mut cost) = (near_idx, self.nodes[near_idx].cost + len);
+
+        if self.rewire {
+            let r = self.connection_radius();
+            let near = self.nn.within(&q_new, r);
+
+            // choose parent: cheapest collision-free connection in the ball,
+            // which need not be the nearest one.
+            for &i in &near {
+                if let Some((p, l)) = self.steer.steer(&self.nodes[i].q, &q_new, f64::INFINITY) {
+                    let c = self.nodes[i].cost + l;
+                    if c < cost && cs.path_free(&p) {
+                        parent = i;
+                        cost = c;
+                    }
+                }
+            }
+            let id = self.push(q_new, Some(parent), cost);
+
+            // rewire: does anyone in the ball reach home more cheaply through
+            // the newcomer?
+            for &i in &near {
+                if i == parent {
+                    continue;
+                }
+                if let Some((p, l)) = self.steer.steer(&q_new, &self.nodes[i].q, f64::INFINITY) {
+                    if cost + l < self.nodes[i].cost && cs.path_free(&p) {
+                        self.reparent(i, id, cost + l);
+                    }
+                }
+            }
+            self.check_goal(id);
+            return ExtendStatus::Advanced;
+        }
+
+        let id = self.push(q_new, Some(parent), cost);
+        self.check_goal(id);
+        ExtendStatus::Advanced
+    }
+
+    /// Hang `i` under `new_parent`, then push the saving down its subtree.
+    ///
+    /// Skipping the propagation is the classic RRT* bug: the tree *looks*
+    /// rewired, but the costs it minimises are stale, so it quietly stops being
+    /// asymptotically optimal while every visual check still passes.
+    fn reparent(&mut self, i: u32, new_parent: u32, cost: f64) {
+        if let Some(old) = self.nodes[i as usize].parent {
+            self.children[old as usize].retain(|&c| c != i);
+        }
+        self.nodes[i as usize].parent = Some(new_parent);
+        self.nodes[i as usize].cost = cost;
+        self.children[new_parent as usize].push(i);
+
+        let mut stack = vec![i];
+        while let Some(p) = stack.pop() {
+            for k in 0..self.children[p as usize].len() {
+                let c = self.children[p as usize][k];
+                let edge = self.edge_cost(p, c);
+                self.nodes[c as usize].cost = self.nodes[p as usize].cost + edge;
+                stack.push(c);
+            }
+        }
+    }
+}
+```
+
+### The scoreboard, and the test that pins it
+
+```rust title="crates/ch20_planning/examples/planner_race.rs"
+fn main() -> anyhow::Result<()> {
+    let world = sim::World::apartment();
+    let cs = CSpace2::disc(&world, 0.25, 0.05);
+    let lattice = Lattice::from_cspace(&cs, 0.2);
+    let (start, goal) = (Point2::new(1.0, 1.0), Point2::new(11.0, 8.0));
+
+    // Every run is seeded, and each planner gets its *own* stream: sharing one
+    // would make RRT's samples depend on how many PRM rejected, and the
+    // RRT/RRT* comparison would stop being controlled. Seed 20 is the figure
+    // in the text and in w20.1.
+    let (mut r_prm, mut r_rrt, mut r_star) = (
+        SmallRng::seed_from_u64(20),
+        SmallRng::seed_from_u64(21),
+        SmallRng::seed_from_u64(21), // identical to RRT's: same darts, different tree
+    );
+
+    let (cells, a_cost) = a_star_grid(&lattice, lattice.nearest_free(&start),
+                                     lattice.nearest_free(&goal), 1.0).unwrap();
+    let mut prm = Prm::new(&cs, 8, 2.5);
+    let mut rrt = RrtStar::new(&cs, StraightLine, start.into(), goal.into(), 12.3).plain();
+    let mut star = RrtStar::new(&cs, StraightLine, start.into(), goal.into(), 12.3);
+    for _ in 0..2500 {
+        prm.step(&cs, &mut r_prm);
+        rrt.step(&cs, &mut r_rrt);
+        star.step(&cs, &mut r_star);
+    }
+
+    println!("A*        {:6.2} m   {:5} expansions   {} cells on path",
+             a_cost, a_star_expansions(), cells.len());
+    println!("PRM       {:6.2} m   {:5} milestones", prm.query(start, goal)?.cost, prm.len());
+    println!("RRT       {:6.2} m   first solution at sample {}", rrt.best_cost(), rrt.first_at());
+    println!("RRT*      {:6.2} m   {} improvements", star.best_cost(), star.improvements());
+    Ok(())
+}
+```
+
+```text title="cargo run --release --example planner_race"
+A*         15.06 m     792 expansions   68 cells on path
+PRM        14.29 m    1768 milestones
+RRT        17.09 m   first solution at sample 974
+RRT*       13.97 m   15 improvements
+```
+
+```rust title="crates/ch20_planning/src/lib.rs (tests)"
+/// The scoreboard is not decoration: it is the chapter's claim, and a claim
+/// that is not tested is a claim that will rot. These are *invariants*, not
+/// frozen numbers — the ordering has to hold for every seed, which is a much
+/// stronger statement than "seed 20 produced 13.97".
+#[test]
+fn apartment_scoreboard_invariants() {
+    let (cs, lattice, start, goal) = apartment_query();
+    let a_cost = a_star_grid(&lattice, lattice.nearest_free(&start),
+                             lattice.nearest_free(&goal), 1.0).unwrap().1;
+    let dijkstra = a_star_grid(&lattice, lattice.nearest_free(&start),
+                               lattice.nearest_free(&goal), 0.0).unwrap().1;
+
+    // The heuristic buys expansions, never optimality.
+    assert_relative_eq!(a_cost, dijkstra, epsilon = 1e-9);
+
+    for seed in 20..28u64 {
+        let mut r1 = SmallRng::seed_from_u64(seed);
+        let mut r2 = SmallRng::seed_from_u64(seed);
+        let rrt = run(&cs, start, goal, 2500, false, &mut r1);
+        let star = run(&cs, start, goal, 2500, true, &mut r2);
+
+        // At an equal budget, rewiring is strictly better. Every time.
+        assert!(star < rrt, "seed {seed}: RRT* {star} did not beat RRT {rrt}");
+        // And it beats the lattice, because the lattice is not the plane:
+        // eight headings cost an octile detour a sampler never pays.
+        assert!(star < a_cost);
+    }
+}
+```
+
+## Putting it together: the Apartment lab, and where it breaks
+
+Run the race yourself in the arena above, then read the table. It says something more interesting
+than "RRT\* wins".
+
+| Planner | Cost | Guarantee it actually earned |
+|---|---|---|
+| A\* (0.2 m lattice) | 15.06 m | Optimal **on the lattice**; resolution complete |
+| PRM ($n = 2500$, $k = 8$) | 14.29 m | Probabilistically complete; reusable for every later query |
+| RRT ($n = 2500$) | 17.09 m | Probabilistically complete; feasible, and permanently 22% worse than RRT\* at the same budget |
+| RRT\* ($n = 2500$, $\gamma = 12.3$) | 13.97 m | Asymptotically optimal, and it shows |
+
+The number to sit with is A\*'s. It is the only one in the table backed by a *proof of optimality*,
+and it is 8% worse than RRT\*. Both statements are true because they are about different problems:
+A\* solves the lattice exactly, and the lattice is a lossy model of the plane. So refine it, and
+watch what happens:
+
+| Cell size | A\* cost | Cells stored | Expansions |
+|---|---|---|---|
+| 0.4 m | 15.89 m | 660 | 232 |
+| 0.2 m | 15.06 m | 2,700 | 792 |
+| 0.1 m | 14.68 m | 10,800 | 2,621 |
+| 0.05 m | 14.62 m | 43,200 | 10,847 |
+
+Sixty-five times the memory buys 1.27 m, and then the curve flattens well short of RRT\*'s 13.97 m.
+That plateau is not a resolution problem and refining further will not fix it: the 8-connected
+lattice measures length in the *octile* metric, which overestimates Euclidean distance by up to
+8.24%, and that bias is a property of the connectivity, not the cell size. To remove it you have to
+change the graph — 16-connected neighborhoods, a state lattice of motion primitives — or stop
+trusting the graph at the end. Run 300 rounds of random pairwise shortcutting over the 0.2 m path
+and it drops to **14.11 m**: cheaper than the 0.05 m lattice, at one sixty-fifth of the memory.
+Every production stack does this, and now you know what it is repairing.
+
+This is the real content of "resolution complete", and it is why a costmap planner's resolution
+*and* its connectivity are design parameters rather than implementation details.
+
+### The last step, which does not work yet
+
+Take RRT\*'s 13.97 m path, run 300 rounds of random pairwise shortcutting on it (splice in the
+straight line between two random points on the path whenever that line is free), and it drops to
+13.93 m across 10 waypoints. Beautiful. Now hand it to Rusty.
+
+Rusty cannot drive a corner. Chain a Dubins curve between each consecutive pair of waypoints,
+heading each waypoint along the local path direction, and measure what it costs:
+
+| Turning radius $\rho$ | Drivable length | Inflation | Sampled poses in collision |
+|---|---|---|---|
+| 0.2 m | 15.19 m | +9.1% | 1 / 327 |
+| 0.4 m | 16.47 m | +18.3% | 23 / 352 |
+| 0.8 m | 23.98 m | +72.2% | 128 / 505 |
+
+Look at the last column. The *geometrically optimal* path, rendered drivable, **hits walls**. Not
+because the planner was wrong — every waypoint is free and every straight segment between waypoints
+is free — but because the planner reasoned about a robot that can turn in place, and the arcs needed
+to connect its corners bulge outside the corridor it planned through. At $\rho = 0.8$ m the plan is
+not merely expensive; it is unexecutable.
+
+There are exactly three honest repairs, and each of them is a later chapter.
+
+1. **Plan in the right space.** Put steering inside the planner: give RRT\* a `Dubins` local planner
+   instead of `StraightLine`, so every tree edge is drivable by construction and the collision check
+   runs on the arc, not the chord. That is a one-line change with the `Steer` trait above, and it is
+   what the exercises ask you to do.
+2. **Plan a policy, not a path.** A path says "go here, then here". A *policy* says "from wherever
+   you actually are, do this" — which is what you want when the wheels do not deliver what you
+   commanded. [Chapter 21](/chapters/ch21-mdps) makes that switch, and the wave-front you built above
+   is already its simplest instance.
+3. **Re-plan continuously and let a controller close the gap.** Keep the geometric path as a
+   *reference*, and run an optimizer at 20 Hz that finds the drivable, collision-free trajectory
+   nearest to it. That is [Chapter 23](/chapters/ch23-mppi), and the reference it tracks comes from
+   this chapter.
+
+And the deeper omission, the one Part VI exists to fix: everything above assumed the robot knows
+where it is. Rusty does not. It has a belief — a covariance ellipse that grows down the featureless
+corridor and shrinks in the doorway, exactly as [Chapter 11](/chapters/ch11-localization-gaussian)
+showed. Planning through the middle of a room is shortest; planning along a wall keeps the
+localization sharp. [Chapter 22](/chapters/ch22-pomdps) is about that trade, and it is why robots
+hug walls.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The C-obstacle of a polygon">
+    Derive the C-obstacle of a disc robot of radius $r$ against a convex polygonal obstacle with
+    vertices $v_1, \dots, v_k$. Show that its boundary consists of the $k$ edges offset outward by
+    $r$, joined by circular arcs of radius $r$ centered on the vertices, and that the total turning
+    of the boundary is $2\pi$ regardless of $k$.
+
+    Then, in two sentences: why does a *rectangular* Rusty make $\mathcal{QO}$ depend on $\theta$,
+    and what does the $\theta$-slice look like at $\theta = 0$ versus $\theta = \pi/4$?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Break A* with a bad heuristic">
+    Construct a four-node graph, a start, a goal, and a heuristic $h$ that is *inadmissible* at
+    exactly one node, such that A\* with the closed-set optimization returns a strictly suboptimal
+    path. State the ratio between what it returns and the optimum, and identify which step of the
+    optimality derivation your example breaks.
+
+    Then verify it in code. `a_star_grid` hard-codes the octile heuristic precisely so that it
+    *cannot* be broken this way, so build your counterexample on an explicit
+    `petgraph::graph::UnGraph` with a pluggable `h`, and assert that the cost it returns strictly
+    exceeds the Dijkstra cost on the same graph. Finally, show that reopening closed nodes repairs
+    optimality but not the running time.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="How many samples does the theorem want?">
+    A corridor of clear width $w$ joins two rooms of combined free area $\mu$, and the shortest
+    route through it has length $L$. Using the bound derived above, write $n(w)$ — the number of
+    milestones needed to push the failure bound below $0.1$ — as a function of $w$, and show that
+    $n$ grows like $w^{-2}\log(1/w)$ in the plane and like $w^{-d}\log(1/w)$ in dimension $d$.
+
+    Now evaluate it for the widget's geometry ($\mu = 51\ \mathrm{m}^2$, $L = 8$ m) at
+    $w = 0.35$ m and at $w = 0.05$ m, and say in one sentence what the resulting numbers mean for
+    a planner that has 50 ms per query.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict the collapse">
+    In the Narrow Passage widget, the corridor sits at 0.65 m with a measured success probability
+    near 13% at $n = 180$ uniform milestones. Before touching the slider, predict the success
+    probability at 0.35 m — and predict whether it falls by the ratio of the corridor *widths*
+    (roughly $2\times$) or by something faster.
+
+    Now move the slider. Reconcile what you see with the exponent $b \propto \delta^2$ in the bound:
+    which of the two constants, $a$ or $b$, explains the collapse?
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Which tree answers first?">
+    Before touching the Planner Arena, predict: at the same sample budget and the same seed, does
+    RRT or RRT\* return its *first* solution after fewer samples? Argue for your answer, then read
+    the "first answer at" column across three re-rolled seeds.
+
+    The result is not a coincidence, and explaining it is the exercise. (Hint: rewiring changes
+    which node is a node's *parent*. What does it change about the set of node *positions*?) Then
+    say in one sentence what does differ between the two — and why the arena's chart, not its
+    scoreboard, is where you see it.
+
+    Second part, no widget: note roughly how many samples RRT needs for its first answer against
+    A\*'s 792 expansions, then argue what a map would have to look like for the lattice to win
+    *decisively* on time-to-first-solution, and what it would have to look like for RRT to win by
+    10×. Compare the number of lattice cells against the ratio of free volume to the volume of the
+    region every solution must pass through; one of those two numbers is what each planner pays.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Steer with Dubins">
+    Give `RrtStar` a `Dubins { rho: 0.4 }` local planner instead of `StraightLine`, so tree edges
+    are arcs and the collision check runs on the arc rather than the chord. You will need to (a)
+    make the tree store $\SEtwo$ nodes, (b) use a distance for nearest-neighbor lookup that respects
+    heading, and (c) notice that Dubins distance is *asymmetric* — steering from $a$ to $b$ is not
+    the same cost as $b$ to $a$ — so the "rewire" step must re-evaluate, not reuse.
+
+    Reproduce the table in "The last step": how much longer is the drivable plan, and how many
+    sampled poses are in collision now? The second number should be zero. Explain why (c) is the
+    reason RRT\* on a nonholonomic system is genuinely harder than the version in this chapter.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Bidirectional RRT-Connect, and a fair benchmark">
+    Implement RRT-Connect: grow two trees, one from the start and one from the goal, and after each
+    extension have the *other* tree greedily extend toward the new node until it reaches it or is
+    trapped. Add it as a fifth lane to the arena.
+
+    Then benchmark honestly. On 50 seeded runs of the narrow-passage map at 0.5 m corridor width,
+    report median samples-to-first-solution and success rate at $n = 180$ for RRT, RRT-Connect, and
+    RRT-Connect with bridge sampling. State whether bidirectional search changes the *exponent* in
+    the completeness bound or only the constant — and justify your answer with the covering argument,
+    not with the measurement.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Choset, H., Lynch, K. M., Hutchinson, S., Kantor, G. A., Burgard, W., Kavraki, L. E., and Thrun, S."
+    year={2005}
+    title="Principles of Robot Motion: Theory, Algorithms, and Implementations"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262033275/principles-of-robot-motion/"
+    note="The spine of this chapter and the source of its epigraph. Ch. 3 is configuration space, Ch. 4 potential functions and navigation functions, Ch. 7 the sampling-based planners, App. H the search algorithms."
+  />
+  <Reference
+    authors="Hart, P. E., Nilsson, N. J., and Raphael, B."
+    year={1968}
+    title="A Formal Basis for the Heuristic Determination of Minimum Cost Paths"
+    venue="IEEE Transactions on Systems Science and Cybernetics 4(2), 100–107"
+    doi="10.1109/TSSC.1968.300136"
+    note="A* itself, including the admissibility theorem this chapter derives. Worth reading for how carefully the original states what the heuristic is allowed to know."
+  />
+  <Reference
+    authors="Khatib, O."
+    year={1986}
+    title="Real-Time Obstacle Avoidance for Manipulators and Mobile Robots"
+    venue="The International Journal of Robotics Research 5(1), 90–98"
+    doi="10.1177/027836498600500106"
+    note="The artificial potential field, in the formulation the Potential Well widget implements. Khatib is explicit that it is a real-time control law, not a planner — a distinction the field then spent a decade forgetting."
+  />
+  <Reference
+    authors="Koditschek, D. E. and Rimon, E."
+    year={1990}
+    title="Robot Navigation Functions on Manifolds with Boundary"
+    venue="Advances in Applied Mathematics 11(4), 412–442"
+    doi="10.1016/0196-8858(90)90017-S"
+    note="Why you cannot wish local minima away, and what the best possible potential looks like: a navigation function on a sphere world, extended by diffeomorphism to star worlds."
+  />
+  <Reference
+    authors="Kavraki, L. E., Švestka, P., Latombe, J.-C., and Overmars, M. H."
+    year={1996}
+    title="Probabilistic Roadmaps for Path Planning in High-Dimensional Configuration Spaces"
+    venue="IEEE Transactions on Robotics and Automation 12(4), 566–580"
+    doi="10.1109/70.508439"
+    note="PRM, and the paper that made 'probabilistically complete' a guarantee worth stating. The learning/query split is its central design decision."
+  />
+  <Reference
+    authors="Hsu, D., Jiang, T., Reif, J., and Sun, Z."
+    year={2003}
+    title="The Bridge Test for Sampling Narrow Passages with Probabilistic Roadmap Planners"
+    venue="Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), 4420–4426"
+    doi="10.1109/ROBOT.2003.1242285"
+    note="The narrow-passage fix in widget w20.2, including the 60/40 hybrid with uniform sampling — pure bridge sampling populates passages and nothing else."
+  />
+  <Reference
+    authors="Dubins, L. E."
+    year={1957}
+    title="On Curves of Minimal Length with a Constraint on Average Curvature, and with Prescribed Initial and Terminal Positions and Tangents"
+    venue="American Journal of Mathematics 79(3), 497–516"
+    doi="10.2307/2372560"
+    note="The six words. Predates robotics entirely; the U-turn worked by hand in this chapter is a direct consequence of its case analysis."
+  />
+  <Reference
+    authors="Karaman, S. and Frazzoli, E."
+    year={2011}
+    title="Sampling-based Algorithms for Optimal Motion Planning"
+    venue="The International Journal of Robotics Research 30(7), 846–894"
+    doi="10.1177/0278364911406761"
+    note="RRT*, PRM*, the proof that RRT converges to a suboptimal solution with probability one, and the γ bound the Planner Arena is configured to respect."
+  />
+  <Reference
+    authors="Dolgov, D., Thrun, S., Montemerlo, M., and Diebel, J."
+    year={2010}
+    title="Path Planning for Autonomous Vehicles in Unknown Semi-structured Environments"
+    venue="The International Journal of Robotics Research 29(5), 485–501"
+    doi="10.1177/0278364909359210"
+    note="Hybrid A*, with the continuous-state-per-cell trick, the analytic Reeds–Shepp expansion near the goal, and the dual heuristic this chapter sketches."
+  />
+  <Reference
+    authors="Solovey, K., Janson, L., Schmerling, E., Frazzoli, E., and Pavone, M."
+    year={2020}
+    title="Revisiting the Asymptotic Optimality of RRT*"
+    venue="Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), 2189–2195"
+    doi="10.1109/ICRA40945.2020.9196553"
+    note="Identifies a logical gap in the 2011 optimality proof and repairs it, with a corrected connection radius that shrinks as (log n / n)^(1/(d+1)) — larger than the original, to account for the ordering of the samples."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the Desks of ROS Maintainers: A Survey of Modern and Capable Mobile Robotics Algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="What actually ships. The source for this chapter's claim that modern stacks replan with A*/hybrid A* at costmap rate rather than repairing with D*, and a good map of where each planner sits in a real navigation pipeline."
+  />
+  <Reference
+    authors="Orthey, A., Chamzas, C., and Kavraki, L. E."
+    year={2024}
+    title="Sampling-Based Motion Planning: A Comparative Review"
+    venue="Annual Review of Control, Robotics, and Autonomous Systems 7, 285–310"
+    doi="10.1146/annurev-control-061623-094742"
+    note="The current map of the planner zoo, benchmarked on 24 problems. Read it after this chapter to see where BIT*, AIT* and the informed-sampling family fit, and which planner actually wins on which structure."
+  />
+</References>

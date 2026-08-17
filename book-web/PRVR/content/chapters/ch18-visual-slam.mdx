@@ -1,0 +1,1261 @@
+---
+title: Visual and Visual-Inertial SLAM
+description: A pixel is a bearing, not a position. Reprojection factors, bundle adjustment as a factor graph, IMU preintegration on the manifold, and what marginalization really costs.
+chapter: 18
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Advanced
+readingTime: 60 min
+quote: Our first contribution is a preintegration theory that properly addresses the manifold structure of the rotation group.
+quoteAuthor: Christian Forster, Luca Carlone, Frank Dellaert, and Davide Scaramuzza
+quoteSource: On-Manifold Preintegration for Real-Time Visual-Inertial Odometry (2017)
+---
+
+import { ReprojectionPlayground } from '@/components/ch/ch18/reprojection-playground';
+import { PreintegrationTimeline } from '@/components/ch/ch18/preintegration-timeline';
+import { MarginalizationFillIn } from '@/components/ch/ch18/marginalization-fillin';
+import { SystemArchitectures } from '@/components/ch/ch18/system-architectures';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write the camera down as a generative measurement model, exactly as Chapter 10 wrote the LiDAR',
+    'Derive the reprojection factor and both of its Jacobian blocks under the ⊞ retraction',
+    'Recognize bundle adjustment as Chapter 15’s sparse least squares with the points eliminated first',
+    'Explain why a single camera cannot know scale, and what the IMU contributes that fixes it',
+    'Derive IMU preintegration on SO(3) and its O(1) bias correction — the chapter’s centerpiece',
+    'Compare MSCKF-style filtering with sliding-window smoothing, and price the marginalization each one performs',
+  ]}
+  prerequisites={[
+    'SO(3) and SE(3): exp, log, the right Jacobian, and the ⊞ / ⊟ retraction (Chapter 3)',
+    'Error-state filtering and why linearization points matter (Chapter 7)',
+    'Sensor models as probability distributions, written before any algorithm (Chapter 10)',
+    'Sparse nonlinear least squares, Schur elimination, and robust kernels (Chapter 15)',
+    'EKF SLAM’s marginalization and the overconfidence it produced (Chapter 14)',
+  ]}
+>
+Every sensor in this book so far has measured a *distance*. A wheel encoder counts a distance
+travelled; a LiDAR beam returns a distance to a wall. A camera measures something stranger and
+much less helpful: the *direction* to a point, with the distance divided away.
+
+That single fact — depth is annihilated by the projection — organizes the entire chapter. It is why
+a camera needs two views before it can say anything metric, why monocular systems are blind to
+scale, why an IMU is such a perfect partner, and why the estimation problem, once you write the
+measurement model down honestly, turns out to be a factor graph you already know how to solve.
+
+There is no new theory here. There is one new measurement model (the pinhole camera), one new
+motion sensor (the strapdown IMU), and one genuinely beautiful trick for making the second one
+affordable. Everything else is [Chapter 3](/chapters/ch03-geometry-of-motion),
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds), and
+[Chapter 15](/chapters/ch15-factor-graphs) meeting a camera.
+</Overview>
+
+## The photograph that cannot locate you
+
+Point a calibrated camera at the Apartment and take one picture. A corner of the doorway lands at
+pixel $(336, 232)$. Where is the camera?
+
+The honest answer is that the photograph has told you almost nothing about position. It has told
+you a *direction*: the corner lies somewhere on the ray through the optical centre and that pixel.
+Slide the camera forward along that ray, and slide the corner with it, and the picture is
+byte-for-byte identical. A pixel is a bearing.
+
+<Deferred>
+  <ReprojectionPlayground />
+</Deferred>
+
+Watch the left-hand image pane while the purple estimate slides along the green ray. Camera 0's
+residual is not *small*; it is exactly zero, at every depth, forever. The measurement is perfectly
+explained by an entire one-parameter family of 3-D points, and no amount of care in the front end
+will change that, because the information was destroyed by the division by $Z$ before the pixel was
+ever written.
+
+Camera 1 is the only witness that objects, and how loudly it objects is set by the **baseline**.
+Drag the baseline slider to 0.1 m and watch the same metre of depth error shrink from tens of
+pixels to a handful, while the reported $\sigma_Z$ climbs. That number is not decoration: it is
+$\sigma_Z = Z^2 \sigma_{\text{px}} / (f b)$, and it is the whole economics of stereo in one
+expression. Depth error grows with the *square* of range and inversely with the baseline you can
+afford to carry.
+
+<KeyIdea title="The one sentence version">
+A camera measures bearings. Depth exists only in the disagreement between two bearings, so all of
+visual SLAM is the business of accumulating enough disagreement — and an IMU is what supplies the
+metre that a lone camera never had.
+</KeyIdea>
+
+## Building intuition: three things a camera cannot do
+
+Before any algebra, three failure modes worth carrying through the chapter. Each is visible in the
+widget above, and each is a theorem in the next section.
+
+**It cannot see depth from one view.** Already established. The consequence for estimation is that
+a fresh landmark has *no* prior at all along its ray; systems either delay initialization until
+parallax accumulates, or parameterize by inverse depth so that "infinitely far" is a finite number.
+
+**It cannot see scale, ever, if it is alone.** Take the true reconstruction and multiply every
+camera centre and every point by two. Every ray is unchanged, every pixel is unchanged, every
+residual is unchanged. Monocular SLAM does not have a scale error; it has no scale at *all*, and
+reporting one would be a lie. This is a gauge freedom, not a noise problem, and no amount of data
+removes it.
+
+**It cannot triangulate under pure rotation.** Spin the camera on the spot and the scene sweeps
+across the image dramatically — an enormous amount of pixel motion carrying exactly zero
+information about depth, because the two rays to any point are the same ray. Parallax, not motion,
+is the currency.
+
+An IMU repairs the second one and helps with the first. It measures angular rate and specific
+force — that is, metres per second squared — so integrating it twice produces *metres*. Bolting a
+gyro and an accelerometer to the camera makes scale observable, makes roll and pitch observable
+(gravity is a permanent plumb line), and leaves exactly four directions unobservable forever:
+global position and heading. That count is worth remembering, because a system that reports a
+covariance for global yaw is a system that has fooled itself.
+
+## The mathematics
+
+### The camera as a probabilistic sensor
+
+[Chapter 10](/chapters/ch10-sensor-models) established the discipline: write $p(z \mid x, m)$
+first, and only then ask what algorithm can invert it. For a pinhole camera the model is one line.
+
+<NotationTable
+  rows={[
+    { sym: '\\mat{K},\\ (f_x, f_y, c_x, c_y)', meaning: 'Camera intrinsics: focal lengths and principal point in pixels. Lens distortion exists and is calibrated away before any model here applies.' },
+    { sym: '\\pi : \\mathbb{R}^3 \\to \\mathbb{R}^2', meaning: 'Perspective projection: divide by depth, scale by the focal lengths, add the principal point. Defined only in front of the camera.' },
+    { sym: 'T_{cw} \\in \\SEthree', meaning: 'World-to-camera pose. A world point becomes a camera point under it; the translation of its inverse is the camera centre.' },
+    { sym: '\\vv{q}', meaning: 'The calibrated bearing of a pixel — the inverse intrinsics applied to the homogeneous pixel, normalized to unit length.' },
+    { sym: '\\vv{e}_{kj}', meaning: 'Reprojection residual of point j in keyframe k, measured in pixels.' },
+    { sym: '\\mat{E} = [\\vv{t}]_\\times \\mat{R}', meaning: 'Essential matrix: the epipolar constraint between the two calibrated bearings of the same point.' },
+    { sym: '\\vv{b} = (\\vv{b}_g, \\vv{b}_a)', meaning: 'Gyroscope and accelerometer biases; slowly varying, modeled as random walks, and always part of the state.' },
+    { sym: '\\Delta \\mat{R}_{ij}, \\Delta \\vv{v}_{ij}, \\Delta \\vv{p}_{ij}', meaning: 'Preintegrated rotation, velocity, and position deltas between keyframes i and j.' },
+    { sym: '\\vv{g}', meaning: 'Gravity in the world frame. It never appears inside the deltas — that is precisely the point of them.' },
+  ]}
+/>
+
+The measurement equation, and everything else in this chapter is a consequence of it:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{\vv{z}_{kj}}
+= \pi\big(\htmlClass{term-posterior}{T_{cw,k}}\, \htmlClass{term-posterior}{{}^{w}\vv{P}_j}\big)
++ \boldsymbol{\delta}_{kj},
+\qquad
+\boldsymbol{\delta}_{kj} \sim \Normal(\vv{0},\, \sigma_{\text{px}}^2 \mat{I}_2)
+$$
+</LinkedMath>
+
+Two remarks on the noise. First, $\sigma_{\text{px}}$ of one to two pixels is a statement about the
+*detector*, not the optics, and it is the same number for a point at 1 m and a point at 50 m —
+which is exactly why depth uncertainty explodes with range while pixel uncertainty does not.
+Second, this Gaussian is a lie in the tails: a mismatched feature is not a large draw from
+$\Normal(0, \sigma^2)$, it is a draw from a different distribution entirely. Chapter 15's robust
+kernels exist for that, and every deployed visual system uses one.
+
+### Derivation 1: the reprojection factor and its Jacobians
+
+The MAP estimate over keyframe poses $\{T_{cw,k}\}$ and points $\{{}^{w}\vv{P}_j\}$ minimizes the
+negative log-likelihood of every observation. With Gaussian pixel noise that is a sum of squares:
+
+<LinkedMath>
+$$
+\{T^\star, \vv{P}^\star\} = \arg\min \sum_{(k,j) \in \mathcal{O}}
+\tfrac{1}{2}\,\big\|\underbrace{\htmlClass{term-measurement}{\vv{z}_{kj}} - \pi(T_{cw,k}\,{}^{w}\vv{P}_j)}_{\vv{e}_{kj}}\big\|^2_{\mat{Q}_{\text{px}}^{-1}}
+$$
+</LinkedMath>
+
+That is bundle adjustment, and it is a factor graph: one variable per keyframe, one per point, one
+binary factor per observation. Chapter 15's Gauss–Newton needs exactly two Jacobian blocks per
+factor, and both come from the chain rule.
+
+<Derivation title="The 2×3 and 2×6 blocks of a reprojection factor" result="\partial \pi / \partial \boldsymbol{\xi} = \mat{J}_\pi \mat{R}_{cw} \,(\, \mat{I} \mid -[{}^{w}\vv{P}]_\times )">
+**Step 1 — differentiate the projection itself.** With ${}^{c}\vv{P} = (X, Y, Z)^\top$,
+
+$$
+\mat{J}_\pi \;=\; \frac{\partial \pi}{\partial {}^{c}\vv{P}}
+= \begin{pmatrix}
+\dfrac{f_x}{Z} & 0 & -\dfrac{f_x X}{Z^2} \\[2ex]
+0 & \dfrac{f_y}{Z} & -\dfrac{f_y Y}{Z^2}
+\end{pmatrix}
+$$
+
+Everything painful about cameras lives in this matrix. Its overall scale is $f/Z$, so a distant
+point barely moves; its third column carries the $1/Z^2$ that blows up as a point approaches the
+image plane, which is why every real system gates the near frustum before the optimizer can divide
+by something close to zero.
+
+**Step 2 — perturb the pose on the manifold, not in coordinates.** The book's retraction is the
+right one, $T \bplus \boldsymbol{\xi} = T \exp(\boldsymbol{\xi}^\wedge)$ with
+$\boldsymbol{\xi} = (\boldsymbol{\rho}, \boldsymbol{\phi})$, translation first. To first order,
+$\exp(\boldsymbol{\xi}^\wedge)\,\vv{P} \approx \vv{P} + \boldsymbol{\rho} + \boldsymbol{\phi} \times \vv{P}
+= \vv{P} + \boldsymbol{\rho} - [\vv{P}]_\times \boldsymbol{\phi}$, so
+
+$$
+{}^{c}\vv{P}(\boldsymbol{\xi}) = T_{cw} \exp(\boldsymbol{\xi}^\wedge)\, {}^{w}\vv{P}
+\approx {}^{c}\vv{P} + \mat{R}_{cw}\boldsymbol{\rho} - \mat{R}_{cw}[{}^{w}\vv{P}]_\times \boldsymbol{\phi}
+$$
+
+**Step 3 — compose.** Multiplying by $\mat{J}_\pi$ gives the $2\times 6$ pose block and, since
+${}^{c}\vv{P} = \mat{R}_{cw}{}^{w}\vv{P} + \vv{t}$, the $2\times 3$ point block:
+
+$$
+\frac{\partial \pi}{\partial \boldsymbol{\xi}} = \mat{J}_\pi \mat{R}_{cw}
+\begin{pmatrix} \mat{I}_3 & -[{}^{w}\vv{P}]_\times \end{pmatrix},
+\qquad
+\frac{\partial \pi}{\partial\, {}^{w}\vv{P}} = \mat{J}_\pi \mat{R}_{cw}
+$$
+
+The residual is $\vv{e} = \vv{z} - \pi$, so its Jacobians are these with the sign flipped — which
+cancels in $\mat{J}^\mathsf{T}\mat{J}$ and survives in $\mat{J}^\mathsf{T}\vv{e}$.
+
+**Step 4 — read the numbers.** Take $f_x = f_y = 400$, $(c_x, c_y) = (320, 240)$, a camera at the
+origin looking down $+Z$, and the point ${}^{w}\vv{P} = (0.2, -0.1, 5)$. Then $f/Z = 80$ and
+
+$$
+\mat{J}_\pi = \begin{pmatrix} 80 & 0 & -3.2 \\ 0 & 80 & 1.6 \end{pmatrix},
+\qquad
+\frac{\partial \pi}{\partial \boldsymbol{\xi}} =
+\begin{pmatrix}
+80 & 0 & -3.2 & 0.32 & 400.64 & 8.00 \\
+0 & 80 & 1.6 & -400.16 & -0.32 & 16.00
+\end{pmatrix}
+$$
+
+Every entry is checkable by hand from Step 3, and the comparison to make is between the third
+column and the fifth. Rotating the camera by one milliradian about its $y$ axis moves this pixel by
+0.40 px; translating it one *centimetre along its own optical axis* moves the same pixel by
+0.03 px. A camera is a superb angle sensor and a hopeless rangefinder, and that ratio — 125:1 at
+5 m — grows linearly with depth.
+
+**Conventions.** Some texts perturb on the left, $\exp(\boldsymbol{\xi}^\wedge) T$, which replaces
+$[{}^{w}\vv{P}]_\times$ with $[{}^{c}\vv{P}]_\times$ and changes nothing about the optimum. Chapter
+3 fixes the book's convention; mixing the two is the single most common source of a bundle adjuster
+that converges to the wrong thing at a quarter of the expected rate.
+</Derivation>
+
+### Derivation 2: bundle adjustment eliminates the points first
+
+Stack the unknowns as poses $\boldsymbol{\xi}$ then points $\vv{p}$. Because no factor ever touches
+two points, the normal equations have an arrowhead:
+
+<LinkedMath>
+$$
+\begin{pmatrix}
+\htmlClass{term-posterior}{\mat{H}_{pp}} & \mat{H}_{pl} \\
+\mat{H}_{pl}^\mathsf{T} & \htmlClass{term-prior}{\mat{H}_{ll}}
+\end{pmatrix}
+\begin{pmatrix} \Delta\boldsymbol{\xi} \\ \Delta\vv{p} \end{pmatrix}
+=
+\begin{pmatrix} \vv{g}_p \\ \vv{g}_l \end{pmatrix},
+\qquad
+\mat{H}_{ll} = \diag(\mat{H}_1, \ldots, \mat{H}_L)
+$$
+</LinkedMath>
+
+$\mat{H}_{ll}$ is block diagonal with $3 \times 3$ blocks, so inverting it costs $L$ tiny inverses.
+Eliminating the points is Chapter 15's variable elimination with a favourable ordering, and it has
+a name of its own in the vision literature: the **Schur complement trick**.
+
+<Derivation title="Schur elimination, and where the fill-in goes" result="\mat{S} = \mat{H}_{pp} - \mat{H}_{pl}\mat{H}_{ll}^{-1}\mat{H}_{pl}^\mathsf{T}">
+**Step 1 — solve the second block row for the points.** From
+$\mat{H}_{pl}^\mathsf{T}\Delta\boldsymbol{\xi} + \mat{H}_{ll}\Delta\vv{p} = \vv{g}_l$,
+
+$$
+\Delta\vv{p} = \mat{H}_{ll}^{-1}\big(\vv{g}_l - \mat{H}_{pl}^\mathsf{T}\Delta\boldsymbol{\xi}\big)
+$$
+
+**Step 2 — substitute into the first.** This gives the *reduced camera system*
+
+$$
+\underbrace{\big(\mat{H}_{pp} - \mat{H}_{pl}\mat{H}_{ll}^{-1}\mat{H}_{pl}^\mathsf{T}\big)}_{\mat{S}}
+\Delta\boldsymbol{\xi}
+= \vv{g}_p - \mat{H}_{pl}\mat{H}_{ll}^{-1}\vv{g}_l
+$$
+
+whose size is $6K$ — six per keyframe — no matter how many million points the map holds.
+
+**Step 3 — ask what $\mat{S}$ looks like.** The correction term is a sum over points, and point $j$
+contributes only to the pose pairs $(k, k')$ that both observed it. So the sparsity pattern of the
+reduced system is exactly the **covisibility graph**: two keyframes are coupled if and only if they
+saw a common landmark. That is where the map's information went — not deleted, relocated.
+
+**Step 4 — count.** The chapter's worked scene has 8 cameras on a ring, 40 points, and 320
+observations. The full system is $162 \times 162$; with camera 0 pinned as the gauge, the reduced
+system is $42 \times 42$ — and the cost of forming it is linear in the number of points. That ratio
+is why bundle adjustment scales to city blocks, and it is literally the same `reduce` step the
+information filter of [Chapter 14](/chapters/ch14-ekf-slam) performed, with $3\times3$ blocks
+instead of $2\times2$.
+</Derivation>
+
+<Callout type="info">
+Notice what has just happened. The "map" in visual SLAM is not privileged: points are *eliminated*
+because they are cheap to eliminate, and the surviving problem is over poses. The same algebra,
+applied to old poses instead of points, is the marginalization that Derivation 5 will make you pay
+for.
+</Callout>
+
+### Derivation 3: two views in ninety seconds
+
+Everything metric a camera pair can say comes from one geometric fact: the two rays and the
+baseline joining the two camera centres are coplanar.
+
+<Derivation title="Epipolar constraint, triangulation, and the scale you cannot see" result="\vv{q}_2^\mathsf{T} [\vv{t}]_\times \mat{R}\, \vv{q}_1 = 0">
+**Step 1 — coplanarity.** Let camera 2 be at $(\mat{R}, \vv{t})$ relative to camera 1, and let
+$\vv{q}_1, \vv{q}_2$ be the calibrated bearings of the same point. Expressed in camera 2's frame,
+the three vectors $\vv{q}_2$, $\mat{R}\vv{q}_1$ and $\vv{t}$ lie in one plane, so their triple
+product vanishes:
+
+$$
+\vv{q}_2 \cdot \big(\vv{t} \times \mat{R}\vv{q}_1\big) = 0
+\qquad\Longleftrightarrow\qquad
+\vv{q}_2^\mathsf{T} \underbrace{[\vv{t}]_\times \mat{R}}_{\mat{E}} \vv{q}_1 = 0
+$$
+
+**Step 2 — count degrees of freedom.** $\mat{E}$ has 5: three for $\mat{R}$, two for the
+*direction* of $\vv{t}$. Its magnitude is absent from the constraint, because scaling $\vv{t}$
+scales the whole equation. Five constraints from five point correspondences determine it — the
+five-point algorithm, which we name and do not derive.
+
+**Step 3 — the gauge.** Take any reconstruction and map $\vv{C}_k \mapsto s\vv{C}_k$,
+${}^{w}\vv{P}_j \mapsto s\,{}^{w}\vv{P}_j$, leaving rotations alone. Then
+${}^{c}\vv{P} = \mat{R}(\,{}^{w}\vv{P} - \vv{C}) \mapsto s\,{}^{c}\vv{P}$, and since
+$\pi(s{}^{c}\vv{P}) = \pi({}^{c}\vv{P})$ — the $s$ cancels in $X/Z$ — *every residual is exactly
+invariant*. Scale is a null direction of the Hessian, not a poorly determined one. Fixing it needs
+information from outside the images: a known baseline (stereo), a known object, or an
+accelerometer.
+
+**Step 4 — triangulate, and propagate the noise.** Two rays over-determine a point; the linear
+(DLT) solution stacks the two cross-product constraints per view and solves a $4 \times 3$
+least-squares system. For the classic fronto-parallel pair with baseline $b$, disparity is
+$d = f b / Z$, so $|\mathrm{d}Z/\mathrm{d}d| = Z^2/(f b)$ and
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\sigma_Z} = \frac{Z^2\,\sigma_{\text{px}}}{f\,b}
+$$
+</LinkedMath>
+
+**Step 5 — degeneracy.** If the motion is a pure rotation then $\vv{t} = \vv{0}$, $\mat{E}$
+vanishes identically, the two camera centres coincide, and the parallax angle at every point is
+zero. No depth, at any noise level, from any number of frames. Modern monocular systems test the
+parallax angle before initializing a landmark for exactly this reason.
+</Derivation>
+
+**The worked example, by hand.** Camera intrinsics $f_x = f_y = 400$, $(c_x, c_y) = (320, 240)$;
+camera 0 at the origin, camera 1's centre at $(0.5, 0, 0)$, both looking down $+Z$; a point at
+${}^{w}\vv{P} = (0.2, -0.1, 5)$.
+
+- Camera 0 sees it at $(400 \cdot 0.2/5 + 320,\; 400 \cdot (-0.1)/5 + 240) = (336, 232)$.
+- Camera 1 sees the point at ${}^{c}\vv{P} = (-0.3, -0.1, 5)$, so at $(296, 232)$. Disparity: 40 px.
+- Stretch the point 10% along camera 0's ray, to $(0.22, -0.11, 5.5)$. Camera 0's pixel does not
+  move *at all* — the coordinates scaled together and the ratio is unchanged. Camera 1's moves to
+  $400 \cdot (-0.28)/5.5 + 320 = 299.636$, that is $40/11 = 3.636$ px.
+- One pixel of matching noise therefore buys $\sigma_Z = 5^2 \cdot 1 / (400 \cdot 0.5) = 0.125$ m of
+  depth uncertainty. Move the point to 10 m and it is 0.5 m; shrink the baseline to 10 cm and it is
+  0.625 m.
+
+Those five numbers are the reason this chapter exists, and each of them is pinned by a test in
+`lib/vision/__checks_ch18__.ts` and reproduced by the Rust below.
+
+### Derivation 4: IMU preintegration on the manifold
+
+Now the second sensor. A strapdown IMU reports, in the body frame,
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{\tilde{\boldsymbol{\omega}}_k} = \boldsymbol{\omega}_k + \vv{b}_g + \boldsymbol{\eta}_g,
+\qquad
+\htmlClass{term-measurement}{\tilde{\vv{a}}_k} = \mat{R}_k^\mathsf{T}\big(\vv{a}_k - \vv{g}\big) + \vv{b}_a + \boldsymbol{\eta}_a
+$$
+</LinkedMath>
+
+Read that second equation carefully, because it contains the chapter's other big misconception. An
+accelerometer does not measure acceleration; it measures **specific force**, which is acceleration
+*minus gravity*, rotated into the body frame. An IMU sitting still on a table reads 9.81 m/s²
+upward. Nothing about position appears anywhere, and nothing about attitude appears in the gyro:
+both are things you get only by integrating, and integrating is where the trouble starts.
+
+The trouble is not accuracy, it is *cost*. Put the raw samples into a factor graph naively and each
+of them becomes a factor between consecutive states — thousands of variables per second. Put them
+into a single factor between keyframes and the integral starts from $\mat{R}_i, \vv{v}_i, \vv{p}_i$,
+which the optimizer is currently changing, so every iteration re-runs the whole integration.
+Lupton and Sukkarieh's insight, made rigorous on $\SOthree$ by Forster et al., is that the
+dependence on the initial state can be factored out completely.
+
+<Derivation title="Preintegrated deltas, their covariance, and the O(1) bias update" result="\Delta \mat{R}_{ij} = \textstyle\prod \exp((\tilde{\boldsymbol{\omega}}_k - \vv{b}_g)^\wedge \Delta t)">
+**Step 1 — write the strapdown integration, one sample at a time.** With step $\Delta t$:
+
+$$
+\begin{aligned}
+\mat{R}_{k+1} &= \mat{R}_k \exp\big((\tilde{\boldsymbol{\omega}}_k - \vv{b}_g - \boldsymbol{\eta}_g)^\wedge \Delta t\big) \\
+\vv{v}_{k+1} &= \vv{v}_k + \vv{g}\,\Delta t + \mat{R}_k (\tilde{\vv{a}}_k - \vv{b}_a - \boldsymbol{\eta}_a)\,\Delta t \\
+\vv{p}_{k+1} &= \vv{p}_k + \vv{v}_k \Delta t + \tfrac{1}{2}\vv{g}\,\Delta t^2
+        + \tfrac{1}{2}\mat{R}_k (\tilde{\vv{a}}_k - \vv{b}_a - \boldsymbol{\eta}_a)\,\Delta t^2
+\end{aligned}
+$$
+
+Unrolling from $i$ to $j$ gives $\mat{R}_j$ as a product of exponentials and $\vv{v}_j, \vv{p}_j$ as
+sums in which *every* term carries an $\mat{R}_k$ — and every $\mat{R}_k$ carries $\mat{R}_i$.
+
+**Step 2 — move the initial state to the left.** Define the three deltas by *solving* those
+equations for the measurement-dependent part:
+
+$$
+\begin{aligned}
+\Delta \mat{R}_{ij} &\;\equiv\; \mat{R}_i^\mathsf{T}\mat{R}_j &&= \textstyle\prod \exp\big((\tilde{\boldsymbol{\omega}}_k - \vv{b}_g)^\wedge \Delta t\big) \\
+\Delta \vv{v}_{ij} &\;\equiv\; \mat{R}_i^\mathsf{T}\big(\vv{v}_j - \vv{v}_i - \vv{g}\,\Delta t_{ij}\big) &&= \textstyle\sum \Delta\mat{R}_{ik}(\tilde{\vv{a}}_k - \vv{b}_a)\Delta t \\
+\Delta \vv{p}_{ij} &\;\equiv\; \mat{R}_i^\mathsf{T}\big(\vv{p}_j - \vv{p}_i - \vv{v}_i \Delta t_{ij} - \tfrac{1}{2}\vv{g}\Delta t_{ij}^2\big) &&= \textstyle\sum\big[\Delta\vv{v}_{ik}\Delta t + \tfrac{1}{2}\Delta\mat{R}_{ik}(\tilde{\vv{a}}_k - \vv{b}_a)\Delta t^2\big]
+\end{aligned}
+$$
+
+The right-hand sides contain measurements and biases and *nothing else*. Gravity has moved to the
+left. That is the whole trick: compute the right-hand sides once, and the left-hand sides become a
+residual the optimizer can evaluate in constant time, for any states it currently believes in.
+
+**Step 3 — the residual.** With $\vv{r} = (\vv{r}_{\Delta R}, \vv{r}_{\Delta v}, \vv{r}_{\Delta p})$,
+
+<LinkedMath>
+$$
+\begin{aligned}
+\vv{r}_{\Delta R} &= \operatorname{Log}\big(\Delta\tilde{\mat{R}}_{ij}^\mathsf{T}\, \mat{R}_i^\mathsf{T} \mat{R}_j\big) \\
+\vv{r}_{\Delta v} &= \htmlClass{term-posterior}{\mat{R}_i^\mathsf{T}(\vv{v}_j - \vv{v}_i - \vv{g}\Delta t_{ij})} - \htmlClass{term-measurement}{\Delta\tilde{\vv{v}}_{ij}} \\
+\vv{r}_{\Delta p} &= \htmlClass{term-posterior}{\mat{R}_i^\mathsf{T}(\vv{p}_j - \vv{p}_i - \vv{v}_i\Delta t_{ij} - \tfrac12 \vv{g}\Delta t_{ij}^2)} - \htmlClass{term-measurement}{\Delta\tilde{\vv{p}}_{ij}}
+\end{aligned}
+$$
+</LinkedMath>
+
+One nine-dimensional factor tying two navigation states. Purple is what the estimator believes;
+green is what the IMU reported.
+
+**Step 4 — propagate the covariance alongside.** Linearizing the error
+$(\delta\boldsymbol{\phi}, \delta\vv{v}, \delta\vv{p})$ through one step gives
+$\boldsymbol{\Sigma} \leftarrow \mat{A}\boldsymbol{\Sigma}\mat{A}^\mathsf{T} + \mat{B}\boldsymbol{\Sigma}_\eta \mat{B}^\mathsf{T}$
+with
+
+$$
+\mat{A} = \begin{pmatrix}
+\Delta\mat{R}_{k,k+1}^\mathsf{T} & \mat{0} & \mat{0} \\
+-\Delta\mat{R}_{ik}[\tilde{\vv{a}}_k - \vv{b}_a]_\times \Delta t & \mat{I} & \mat{0} \\
+-\tfrac12 \Delta\mat{R}_{ik}[\tilde{\vv{a}}_k - \vv{b}_a]_\times \Delta t^2 & \mat{I}\Delta t & \mat{I}
+\end{pmatrix},
+\quad
+\mat{B} = \begin{pmatrix}
+\mat{J}_r^k \Delta t & \mat{0} \\
+\mat{0} & \Delta\mat{R}_{ik}\Delta t \\
+\mat{0} & \tfrac12 \Delta\mat{R}_{ik}\Delta t^2
+\end{pmatrix}
+$$
+
+$\mat{J}_r$ is the right Jacobian of $\SOthree$ from Chapter 3, and it is not decoration: adding a
+small rotation increment to a rotation vector is not the same as composing rotations, and $\mat{J}_r$
+is precisely the correction. The lower-left blocks of $\mat{A}$ are the leak: an attitude error tilts
+the integrated acceleration, so gyro noise pours into velocity and then into position. That is why
+$\sigma_p$ grows like $\Delta t^{3/2}$ from accelerometer noise alone but heads toward
+$\Delta t^{5/2}$ once the gyro contributes.
+
+**Step 5 — absorb bias changes to first order.** The optimizer will change its bias estimate, and
+re-integrating 200 samples every time it does would undo the whole saving. So accumulate
+$\partial \Delta\mat{R}/\partial\vv{b}_g$, $\partial\Delta\vv{v}/\partial\vv{b}_{g,a}$ and
+$\partial\Delta\vv{p}/\partial\vv{b}_{g,a}$ by the same recursion, and update analytically:
+
+$$
+\Delta\mat{R}_{ij}(\vv{b}_g + \delta\vv{b}_g) \approx \Delta\mat{R}_{ij}(\vv{b}_g)\,
+\exp\Big(\big(\mat{J}^{b_g}_{\Delta R}\,\delta\vv{b}_g\big)^\wedge\Big),
+\qquad
+\Delta\vv{v} \mathrel{+}= \mat{J}^{b_g}_{\Delta v}\delta\vv{b}_g + \mat{J}^{b_a}_{\Delta v}\delta\vv{b}_a
+$$
+
+Five small matrix products instead of an $O(n)$ integration. The approximation is first order in
+$\delta\vv{b}$, so systems re-linearize — that is, actually re-integrate — once the bias estimate
+has moved far enough.
+</Derivation>
+
+**A preintegration example you can check by hand.** Feed the integrator a constant yaw rate:
+$\tilde{\omega}_z = 0.51$ rad/s for 2 s, at 200 Hz, integrated at $\vv{b}_g = \vv{0}$. Since the
+rotation axis never changes, the product telescopes and
+$\Delta\mat{R} = \mat{R}_z(0.51 \cdot 2) = \mat{R}_z(1.02\ \text{rad})$. The bias Jacobian for a
+fixed axis is $\mat{J}^{b_g}_{\Delta R} = -\Delta t_{ij}\mat{I}$, so correcting to
+$b_{g,z} = 0.01$ rad/s gives
+
+$$
+\Delta\mat{R}\,\exp\big((-0.01 \cdot 2)\,\vv{e}_z^\wedge\big) = \mat{R}_z(1.02 - 0.02) = \mat{R}_z(1.00\ \text{rad})
+$$
+
+which is exactly what a full re-integration at $b_{g,z} = 0.01$ produces — to $10^{-9}$ rad in the
+implementation. On a general trajectory the agreement is not exact, only second order in
+$\delta\vv{b}$: over a one-second turn, a bias error of 0.1 rad/s (about 6°/s, an appallingly bad
+gyro) leaves the corrected $\Delta\vv{p}$ 0.2 mm away from the re-integrated one, and cutting the
+bias error by ten cuts that by a hundred.
+
+<Deferred>
+  <PreintegrationTimeline />
+</Deferred>
+
+Two things in that widget deserve a second look. First, the covariance panel: after one second at
+200 Hz the factor's own uncertainty is 3.5 mrad in attitude, 2.6 cm/s in velocity, and 1.3 cm in
+position — and the off-diagonal blocks are large, because those three errors are not independent.
+An IMU factor is a strongly correlated nine-dimensional Gaussian, and treating its blocks
+separately throws away most of what it knows.
+
+Second, the residual bars. The IMU has a real gyro bias of $+0.05$ rad/s that the factor knows
+nothing about, and the rotation residual sits at fourteen standard deviations until you dial the
+bias in. That is the honest picture of why bias must be *in the state*: it is not noise, it does
+not average away, and a filter that omits it is exactly the overconfident-and-wrong filter of
+[Chapter 5](/chapters/ch05-bayes-filter)'s Markov discussion.
+
+### Derivation 5: two architectures, one posterior
+
+You now have two measurement models and a factor graph. There remain two ways to keep the problem
+bounded as the robot keeps driving, and the difference between them is the difference between the
+two families of deployed VIO systems.
+
+**MSCKF: keep poses, never keep landmarks.** Mourikis and Roumeliotis's multi-state constraint
+Kalman filter maintains a sliding window of camera poses inside an error-state EKF
+([Chapter 7](/chapters/ch07-ekf-ukf-manifolds)) and refuses to put landmarks in the state at all.
+When a feature track ends, stack its $M$ residuals:
+
+$$
+\vv{r} \approx \mat{H}_x \delta\vv{x} + \mat{H}_f \delta\vv{f} + \vv{n},
+\qquad \mat{H}_f \in \mathbb{R}^{2M \times 3}
+$$
+
+Let $\mat{N}$ be a basis for the left null space of $\mat{H}_f$, so $\mat{N}^\mathsf{T}\mat{H}_f = \mat{0}$
+(it has $2M - 3$ columns). Multiplying through,
+
+$$
+\mat{N}^\mathsf{T}\vv{r} \approx \mat{N}^\mathsf{T}\mat{H}_x\,\delta\vv{x} + \mat{N}^\mathsf{T}\vv{n}
+$$
+
+The landmark is gone — not estimated, not marginalized, *projected out* — and what remains is a
+constraint among the poses that saw it. The state stays a fixed size, the update is a standard EKF
+update, and the cost is linear in the track length. This is the same "eliminate the structure"
+move as the Schur complement of Derivation 2, performed with a QR instead of an inverse.
+
+**Sliding-window smoothing: keep everything recent, marginalize the rest.** VINS-style systems keep
+the last few keyframes, their velocities and biases, and the live features, and solve the full
+nonlinear problem every frame. When a keyframe falls off the back, they marginalize it in
+information form:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\boldsymbol{\Omega}'} = \boldsymbol{\Omega}_{\beta\beta}
+- \boldsymbol{\Omega}_{\beta\alpha}\boldsymbol{\Omega}_{\alpha\alpha}^{-1}\boldsymbol{\Omega}_{\alpha\beta}
+$$
+</LinkedMath>
+
+which is, once again, the Schur complement — the same operation, now applied to states rather than
+points. It is exact. It is also not free, and the bill has two lines.
+
+<Deferred>
+  <MarginalizationFillIn />
+</Deferred>
+
+**Line one: fill-in.** Every pair of survivors that touched the departing variable becomes directly
+coupled. The prior densifies, monotonically, and there is no ordering that prevents it — the
+information genuinely *is* shared between them now. Watch the block count in the widget: exact
+marginalization only ever adds.
+
+**Line two: frozen linearization.** The marginal prior is a quadratic built at the linearization
+point that was current when the variable left. Nothing can ever re-linearize it, because the
+variable it was linearized about is gone. This is [Chapter 14](/chapters/ch14-ekf-slam)'s original
+sin, resurrected inside a smoother, and the standard defence is the **first-estimates Jacobian**
+rule: evaluate the Jacobians of anything touching the prior at the estimates that were current when
+the prior was built, so the linearized system keeps the same unobservable subspace as the real one.
+Skip it and the estimator will manufacture information along global yaw
+([Huang, Mourikis & Roumeliotis 2010](https://journals.sagepub.com/doi/10.1177/0278364909353640)).
+
+<Callout type="warn">
+**SEIF's ghost.** The 1999–2000 draft of *Probabilistic Robotics* devoted a chapter to sparse
+extended information filters, whose central move was to *delete* weak links to keep the information
+matrix sparse. Turn on the widget's toggle and you are running that idea: sparsity comes back, and
+the oldest surviving keyframe's reported σ shrinks even though no measurement arrived to justify
+it. Modern practice answers the same question differently — keep the dense prior, but keep it small
+and freeze its linearization point — which is why this book teaches SEIF as a lesson rather than as
+an algorithm.
+</Callout>
+
+**Which architecture wins?** Neither, and the reason is instructive: they are approximations of the
+*same posterior* under different budgets. MSCKF is cheaper and degrades gracefully on weak hardware;
+sliding-window smoothing re-linearizes more and is usually more accurate when it can afford the
+iterations. The modern square-root formulations narrow the gap further by storing the marginal
+prior as a matrix square root, which survives single-precision arithmetic where the Hessian form
+does not ([Demmel et al. 2021](https://arxiv.org/abs/2109.02182)).
+
+## The algorithms
+
+<Algorithm
+  name="project_jacobians(K, T_cw, P_w)"
+  inputs="intrinsics, world-to-camera pose, world point"
+  outputs="pixel z, pose block (2×6), point block (2×3)"
+  complexity="O(1)"
+>
+1. ${}^{c}\vv{P} = T_{cw}\, {}^{w}\vv{P}$
+2. if ${}^{c}P_z \le z_{\min}$ then return $\varnothing$ &nbsp;&nbsp;*(the near-frustum gate)*
+3. $\vv{z} = (f_x\,{}^{c}P_x/{}^{c}P_z + c_x,\; f_y\,{}^{c}P_y/{}^{c}P_z + c_y)^\mathsf{T}$
+4. $\mat{J}_\pi = \begin{pmatrix} f_x/Z & 0 & -f_x X/Z^2 \\ 0 & f_y/Z & -f_y Y/Z^2\end{pmatrix}$
+5. $\mat{J}_{\text{point}} = \mat{J}_\pi \mat{R}_{cw}$
+6. $\mat{J}_{\text{pose}} = \big(\mat{J}_{\text{point}} \;\big|\; -\mat{J}_{\text{point}}[{}^{w}\vv{P}]_\times\big)$
+7. return $(\vv{z}, \mat{J}_{\text{pose}}, \mat{J}_{\text{point}})$
+</Algorithm>
+
+<Algorithm
+  name="ba_solve(poses, points, observations)"
+  inputs="initial poses and points, pixel observations, gauge"
+  outputs="MAP poses and points"
+  complexity="per iteration: O(F) to build, O(L) to eliminate points, O((6K)³) to solve the reduced system"
+>
+1. repeat
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\mat{H} \leftarrow 0,\ \vv{g} \leftarrow 0$
+3. &nbsp;&nbsp;&nbsp;&nbsp;for each observation $(k,j)$ do &nbsp;*(accumulate; $O(1)$ each)*
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\vv{e} = \vv{z}_{kj} - \pi(T_k \vv{P}_j)$, weight $w = \rho'(\|\vv{e}\|)$ &nbsp;*(Huber, Ch. 15)*
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;add $w\mat{J}^\mathsf{T}\mat{J}$ into $\mat{H}_{pp}, \mat{H}_{pl}, \mat{H}_{ll}$ and $w\mat{J}^\mathsf{T}\vv{e}$ into $\vv{g}$
+6. &nbsp;&nbsp;&nbsp;&nbsp;damp: $\mat{H}_{ii} \mathrel{+}= \lambda(1 + \mat{H}_{ii})$ &nbsp;*(Levenberg–Marquardt)*
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\mat{S} = \mat{H}_{pp} - \mat{H}_{pl}\mat{H}_{ll}^{-1}\mat{H}_{pl}^\mathsf{T}$ &nbsp;*(Schur; $L$ small inverses)*
+8. &nbsp;&nbsp;&nbsp;&nbsp;solve $\mat{S}\,\Delta\boldsymbol{\xi} = \vv{g}_p - \mat{H}_{pl}\mat{H}_{ll}^{-1}\vv{g}_l$
+9. &nbsp;&nbsp;&nbsp;&nbsp;$\Delta\vv{p} = \mat{H}_{ll}^{-1}(\vv{g}_l - \mat{H}_{pl}^\mathsf{T}\Delta\boldsymbol{\xi})$ &nbsp;*(back-substitute)*
+10. &nbsp;&nbsp;&nbsp;&nbsp;$T_k \leftarrow T_k \bplus \Delta\boldsymbol{\xi}_k$, &nbsp; $\vv{P}_j \leftarrow \vv{P}_j + \Delta\vv{p}_j$
+11. until $\|\Delta\| < \epsilon$
+</Algorithm>
+
+<Algorithm
+  name="preintegrate(samples[i..j], b)"
+  inputs="IMU samples over one keyframe interval, the bias to linearize at"
+  outputs="ΔR, Δv, Δp, Σ (9×9), bias Jacobians"
+  complexity="O(n) once per interval — never again inside the optimizer"
+>
+1. $\Delta\mat{R} \leftarrow \mat{I},\ \Delta\vv{v} \leftarrow \vv{0},\ \Delta\vv{p} \leftarrow \vv{0},\ \boldsymbol{\Sigma} \leftarrow \mat{0},\ \mat{J}_\bullet \leftarrow \mat{0}$
+2. for each sample $(\tilde{\boldsymbol{\omega}}, \tilde{\vv{a}})$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\hat{\boldsymbol{\omega}} = \tilde{\boldsymbol{\omega}} - \vv{b}_g$, &nbsp; $\hat{\vv{a}} = \tilde{\vv{a}} - \vv{b}_a$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$\boldsymbol{\Sigma} \leftarrow \mat{A}\boldsymbol{\Sigma}\mat{A}^\mathsf{T} + \mat{B}\boldsymbol{\Sigma}_\eta\mat{B}^\mathsf{T}$ &nbsp;*(before the means: $\mat{A}$ uses the old $\Delta\mat{R}$)*
+5. &nbsp;&nbsp;&nbsp;&nbsp;update the bias Jacobians by the same recursion
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\Delta\vv{p} \mathrel{+}= \Delta\vv{v}\Delta t + \tfrac12 \Delta\mat{R}\,\hat{\vv{a}}\,\Delta t^2$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\Delta\vv{v} \mathrel{+}= \Delta\mat{R}\,\hat{\vv{a}}\,\Delta t$
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\Delta\mat{R} \leftarrow \Delta\mat{R}\,\exp(\hat{\boldsymbol{\omega}}^\wedge \Delta t)$ &nbsp;*(re-orthonormalize)*
+9. return the factor
+</Algorithm>
+
+<Algorithm
+  name="marginalize(Ω, α)"
+  inputs="window information matrix, the variables leaving"
+  outputs="a dense prior over the survivors β"
+  complexity="O(|α|³ + |α||β|²) — and the fill-in is permanent"
+>
+1. partition $\boldsymbol{\Omega} = \begin{pmatrix}\boldsymbol{\Omega}_{\alpha\alpha} & \boldsymbol{\Omega}_{\alpha\beta} \\ \boldsymbol{\Omega}_{\beta\alpha} & \boldsymbol{\Omega}_{\beta\beta}\end{pmatrix}$, $\boldsymbol{\xi} = (\boldsymbol{\xi}_\alpha, \boldsymbol{\xi}_\beta)$
+2. $\boldsymbol{\Omega}' = \boldsymbol{\Omega}_{\beta\beta} - \boldsymbol{\Omega}_{\beta\alpha}\boldsymbol{\Omega}_{\alpha\alpha}^{-1}\boldsymbol{\Omega}_{\alpha\beta}$
+3. $\boldsymbol{\xi}' = \boldsymbol{\xi}_\beta - \boldsymbol{\Omega}_{\beta\alpha}\boldsymbol{\Omega}_{\alpha\alpha}^{-1}\boldsymbol{\xi}_\alpha$
+4. freeze the linearization point of every variable in $\beta$ that touches $\boldsymbol{\Omega}'$ &nbsp;*(FEJ)*
+5. return $(\boldsymbol{\Omega}', \boldsymbol{\xi}')$
+</Algorithm>
+
+## Implementation in Rust
+
+This is deliberately the smallest Practical section in Part V. The book's robot is a 2-D LiDAR
+platform; the job here is to transfer the *probabilistic structure* of visual-inertial estimation,
+not to build a fourth SLAM system. Two artifacts: a pinhole camera with exact Jacobians, and a
+preintegrator. The optimizer is Chapter 15's, unchanged.
+
+```rust title="crates/ch18_vio/src/pinhole.rs"
+use nalgebra::{Matrix2x3, Matrix2x6, Matrix3, Vector2, Vector3};
+use sophus::lie::Isometry3F64;   // SE(3): the Ch. 3 type, in 3-D
+
+/// A calibrated pinhole camera. Distortion is assumed already removed —
+/// every model in this chapter operates on rectified pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Pinhole {
+    pub fx: f64,
+    pub fy: f64,
+    pub cx: f64,
+    pub cy: f64,
+}
+
+/// Points nearer than this are not projected. Not numerical fussiness: the
+/// Jacobian's 1/Z² entries diverge, and one point drifting behind the camera
+/// during a step would otherwise produce an infinite gradient.
+pub const Z_MIN: f64 = 0.05;
+
+impl Pinhole {
+    /// π(P) for a point already in the camera frame.
+    pub fn project_cam(&self, p: &Vector3<f64>) -> Option<Vector2<f64>> {
+        if p.z <= Z_MIN {
+            return None;
+        }
+        Some(Vector2::new(
+            self.fx * p.x / p.z + self.cx,
+            self.fy * p.y / p.z + self.cy,
+        ))
+    }
+
+    /// π(T_cw · P_w).
+    pub fn project(&self, t_cw: &Isometry3F64, p_w: &Vector3<f64>) -> Option<Vector2<f64>> {
+        self.project_cam(&(t_cw * p_w))
+    }
+
+    /// ∂π/∂P_c — the 2×3 block with the famous 1/Z and 1/Z² entries.
+    fn d_pi(&self, p_c: &Vector3<f64>) -> Matrix2x3<f64> {
+        let iz = 1.0 / p_c.z;
+        Matrix2x3::new(
+            self.fx * iz, 0.0, -self.fx * p_c.x * iz * iz,
+            0.0, self.fy * iz, -self.fy * p_c.y * iz * iz,
+        )
+    }
+
+    /// Both Jacobian blocks of the projection, for the right retraction
+    /// T ⊞ ξ = T · exp(ξ), ξ = (ρ, φ) with translation first (Derivation 1).
+    ///
+    /// The residual is z − π, so a factor negates both of these; the sign
+    /// cancels in JᵀJ and survives in Jᵀe.
+    pub fn jacobians(
+        &self,
+        t_cw: &Isometry3F64,
+        p_w: &Vector3<f64>,
+    ) -> Option<(Matrix2x6<f64>, Matrix2x3<f64>)> {
+        let p_c = t_cw * p_w;
+        if p_c.z <= Z_MIN {
+            return None;
+        }
+        let r_cw: Matrix3<f64> = t_cw.rotation.to_rotation_matrix().into_inner();
+        let j_point = self.d_pi(&p_c) * r_cw;          // ∂π/∂P_w
+        let skew = skew3(p_w);                          // [P_w]×
+        let mut j_pose = Matrix2x6::zeros();
+        j_pose.fixed_columns_mut::<3>(0).copy_from(&j_point);
+        j_pose.fixed_columns_mut::<3>(3).copy_from(&(-j_point * skew));
+        Some((j_pose, j_point))
+    }
+}
+
+fn skew3(v: &Vector3<f64>) -> Matrix3<f64> {
+    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
+}
+
+/// The 1σ depth uncertainty of a fronto-parallel stereo pair, σ_Z = Z²σ/(f b).
+/// Quadratic in range, inverse in baseline — the economics of stereo.
+pub fn depth_sigma(cam: &Pinhole, baseline: f64, z: f64, sigma_px: f64) -> f64 {
+    z * z * sigma_px / (cam.fx * baseline)
+}
+
+/// A single reprojection factor: keyframe `kf` saw point `pt` at pixel `z`.
+pub struct ReprojFactor {
+    pub kf: usize,
+    pub pt: usize,
+    pub z: Vector2<f64>,
+    /// The square-root information Σ^{-1/2}. Pixel noise is isotropic, so one
+    /// scalar 1/σ stands in for a 2×2 matrix — and whitening here is what makes
+    /// the cost comparable across factors of different kinds.
+    pub inv_sigma: f64,
+}
+```
+
+The bundle adjuster is thirty lines of bookkeeping around Chapter 15's solver. The only part worth
+printing is the elimination, because that is where the structure of the problem shows up as code.
+
+```rust title="crates/ch18_vio/src/tiny_ba.rs" {29-46}
+use std::ops::SubAssign;
+
+use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, Matrix6x3, Vector3, Vector6};
+use sophus::lie::Isometry3F64;
+
+pub struct TinyBa {
+    pub poses: Vec<Isometry3F64>,
+    pub points: Vec<Vector3<f64>>,
+    pub factors: Vec<ReprojFactor>,
+    /// Reprojection error is blind to a rigid motion of the whole scene and,
+    /// monocular, to its scale. Something must be pinned: this is the gauge.
+    pub fixed: Vec<bool>,
+    pub sigma_px: f64,
+    pub huber: Option<f64>,
+}
+
+pub struct BaReport {
+    pub rmse_px: f64,
+    pub reduced_dim: usize,
+    pub full_dim: usize,
+}
+
+impl TinyBa {
+    /// One damped Gauss–Newton step with the points Schur-eliminated.
+    pub fn step(&mut self, lambda: f64) -> BaReport {
+        let (mut h_pp, h_pl, mut h_ll, g_p, g_l) = self.accumulate();
+
+        // Damping first, so the elimination sees the damped blocks. λ also
+        // quietly supplies the missing gauge: the scale direction has exactly
+        // zero curvature, and with damping the solver declines to move along it
+        // instead of dividing by zero.
+        for i in 0..g_p.len() { h_pp[(i, i)] += lambda * (1.0 + h_pp[(i, i)]); }
+        for b in h_ll.iter_mut() { for a in 0..3 { b[(a, a)] += lambda * (1.0 + b[(a, a)]); } }
+
+        // S = H_pp − Σ_j W_j H_pl[:,j]ᵀ, with W_j = H_pl[:,j] H_ll[j]⁻¹.
+        // Each landmark costs one 3×3 inverse and touches only the cameras that
+        // saw it — which is why the *pattern* of S is the covisibility graph.
+        let mut s = h_pp.clone();
+        let mut rhs = g_p.clone();
+        let w: Vec<Vec<Matrix6x3<f64>>> = h_ll
+            .iter()
+            .enumerate()
+            .map(|(j, hjj)| {
+                let inv = hjj.try_inverse().expect("a landmark seen twice is invertible");
+                h_pl.iter().map(|strip| strip[j] * inv).collect()
+            })
+            .collect();
+        for (j, wj) in w.iter().enumerate() {
+            for (a, wa) in wj.iter().enumerate() {
+                rhs.fixed_rows_mut::<6>(6 * a).sub_assign(&(wa * g_l[j]));
+                for (b, _) in wj.iter().enumerate() {
+                    let block: Matrix6<f64> = wa * h_pl[b][j].transpose();
+                    s.fixed_view_mut::<6, 6>(6 * a, 6 * b).sub_assign(&block);
+                }
+            }
+        }
+
+        let d_xi = s.cholesky().expect("S is SPD once damped").solve(&rhs);
+
+        // Back-substitution, then retract. Poses move on the manifold with ⊞;
+        // points are in ℝ³ and simply add.
+        for (a, k) in self.free_indices().enumerate() {
+            let xi: Vector6<f64> = d_xi.fixed_rows::<6>(6 * a).into();
+            self.poses[k] = self.poses[k] * Isometry3F64::exp(&xi);
+        }
+        for (j, hjj) in h_ll.iter().enumerate() {
+            let mut r = g_l[j];
+            for (a, strip) in h_pl.iter().enumerate() {
+                r -= strip[j].transpose() * d_xi.fixed_rows::<6>(6 * a);
+            }
+            self.points[j] += hjj.try_inverse().unwrap() * r;
+        }
+
+        self.report()
+    }
+}
+```
+
+Preintegration is the artifact worth writing by hand, because the ordering of the statements *is*
+the derivation: the covariance and the bias Jacobians both read the previous $\Delta\mat{R}$, so
+they must be updated before the deltas advance.
+
+```rust title="crates/ch18_vio/src/preint.rs" {35-54}
+use nalgebra::{Matrix3, SMatrix, Vector3};
+use sophus::lie::Rotation3F64;   // SO(3) with exp, log, and right Jacobian
+
+/// The 9×9 covariance of (δφ, δv, δp) and the 9×6 bias Jacobian. nalgebra's
+/// named aliases stop at 6, and const generics are clearer here anyway.
+pub type Matrix9 = SMatrix<f64, 9, 9>;
+pub type Matrix9x6 = SMatrix<f64, 9, 6>;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ImuSample { pub gyro: Vector3<f64>, pub acc: Vector3<f64> }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ImuBias { pub gyro: Vector3<f64>, pub acc: Vector3<f64> }
+
+/// One preintegrated interval: a single Gaussian factor standing in for
+/// hundreds of raw samples.
+pub struct Preintegrated {
+    pub dt_ij: f64,
+    pub n: usize,
+    pub d_rot: Rotation3F64,
+    pub d_vel: Vector3<f64>,
+    pub d_pos: Vector3<f64>,
+    /// Covariance of (δφ, δv, δp), in that block order.
+    pub cov: Matrix9,
+    /// ∂(ΔR, Δv, Δp)/∂(b_g, b_a): the O(1) bias update of Derivation 4, Step 5.
+    pub j_bias: Matrix9x6,
+    /// The bias these deltas were integrated at. Corrections are relative to it.
+    pub bias: ImuBias,
+}
+
+pub fn preintegrate(
+    samples: &[ImuSample],
+    dt: f64,
+    bias: ImuBias,
+    noise: ImuNoise,
+) -> Preintegrated {
+    let (mut d_rot, mut d_vel, mut d_pos) = (Rotation3F64::identity(), Vector3::zeros(), Vector3::zeros());
+    let mut cov = Matrix9::zeros();
+    let mut j_bias = Matrix9x6::zeros();
+
+    for s in samples {
+        let w = s.gyro - bias.gyro;
+        let a = s.acc - bias.acc;
+        let d_rk = Rotation3F64::exp(&(w * dt));
+        let jr = Rotation3F64::right_jacobian(&(w * dt));
+        let dr_a = d_rot.matrix() * skew3(&a);   // ΔR_ik [ã − b_a]×
+
+        // Σ ← A Σ Aᵀ + B Σ_η Bᵀ. The lower-left blocks of A are the leak: an
+        // attitude error tilts the integrated acceleration, which is why gyro
+        // noise ends up dominating position drift over long intervals.
+        let (a_mat, b_mat) = transition_blocks(&d_rot, &d_rk, &dr_a, &jr, dt);
+        cov = a_mat * cov * a_mat.transpose() + b_mat * noise.discrete(dt) * b_mat.transpose();
+
+        // Bias Jacobians, by the same recursion and with the same ordering.
+        update_bias_jacobians(&mut j_bias, &d_rot, &d_rk, &dr_a, &jr, dt);
+
+        // Only now may the deltas advance.
+        let dra = d_rot * a;
+        d_pos += d_vel * dt + 0.5 * dra * dt * dt;
+        d_vel += dra * dt;
+        d_rot = (d_rot * d_rk).orthonormalized();
+    }
+
+    Preintegrated { dt_ij: samples.len() as f64 * dt, n: samples.len(), d_rot, d_vel, d_pos, cov, j_bias, bias }
+}
+
+/// The payoff: a new bias estimate costs five small products, not a re-run.
+pub fn correct_for_bias(pre: &Preintegrated, b: ImuBias) -> (Rotation3F64, Vector3<f64>, Vector3<f64>) {
+    let db_g = b.gyro - pre.bias.gyro;
+    let db_a = b.acc - pre.bias.acc;
+    let j = &pre.j_bias;
+    (
+        pre.d_rot * Rotation3F64::exp(&(j.fixed_view::<3, 3>(0, 0) * db_g)),
+        pre.d_vel + j.fixed_view::<3, 3>(3, 0) * db_g + j.fixed_view::<3, 3>(3, 3) * db_a,
+        pre.d_pos + j.fixed_view::<3, 3>(6, 0) * db_g + j.fixed_view::<3, 3>(6, 3) * db_a,
+    )
+}
+
+/// `imu_residual` — the 9-vector tying navigation states i and j.
+/// Gravity appears *here*, not inside the deltas. That is exactly what makes
+/// the deltas state-independent, and also why the accelerometer makes roll and
+/// pitch observable while leaving global position and yaw free.
+pub fn imu_residual(pre: &Preintegrated, si: &NavState, sj: &NavState, g: &Vector3<f64>, b: ImuBias)
+    -> SMatrix<f64, 9, 1>
+{
+    let (d_rot, d_vel, d_pos) = correct_for_bias(pre, b);
+    let dt = pre.dt_ij;
+    let r_i = si.rot.matrix();
+    let r_rot = (d_rot.inverse() * si.rot.inverse() * sj.rot).log();
+    let r_vel = r_i.transpose() * (sj.vel - si.vel - g * dt) - d_vel;
+    let r_pos = r_i.transpose() * (sj.pos - si.pos - si.vel * dt - 0.5 * g * dt * dt) - d_pos;
+    SMatrix::<f64, 9, 1>::from_iterator(
+        r_rot.iter().chain(r_vel.iter()).chain(r_pos.iter()).copied(),
+    )
+}
+```
+
+### The worked example, and the test that pins it
+
+Everything the chapter claimed numerically, in one test file. The projection numbers are checkable
+with a calculator; the preintegration one is checkable with a pen, because a constant-axis rotation
+makes the bias correction exact.
+
+```rust title="crates/ch18_vio/tests/worked_example.rs"
+use approx::assert_relative_eq;
+use ch18_vio::{correct_for_bias, depth_sigma, preintegrate, ImuBias, ImuNoise, ImuSample, Pinhole};
+use nalgebra::{Vector2, Vector3};
+use sophus::lie::Isometry3F64;
+
+const CAM: Pinhole = Pinhole { fx: 400.0, fy: 400.0, cx: 320.0, cy: 240.0 };
+
+#[test]
+fn worked_example_ch18_two_views_of_one_point() {
+    let t1 = Isometry3F64::identity();                       // camera 0 at the origin
+    let t2 = Isometry3F64::from_translation(&Vector3::new(-0.5, 0.0, 0.0)); // centre at +0.5 x
+    let p = Vector3::new(0.2, -0.1, 5.0);
+
+    let z1 = CAM.project(&t1, &p).unwrap();
+    let z2 = CAM.project(&t2, &p).unwrap();
+    assert_relative_eq!(z1, Vector2::new(336.0, 232.0), epsilon = 1e-12);
+    assert_relative_eq!(z2, Vector2::new(296.0, 232.0), epsilon = 1e-12);
+    assert_relative_eq!(z1.x - z2.x, 40.0, epsilon = 1e-12);   // disparity
+
+    // Stretch the point 10% along camera 0's ray. Camera 0 cannot tell;
+    // camera 1 moves by 40/11 px. This is depth-blindness, quantified.
+    let stretched = p * 1.1;
+    assert_relative_eq!(CAM.project(&t1, &stretched).unwrap(), z1, epsilon = 1e-12);
+    let moved = (CAM.project(&t2, &stretched).unwrap() - z2).norm();
+    assert_relative_eq!(moved, 40.0 / 11.0, epsilon = 1e-9);
+
+    // One pixel of matching noise costs 12.5 cm of depth at 5 m.
+    assert_relative_eq!(depth_sigma(&CAM, 0.5, 5.0, 1.0), 0.125, epsilon = 1e-12);
+}
+
+#[test]
+fn worked_example_ch18_bias_correction_is_exact_for_a_fixed_axis() {
+    // 2 s of constant yaw rate at 200 Hz, integrated at b = 0.
+    let samples = vec![ImuSample { gyro: Vector3::new(0.0, 0.0, 0.51), acc: Vector3::new(0.0, 0.0, 9.81) }; 400];
+    let pre = preintegrate(&samples, 2.0 / 400.0, ImuBias::default(), ImuNoise::mems());
+
+    let raw = pre.d_rot.log().z;
+    assert_relative_eq!(raw, 1.02, epsilon = 1e-9);
+
+    let b = ImuBias { gyro: Vector3::new(0.0, 0.0, 0.01), acc: Vector3::zeros() };
+    let (corrected, _, _) = correct_for_bias(&pre, b);
+    assert_relative_eq!(corrected.log().z, 1.00, epsilon = 1e-9);
+
+    // …and the O(1) correction agrees with the O(n) re-integration exactly,
+    // because the rotation axis never changed. On a general trajectory the
+    // agreement is second order in δb, not exact.
+    let exact = preintegrate(&samples, 2.0 / 400.0, b, ImuNoise::mems());
+    assert_relative_eq!(corrected.log().z, exact.d_rot.log().z, epsilon = 1e-9);
+}
+```
+
+The TypeScript port that runs the widgets on this page is checked against the same numbers:
+`lib/vision/__checks_ch18__.ts` holds sixteen invariants, including analytic-versus-finite-difference
+agreement for both Jacobian blocks, exactness of DLT triangulation on noiseless pixels, the
+$\sqrt{\Delta t}$ and $\Delta t^{3/2}$ growth laws for the preintegrated covariance, and the fact
+that the Schur complement leaves the survivors' marginals numerically unchanged.
+
+### The same graph, in `factrs`
+
+Hand-rolling twice is pedagogy; hand-rolling in production is a bug farm. `factrs` 0.3 ships typed
+SE(3) variables, an `ImuBias` variable, and an IMU preintegrator, so the visual-inertial graph of
+this chapter is a page of code:
+
+```rust title="crates/ch18_vio/examples/factrs_vi.rs"
+use factrs::{
+    assign_symbols,
+    core::{GaussNewton, Graph, Huber, Values},
+    dtype, fac,
+    linalg::{Const, ForwardProp, Numeric, VectorX, vectorx},
+    residuals::{
+        Residual2,
+        imu_preint::{Accel, Gravity, Gyro, ImuCovariance, ImuPreintegrator},
+    },
+    traits::*,
+    variables::{ImuBias, SE3, VectorVar3},
+};
+
+// Type-tagged keys. The compiler will not let a velocity into a pose slot.
+assign_symbols!(X: SE3; V: VectorVar3; B: ImuBias; L: VectorVar3);
+
+/// The reprojection residual of Derivation 1 — written once, differentiated by
+/// factrs' dual numbers, so this file contains no hand-derived Jacobians.
+#[derive(Clone, Debug)]
+#[factrs::mark]
+pub struct Reprojection {
+    px: dtype,
+    py: dtype,
+    fx: dtype,
+    fy: dtype,
+    cx: dtype,
+    cy: dtype,
+}
+
+impl Residual2 for Reprojection {
+    type V1 = SE3;            // T_wc: the camera in the world
+    type V2 = VectorVar3;     // the landmark
+    type DimIn = Const<9>;
+    type DimOut = Const<2>;
+    type Differ = ForwardProp<Self::DimIn>;
+
+    fn residual2<T: Numeric>(&self, t_wc: SE3<T>, p_w: VectorVar3<T>) -> VectorX<T> {
+        let p_c = t_wc.inverse().apply(p_w.into());
+        vectorx![
+            T::from(self.fx) * p_c[0] / p_c[2] + T::from(self.cx) - T::from(self.px),
+            T::from(self.fy) * p_c[1] / p_c[2] + T::from(self.cy) - T::from(self.py)
+        ]
+    }
+}
+
+fn main() {
+    let data = two_keyframe_scene(0x5EE3D);   // 200 IMU samples, 6 shared landmarks
+    let mut values = Values::new();
+    let mut graph = Graph::new();
+
+    // Two keyframes, each with a pose, a velocity, and a bias.
+    for (k, kf) in data.keyframes().enumerate() {
+        values.insert(X(k), kf.pose);
+        values.insert(V(k), VectorVar3::from(kf.velocity));
+        values.insert(B(k), ImuBias::identity());
+    }
+    for (j, p) in data.landmark_guesses().enumerate() {
+        values.insert(L(j), VectorVar3::from(p));
+    }
+
+    // One preintegrated factor stands in for all 200 raw samples.
+    let mut preint = ImuPreintegrator::new(ImuCovariance::default(), ImuBias::identity(), Gravity::up());
+    for s in data.imu_samples() {
+        preint.integrate(&Gyro::new(s.gyro), &Accel::new(s.acc), s.dt);
+    }
+    graph.add_factor(preint.build(X(0), V(0), B(0), X(1), V(1), B(1)));
+
+    // Pixel observations get a Huber kernel: a mismatched feature is not a
+    // large Gaussian draw, it is a draw from a different distribution.
+    for o in data.observations() {
+        let r = Reprojection { px: o.u, py: o.v, fx: 400.0, fy: 400.0, cx: 320.0, cy: 240.0 };
+        graph.add_factor(fac![r, (X(o.kf), L(o.pt)), 1.0 as std, Huber::default()]);
+    }
+
+    let result = GaussNewton::new(graph).optimize(values).unwrap();
+    report(&result);   // velocity to ~2 cm/s, gyro bias to ~5e-4 rad/s
+}
+```
+
+<Callout type="warn">
+`factrs` runs native-side in this book. Its WebAssembly build is not exercised by the book's CI, so
+the widgets on this page run the TypeScript port instead — the same equations, checked against the
+same numbers. Where a chapter's crate does not build for the browser, the book says so rather than
+pretending.
+</Callout>
+
+## Putting it together: two real systems
+
+Everything above is machinery. A working visual-inertial SLAM system is machinery plus a great deal
+of engineering judgement about when to trust it, and the two most-cited open systems make almost
+opposite engineering choices while agreeing completely about the mathematics.
+
+<Deferred>
+  <SystemArchitectures />
+</Deferred>
+
+**ORB-SLAM3** (Campos et al., 2021) is feature-based and map-centric: ORB descriptors, three
+parallel threads, and an *Atlas* of sub-maps so that losing tracking starts a new map instead of
+corrupting the old one. Its visual-inertial contribution is to make the IMU initialization itself a
+maximum-a-posteriori problem rather than a heuristic, and its reported accuracy on the standard
+drone benchmarks — an average of 3.6 cm on EuRoC for the stereo-inertial configuration — is what
+made "2 to 5 times more accurate than previous approaches" a defensible claim rather than marketing.
+
+**VINS-Mono / VINS-Fusion** (Qin, Li & Shen, 2018) is optical-flow-based and window-centric: KLT
+tracks, a loosely-coupled bootstrap that aligns a vision-only reconstruction with the preintegrated
+IMU to recover scale and gravity, then a tightly-coupled sliding window whose past is a
+marginalization prior, and finally a global pose graph that optimizes only four degrees of freedom
+because gravity has already fixed roll and pitch.
+
+Read the two columns of that figure again. There is not one block in either system that this book
+has not built: a measurement model, a manifold retraction, a sparse least-squares solve, an
+elimination, a loop closure. The systems are hard because integration is hard — thread safety,
+initialization corner cases, feature-track bookkeeping — not because the estimation theory is
+deeper than what you have just derived.
+
+<Callout type="info">
+**What we deliberately skipped.** Feature detection, description and matching (Hartley & Zisserman
+and Szeliski are the real textbooks); the five-point algorithm's derivation; rolling shutter; event
+cameras; and dense or learned visual SLAM. That last one is moving fastest: systems like
+[MASt3R-SLAM](https://arxiv.org/abs/2412.12392) replace the whole geometric front end with a
+learned two-view reconstruction prior and still hand the result to a second-order optimizer.
+[Chapter 25](/chapters/ch25-learning) is where that thread is picked up — and the question it asks
+is the one this chapter has been asking all along: what is the *likelihood* of the thing the
+network just told you?
+</Callout>
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={3} title="The other convention">
+    Redo Derivation 1 under a *left* perturbation, $T \mapsto \exp(\boldsymbol{\xi}^\wedge)\,T$
+    (not the book's retraction — that is the point of the exercise), and show that the $2\times6$
+    pose Jacobian becomes
+    $\mat{J}_\pi\big(\mat{I} \;\big|\; -[{}^{c}\vv{P}]_\times\big)$ — the skew is now of the point in
+    the *camera* frame. Then show that for a point on the optical axis ($X = Y = 0$) the third
+    column of $\mat{J}_\pi$ vanishes, and say in one sentence what that means for the observability
+    of forward motion. Check both Jacobians numerically against central differences of
+    `Pinhole::project`.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Scale is a null space, not a large variance">
+    Prove that the map $\vv{C}_k \mapsto s\vv{C}_k$, ${}^{w}\vv{P}_j \mapsto s\,{}^{w}\vv{P}_j$
+    leaves every reprojection residual exactly invariant, and conclude that the bundle-adjustment
+    Hessian is singular in that direction. Then show that adding the term $\vv{g}\,\Delta t_{ij}$ in
+    $\vv{r}_{\Delta v}$ destroys the invariance — that is, write the residual after the scaling and
+    identify precisely which term fails to scale with $s$.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Where the uncertainty comes from">
+    Derive the first two block rows of the preintegration covariance recursion (Derivation 4, Step 4)
+    from the error dynamics of $(\delta\boldsymbol{\phi}, \delta\vv{v})$. Use them to show that with
+    accelerometer noise alone $\sigma_v \propto \sqrt{\Delta t}$ and $\sigma_p \propto \Delta t^{3/2}$,
+    and predict the exponent when gyro noise dominates. Verify against w18.2 by reading $\sigma_v$ at
+    keyframe spacings of 0.5 s and 2 s.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Sideways or along the ray?">
+    In w18.1, pause the sweep and drag the tracked point 10 cm *along* camera 0's green ray, then
+    10 cm *across* it. Before you look: using Derivation 1, Step 4 — at $Z = 5$ m the pixel moves
+    80 px per metre of lateral displacement and 3.2 px per metre of depth — predict the residual
+    change each drag produces in each camera, and their ratio. Check both. Then explain why camera 0
+    reads exactly 0.00 px for the along-ray drag while camera 1 does not, and connect that to
+    Derivation 3's degenerate motions.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Count the fill-in before you see it">
+    In w18.3, pause the simulation at slide 0 and count: the window has eight keyframes and twelve
+    landmarks, each landmark seen by four keyframes. Predict how many *new* block couplings the
+    first slide creates when the oldest keyframe and the landmarks it hosted are eliminated —
+    remember that eliminating a landmark clique-connects everything that saw it, and that some of
+    those pairs were already coupled. Run one slide and check against the fill-in tile. Then turn on link-dropping and explain which entries it removes first, and why
+    those are exactly the ones whose deletion is most defensible — and still not free.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A stereo rig needs no gauge">
+    Extend `TinyBa` with a second set of `ReprojFactor`s from a right camera at a *known* fixed
+    baseline. Show experimentally that the reduced system is now full rank without pinning scale:
+    compare the smallest eigenvalue of $\mat{S}$ with and without the stereo factors. Then corrupt
+    10% of the matches with 30 px outliers, watch the solve fail, and rescue it with the Huber
+    kernel from Chapter 15. Report RMSE before and after.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Project the landmark out">
+    Implement the MSCKF null-space trick. Given a feature tracked over $M$ poses, build
+    $\mat{H}_f \in \mathbb{R}^{2M\times3}$, compute a basis $\mat{N}$ of its left null space by Givens
+    rotations (do not form $\mat{H}_f^\dagger$), and verify numerically that
+    $\|\mat{N}^\mathsf{T}\mat{H}_f\| < 10^{-12}$ and that the projected residual has dimension
+    $2M - 3$. Then compare, on the same synthetic track, the pose correction it produces against a
+    full bundle adjustment that keeps the landmark — and explain the difference you see.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Forster, C., Carlone, L., Dellaert, F., and Scaramuzza, D."
+    year={2017}
+    title="On-Manifold Preintegration for Real-Time Visual-Inertial Odometry"
+    venue="IEEE Transactions on Robotics 33(1), 1–21"
+    doi="10.1109/TRO.2016.2597321"
+    note="The chapter's centerpiece. Derivation 4 follows its notation, including the bias Jacobians and the covariance recursion; this is also the paper that made the structureless (MSCKF-style) visual factor respectable inside a smoother."
+  />
+  <Reference
+    authors="Lupton, T. and Sukkarieh, S."
+    year={2012}
+    title="Visual-Inertial-Aided Navigation for High-Dynamic Motion in Built Environments Without Initial Conditions"
+    venue="IEEE Transactions on Robotics 28(1), 61–76"
+    doi="10.1109/TRO.2011.2170332"
+    note="Where preintegration was invented: summarize many high-rate measurements into one constraint that does not depend on the initial conditions. Forster et al. later fixed the rotation to live on SO(3) rather than in Euler angles."
+  />
+  <Reference
+    authors="Mourikis, A. I. and Roumeliotis, S. I."
+    year={2007}
+    title="A Multi-State Constraint Kalman Filter for Vision-aided Inertial Navigation"
+    venue="IEEE International Conference on Robotics and Automation (ICRA), 3565–3572"
+    doi="10.1109/ROBOT.2007.364024"
+    note="The filtering half of Derivation 5. The null-space projection that keeps landmarks out of the state is still the reason MSCKF-family estimators run on hardware that could never afford a smoother."
+  />
+  <Reference
+    authors="Triggs, B., McLauchlan, P. F., Hartley, R. I., and Fitzgibbon, A. W."
+    year={2000}
+    title="Bundle Adjustment — A Modern Synthesis"
+    venue="Vision Algorithms: Theory and Practice (IWVA 1999), LNCS 1883, 298–372"
+    doi="10.1007/3-540-44480-7_21"
+    note="The canonical treatment of Derivation 2, including gauge freedom, the Schur complement, and robust cost functions. Read §6 if you ever have to argue with someone about what a covariance means when the problem has a null space."
+  />
+  <Reference
+    authors="Campos, C., Elvira, R., Gómez Rodríguez, J. J., Montiel, J. M. M., and Tardós, J. D."
+    year={2021}
+    title="ORB-SLAM3: An Accurate Open-Source Library for Visual, Visual–Inertial, and Multimap SLAM"
+    venue="IEEE Transactions on Robotics 37(6), 1874–1890"
+    doi="10.1109/TRO.2021.3075644"
+    note="The left column of f18.1, and the source of this chapter's accuracy claims. Its real contribution is treating IMU initialization as MAP estimation rather than a bootstrap heuristic."
+  />
+  <Reference
+    authors="Qin, T., Li, P., and Shen, S."
+    year={2018}
+    title="VINS-Mono: A Robust and Versatile Monocular Visual-Inertial State Estimator"
+    venue="IEEE Transactions on Robotics 34(4), 1004–1020"
+    doi="10.1109/TRO.2018.2853729"
+    note="The right column of f18.1: sliding-window smoothing with a marginalization prior, and the clearest published account of why the final pose graph optimizes four degrees of freedom and not six."
+  />
+  <Reference
+    authors="Demmel, N., Schubert, D., Sommer, C., Cremers, D., and Usenko, V."
+    year={2021}
+    title="Square Root Marginalization for Sliding-Window Bundle Adjustment"
+    venue="IEEE/CVF International Conference on Computer Vision (ICCV), 13240–13248"
+    doi="10.1109/ICCV48922.2021.01301"
+    note="The modern answer to Derivation 5's numerical problem: store the marginalization prior as a square root rather than a Hessian, and single-precision arithmetic stops destroying it. Also the cleanest description of nullspace-based landmark elimination in a window."
+  />
+  <Reference
+    authors="Murai, R., Dexheimer, E., and Davison, A. J."
+    year={2025}
+    title="MASt3R-SLAM: Real-Time Dense SLAM with 3D Reconstruction Priors"
+    venue="IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), highlight"
+    url="https://arxiv.org/abs/2412.12392"
+    note="Where this chapter's assumptions are being renegotiated: a learned two-view reconstruction prior replaces the geometric front end, without a parametric camera model — and the back end is still second-order optimization over poses. Chapter 25 picks up the thread."
+  />
+</References>

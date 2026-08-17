@@ -1,0 +1,323 @@
+---
+title: Model-Based RL & World Models
+chapter: 12
+quote:
+  text: Mental rehearsal — using a learned forward model to simulate experience — has long been one of the most promising routes to reducing the number of real-world trials a robot must perform.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On learning with forward models
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Every method so far treats the environment as a black box to be sampled. But a robot's dynamics are physics — structured, learnable, and largely reusable across tasks. If the robot learns a model, it can rehearse in imagination: plan through predicted futures and generate synthetic experience, extracting far more from each real transition. The catch is that a learned model is wrong, and rolling it forward compounds that error geometrically. This chapter is mostly about managing that compounding, which is what separates model-based methods that work from the ones that famously do not."
+  outcomes={[
+    'Explain why model-based methods are sample-efficient and where that efficiency comes from',
+    'Decompose predictive uncertainty into epistemic and aleatoric parts and say which one ensembles capture',
+    'State the compounding-error bound and use it to choose a rollout horizon',
+    'Derive CEM as importance-sampled optimization and implement MPC around it',
+    'Explain MBPO’s branched rollouts and why short imagination beats long imagination',
+    'Describe what a latent world model learns and why it enables learning from pixels',
+  ]}
+  foundation="Ensemble dynamics models, the epistemic/aleatoric decomposition via the law of total variance, the compounding-error bound, CEM as cross-entropy optimization, MBPO's return-gap corollary, and the ELBO for latent dynamics."
+  conceptual="An ensemble of learned models rolled forward from one state, fanning out — with the measured disagreement tracked against the geometric bound."
+  practical="Ensemble dynamics in burn and a CEM-MPC controller solving Pendle's swing-up from a model learned in minutes of simulated experience."
+/>
+
+## 12.1 What a model buys
+
+A **model** predicts what the environment will do: $\hat p(s' \mid s,a)$, and usually a reward model $\hat r(s,a)$ as well. Given one, three things become possible that were not before.
+
+**Generate synthetic experience.** Chapter 7's Dyna already did this with a tabular model. Each real transition can be mined many times over by training on imagined ones.
+
+**Plan at decision time.** Optimize a short action sequence against the model, execute the first action, re-plan. This is model predictive control, and it needs no policy network at all.
+
+**Transfer across tasks.** The dynamics of a robot arm do not change when the goal moves. A model learned for reaching is immediately useful for pushing — whereas a value function must be relearned from scratch. For a robot expected to do many things, this is the deepest argument for model-based methods.
+
+The empirical payoff is large. Model-based methods routinely reach good policies in 10–100× fewer environment steps than model-free ones. PILCO famously learned cart-pole swing-up in under 20 seconds of real robot interaction, at a time when model-free methods needed hours.
+
+## 12.2 Learning dynamics, and knowing what you do not know
+
+The naive approach — train a network to minimize $\|\hat f(s,a) - s'\|^2$ — produces a model that is confidently wrong off the training distribution, which is exactly where a planner will take it. The planner is an *adversary* that seeks out wherever the model is optimistic.
+
+The fix is to model uncertainty explicitly, and to distinguish two kinds.
+
+**Aleatoric** uncertainty is noise inherent in the system: sensor noise, contact stochasticity, unmodelled disturbances. More data does not reduce it. Capture it by predicting a distribution — a Gaussian with learned mean and variance — rather than a point.
+
+**Epistemic** uncertainty is ignorance: the model has not seen this region of state space. More data *does* reduce it, and this is the kind that matters for planning, because it tells you where not to trust yourself. Capture it with an **ensemble** of $K$ models trained on bootstrapped data with different initializations; where they agree, the model is confident, and where they disagree, it is guessing.
+
+The law of total variance separates them cleanly:
+
+$$\underbrace{\operatorname{Var}[s']}_{\text{total}} = \underbrace{\mathbb{E}_k\!\left[\sigma_k^2\right]}_{\text{aleatoric}} + \underbrace{\operatorname{Var}_k\!\left[\mu_k\right]}_{\text{epistemic}},$$
+
+where $k$ indexes ensemble members. The first term is the average predicted noise; the second is the disagreement between members.
+
+## 12.3 Why imagination must be short
+
+Here is the central difficulty, and it is not subtle once stated.
+
+Suppose the model has per-step error at most $\varepsilon$, and the true dynamics are Lipschitz with constant $L$. Roll the model forward $H$ steps, feeding each prediction back in as the next input. The error after $H$ steps is bounded by
+
+$$\varepsilon_H \le \varepsilon \cdot \frac{L^H - 1}{L - 1}.$$
+
+For $L > 1$ — which holds for any system with unstable or chaotic modes, meaning essentially every interesting robot — this is **geometric in the horizon**. Doubling the rollout length does far more than double the error.
+
+<ModelBiasFan />
+
+Every ensemble member in that widget has small per-step error. The fan is not caused by bad models; it is caused by feedback. Each prediction becomes the next input, so the rollout steadily walks off the data distribution into a region where all bets are off.
+
+<Callout variant="insight" title="The MBPO insight: branch, do not roll">
+If long rollouts are unreliable, do not take them. **MBPO** starts each imagined rollout from a state drawn from the *real* replay buffer and runs it for only $k$ steps — often $k = 1$ to $5$ — then trains a model-free algorithm (SAC) on the mixture of real and imagined data.
+
+The return gap between the true and model-based objectives can be bounded in terms of $k$ and the model error, and the bound has an interior optimum: short rollouts give little benefit, long ones accumulate too much error. The practical consequence is a rule worth remembering — **branch many short rollouts off real states rather than imagining whole episodes.**
+
+Notice that this is Chapter 7's Dyna with the branch length made a first-class hyperparameter and chosen by an error bound rather than by taste.
+</Callout>
+
+## 12.4 Planning with a learned model: CEM and MPC
+
+Given a model, one can skip the policy entirely and optimize actions directly at each step.
+
+**Random shooting** samples $N$ action sequences, evaluates each through the model, and executes the first action of the best. Simple, embarrassingly parallel, and weak in high dimensions.
+
+**The cross-entropy method** iterates that idea. Sample sequences from a Gaussian over action trajectories, keep the top-performing "elite" fraction, refit the Gaussian to the elites, repeat. It is importance-sampled optimization: each iteration reweights the sampling distribution toward the high-return region, and the elite-refitting step is the maximum-likelihood update of that reweighting.
+
+**Model predictive control** wraps either in a receding horizon: plan $H$ steps, execute one, discard the rest, re-plan from the state you actually reached. Re-planning is what makes MPC robust — the model only needs to be accurate for the few steps before the next correction, which is exactly the regime §12.3 says it can manage.
+
+**PETS** combines all of this: an ensemble of probabilistic models, CEM planning, and trajectory sampling that propagates particles through ensemble members so that the planner's return estimates account for both uncertainty types.
+
+<RustSnippet title="rl-deep/src/planning/cem.rs" caption="CEM-MPC with ensemble propagation. Each particle is assigned a random ensemble member per step, so returns average over epistemic uncertainty rather than trusting one model.">
+
+```rust
+use burn::prelude::*;
+
+pub struct CemPlanner {
+    horizon: usize,
+    population: usize,
+    elites: usize,
+    iterations: usize,
+    action_dim: usize,
+}
+
+impl CemPlanner {
+    /// Returns the first action of the best plan — MPC discards the rest.
+    pub fn plan<B: Backend>(
+        &self,
+        ensemble: &DynamicsEnsemble<B>,
+        state: &Tensor<B, 1>,
+        reward: impl Fn(&Tensor<B, 2>, &Tensor<B, 2>) -> Tensor<B, 1>,
+        rng: &mut impl rand::Rng,
+    ) -> Vec<f32> {
+        // Sampling distribution over action SEQUENCES, refit each iteration.
+        let mut mean = vec![0.0f32; self.horizon * self.action_dim];
+        let mut std = vec![0.5f32; self.horizon * self.action_dim];
+
+        for _ in 0..self.iterations {
+            let mut candidates: Vec<(f32, Vec<f32>)> = Vec::with_capacity(self.population);
+
+            for _ in 0..self.population {
+                let seq: Vec<f32> = mean
+                    .iter()
+                    .zip(&std)
+                    .map(|(&m, &s)| m + s * gaussian(rng))
+                    .collect();
+
+                // Roll the plan forward, switching ensemble member each step so
+                // the return averages over epistemic uncertainty (TS-∞).
+                let mut s = state.clone();
+                let mut total = 0.0f32;
+                for t in 0..self.horizon {
+                    let a = slice_action(&seq, t, self.action_dim);
+                    let member = rng.gen_range(0..ensemble.len());
+                    let next = ensemble.predict(member, &s, &a);
+                    total += reward(&s.clone().unsqueeze(), &a.clone().unsqueeze())
+                        .into_scalar()
+                        .elem::<f32>();
+                    s = next;
+                }
+                candidates.push((total, seq));
+            }
+
+            // Keep the elites and refit — the cross-entropy step.
+            candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+            let elite = &candidates[..self.elites];
+            for i in 0..mean.len() {
+                let vals: Vec<f32> = elite.iter().map(|(_, s)| s[i]).collect();
+                let m = vals.iter().sum::<f32>() / vals.len() as f32;
+                let v = vals.iter().map(|x| (x - m).powi(2)).sum::<f32>() / vals.len() as f32;
+                mean[i] = m;
+                std[i] = v.sqrt().max(0.05); // floor keeps the search from collapsing
+            }
+        }
+        mean[..self.action_dim].to_vec()
+    }
+}
+```
+
+</RustSnippet>
+
+## 12.5 Latent world models
+
+Everything above predicts in state space. For a robot with cameras, the observation is a 64×64×3 image, and predicting pixels is both expensive and wasteful — most pixel-level detail is irrelevant to control.
+
+**Latent world models** learn a compact latent state $z_t$ in which dynamics are simple, and predict *there*. The Dreamer family learns four components jointly: an encoder $q(z_t \mid z_{t-1}, a_{t-1}, o_t)$, a transition model $p(z_t \mid z_{t-1}, a_{t-1})$, a reward predictor, and a decoder used only as a training signal.
+
+Training maximizes an evidence lower bound with the familiar two-term structure:
+
+$$\mathcal{L} = \underbrace{\mathbb{E}_q\left[\log p(o_t \mid z_t) + \log p(r_t \mid z_t)\right]}_{\text{reconstruction}} - \underbrace{\beta\, D_{\text{KL}}\!\left(q(z_t \mid \cdot) \,\|\, p(z_t \mid z_{t-1}, a_{t-1})\right)}_{\text{consistency}}.$$
+
+The reconstruction term forces the latent to retain what matters; the KL term forces the transition model to predict it. The payoff is that the **policy is then trained entirely inside the latent model** — thousands of imagined trajectories per real episode, at negligible cost, with no rendering.
+
+<Callout variant="note" title="Where world models stand for robotics">
+Dreamer-family agents have learned real-robot tasks in under an hour of interaction without simulators, which is a genuinely striking result given how much of this book's Part III is about building good simulators.
+
+The honest caveats: they are complex to implement and tune, they inherit the horizon limits of §12.3, and Tang's survey finds model-learning still used in a minority of successful real-world systems. The trajectory is promising rather than settled — which is a fair description of most of the frontier.
+</Callout>
+
+## 12.6 Model-based versus model-free, decided
+
+The trade is clean enough to state as a rule.
+
+Model-based methods win when **samples are expensive and dynamics are learnable** — a real robot, a slow simulator, smooth dynamics without hard contact. Model-free methods win when **samples are cheap or dynamics are hard to model** — massively parallel simulation, contact-rich manipulation where the model would have to capture exactly the discontinuities it is worst at.
+
+Hybrids increasingly win outright: learn a model, use it to generate short imagined rollouts, and train a model-free algorithm on the mixture. MBPO is that recipe, and the boundary between the two families is genuinely blurring.
+
+There is also a robotics-specific option this chapter has been circling: rather than learning the dynamics from scratch, **fit the parameters of a physics simulator you already trust** — masses, friction coefficients, motor constants. That is system identification, it needs far less data than learning a network, and Chapter 15 builds it.
+
+## 12.7 Chapter bridge
+
+Part II is complete. We can approximate value functions (Chapter 8), train deep value-based agents on discrete actions (Chapter 9), optimize policies directly with stable on-policy updates (Chapter 10), learn off-policy in continuous action spaces with maximum entropy (Chapter 11), and learn dynamics models to rehearse in imagination (this chapter).
+
+Every one of those chapters treated the robot as an abstract environment — a thing that returns $s'$ and $r$. Part III opens the box. Chapter 13 asks what is actually inside when the environment is a physical machine: kinematics, Jacobians, the manipulator equation, and the classical controllers — PID, LQR, operational-space control — that RL must be measured against rather than assumed to beat. Reacher stops being a task and becomes a mechanism, with dynamics we derive from first principles.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Decompose the variance',
+    difficulty: 2,
+    body: 'Derive the law-of-total-variance decomposition of §12.2 and explain which term shrinks with more data. Then design an experiment on Pendle that would measure each separately.',
+  },
+  {
+    layer: 'F',
+    title: 'The compounding bound',
+    difficulty: 3,
+    body: 'Derive the geometric error bound for H-step rollouts under a Lipschitz assumption. Evaluate it for ε = 0.01 and L = 1.1 at H = 5, 20, 100, and state the largest horizon you would trust.',
+  },
+  {
+    layer: 'F',
+    title: 'CEM as importance sampling',
+    difficulty: 3,
+    body: 'Show that CEM’s elite-refitting step is the maximum-likelihood update of an importance-sampling distribution tilted toward high return. What does the variance floor in the code correspond to in that framing?',
+  },
+  {
+    layer: 'F',
+    title: 'The ELBO',
+    difficulty: 3,
+    body: 'Derive the evidence lower bound for a latent dynamics model, identifying the reconstruction and KL terms. Explain what β controls and what happens at β = 0.',
+  },
+  {
+    layer: 'C',
+    title: 'Find the trust horizon',
+    difficulty: 1,
+    body: 'In the imagination fan, find the horizon at which ensemble disagreement crosses 0.5 for ε = 0.01, 0.03, 0.06. Plot trust horizon against ε and comment on the shape.',
+  },
+  {
+    layer: 'C',
+    title: 'Does more ensemble help?',
+    difficulty: 2,
+    body: 'Increase the ensemble from 2 to 10 members at fixed ε. Does the disagreement estimate become more reliable, and does the trust horizon move? Distinguish between estimating uncertainty better and having less of it.',
+  },
+  {
+    layer: 'P',
+    title: 'CEM-MPC on Pendle',
+    difficulty: 3,
+    body: 'Learn an ensemble dynamics model of Pendle from random interaction, then solve swing-up with CEM-MPC. Report the total real environment steps used, and compare against SAC from Chapter 11 on the same task.',
+  },
+  {
+    layer: 'P',
+    title: 'Branch length sweep',
+    difficulty: 3,
+    body: 'Implement MBPO-style branched rollouts and sweep k ∈ {1, 2, 5, 10, 25}. Plot final performance against k. There should be an interior optimum — locate it and check it against the bound from §12.3.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§6 tractability through models — core issues in mental rehearsal, and the successful forward-model approaches this chapter modernizes.',
+  },
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 8 — Dyna and the planning/learning unification that MBPO refines.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.3 model-learning axis — the evidence on how often learned models appear in successful real-world systems.',
+  },
+  {
+    key: 'deisenroth2011',
+    authors: 'Deisenroth, M. P. & Rasmussen, C. E.',
+    year: 2011,
+    title: 'PILCO: A Model-Based and Data-Efficient Approach to Policy Search',
+    venue: 'ICML 2011',
+    note: 'Gaussian-process dynamics with analytic uncertainty propagation — still the sample-efficiency benchmark to beat.',
+  },
+  {
+    key: 'chua2018',
+    authors: 'Chua, K., Calandra, R., McAllister, R. & Levine, S.',
+    year: 2018,
+    title: 'Deep Reinforcement Learning in a Handful of Trials using Probabilistic Dynamics Models',
+    venue: 'NeurIPS 31',
+    note: 'PETS: probabilistic ensembles with trajectory sampling, and the epistemic/aleatoric separation of §12.2.',
+  },
+  {
+    key: 'janner2019',
+    authors: 'Janner, M., Fu, J., Zhang, M. & Levine, S.',
+    year: 2019,
+    title: 'When to Trust Your Model: Model-Based Policy Optimization',
+    venue: 'NeurIPS 32',
+    note: 'MBPO, and the return-gap bound that justifies short branched rollouts.',
+  },
+  {
+    key: 'hafner2020',
+    authors: 'Hafner, D., Lillicrap, T., Ba, J. & Norouzi, M.',
+    year: 2020,
+    title: 'Dream to Control: Learning Behaviors by Latent Imagination',
+    venue: 'ICLR 2020',
+    note: 'Dreamer — policy learning entirely inside a learned latent model.',
+  },
+  {
+    key: 'hafner2023',
+    authors: 'Hafner, D., Pasukonis, J., Ba, J. & Lillicrap, T.',
+    year: 2023,
+    title: 'Mastering Diverse Domains through World Models',
+    venue: 'arXiv:2301.04104',
+    url: 'https://arxiv.org/abs/2301.04104',
+    note: 'DreamerV3 — fixed hyperparameters across a wide domain range, which is the practical breakthrough.',
+  },
+  {
+    key: 'rubinstein2004',
+    authors: 'Rubinstein, R. Y. & Kroese, D. P.',
+    year: 2004,
+    title: 'The Cross-Entropy Method',
+    venue: 'Springer',
+    note: 'CEM in its general form, including the importance-sampling derivation of §12.4.',
+  },
+]} />

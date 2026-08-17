@@ -1,0 +1,354 @@
+---
+title: 'The Robot as an Environment: Kinematics, Dynamics & Control'
+chapter: 13
+quote:
+  text: A reinforcement learning practitioner who does not understand the plant is not doing control — they are doing curve fitting and hoping.
+  author: Adapted from the classical-control tradition
+  affiliation: The premise of Part III
+  source: Siciliano & Khatib, Springer Handbook of Robotics
+---
+
+<ChapterOverview
+  summary="Twelve chapters have treated the environment as a black box returning s′ and r. Part III opens it. When the environment is a physical machine, it has structure: rigid bodies with known geometry, dynamics that follow from Lagrangian mechanics, and decades of control theory that already solves large parts of the problem. This chapter derives that structure for Reacher from first principles, builds the classical controllers RL must be measured against, and identifies exactly where learning has something to add — which is a narrower and more interesting set of places than enthusiasm suggests."
+  outcomes={[
+    'Compute forward and inverse kinematics for a two-link arm, including both elbow solutions',
+    'Derive the Jacobian, use it to map velocities and forces, and identify singularities',
+    'Derive the manipulator equation from the Lagrangian and interpret each term physically',
+    'Derive the LQR controller from the Riccati equation and recognize it as Chapter 5’s value iteration',
+    'Explain what PID, LQR and operational-space control each do well, and what defeats them',
+    'Identify the four distinct places learning can enter a robot control stack',
+  ]}
+  foundation="SE(2)/SE(3), forward and inverse kinematics worked completely, the Jacobian and manipulability, the Lagrangian derivation of M(q)q̈ + C(q,q̇)q̇ + g(q) = τ, LQR via the Riccati recursion, and the EKF."
+  conceptual="Reacher as a mechanism you can drag: watch joint space and task space respond to each other, and see the manipulability ellipsoid collapse at a singularity."
+  practical="The rl-sim crate: URDF chains via urdf-rs and k, Reacher in rapier2d, and PID/LQR baselines with a benchmark suite that later chapters must beat."
+/>
+
+## 13.1 Configuration, pose, and the two spaces
+
+A robot's **configuration** $q \in \mathbb{R}^n$ lists its joint variables — for Reacher, two angles $q = (q_1, q_2)$. Its **pose** is where the end-effector actually is, an element of $SE(2)$ in the plane (position plus orientation) or $SE(3)$ in space.
+
+Everything in robot control lives in the tension between these two descriptions. You *command* joint space, because that is where the motors are. You *care about* task space, because that is where the mug is.
+
+**Forward kinematics** maps one to the other. For Reacher with link lengths $\ell_1, \ell_2$:
+
+$$
+x = \ell_1 \cos q_1 + \ell_2 \cos(q_1 + q_2), \qquad
+y = \ell_1 \sin q_1 + \ell_2 \sin(q_1 + q_2).
+$$
+
+This is always well defined, cheap, and unique. **Inverse kinematics** goes the other way and is where the difficulties live. Squaring and adding:
+
+$$x^2 + y^2 = \ell_1^2 + \ell_2^2 + 2\ell_1\ell_2 \cos q_2 \quad\Longrightarrow\quad \cos q_2 = \frac{x^2+y^2-\ell_1^2-\ell_2^2}{2\ell_1\ell_2},$$
+
+so
+
+$$q_2 = \pm\arccos\left(\frac{x^2+y^2-\ell_1^2-\ell_2^2}{2\ell_1\ell_2}\right), \qquad q_1 = \operatorname{atan2}(y,x) - \operatorname{atan2}\big(\ell_2 \sin q_2,\; \ell_1 + \ell_2\cos q_2\big).$$
+
+<Callout variant="insight" title="Read the ± sign">
+That sign is the **elbow-up / elbow-down** choice: two distinct joint configurations reaching the identical point. Real arms have more — a 7-DoF arm has a continuous infinity of them.
+
+This is redundancy, and it is a resource rather than a nuisance: it lets a robot reach around obstacles, stay away from joint limits, and keep its elbow out of a human's way, all while holding the end-effector fixed. Chapter 19 uses exactly this freedom for whole-body control.
+
+The solution also fails to exist when $\sqrt{x^2+y^2} > \ell_1 + \ell_2$ (too far) or $< |\ell_1 - \ell_2|$ (inside the dead zone). The reachable workspace is an annulus, and a policy commanding task-space targets must respect it — an action-space design question Chapter 17 takes up.
+</Callout>
+
+## 13.2 The Jacobian: velocities, forces, and singularities
+
+Differentiating forward kinematics gives the **Jacobian** $J(q)$, mapping joint velocities to end-effector velocity, $\dot{p} = J(q)\,\dot q$. For Reacher:
+
+$$J(q) = \begin{bmatrix} -\ell_1 s_1 - \ell_2 s_{12} & -\ell_2 s_{12} \\ \ell_1 c_1 + \ell_2 c_{12} & \ell_2 c_{12} \end{bmatrix},$$
+
+with $s_1 = \sin q_1$, $s_{12} = \sin(q_1+q_2)$ and so on.
+
+The Jacobian does three jobs at once. It maps velocities forward. It maps forces backward — the **static force relation** $\tau = J^\top F$ says the joint torques needed to exert an end-effector force $F$ are the Jacobian transpose applied to it, which is how force control is implemented. And it diagnoses **singularities**.
+
+For Reacher, $\det J = \ell_1 \ell_2 \sin q_2$, which vanishes at $q_2 = 0$ (arm fully extended) and $q_2 = \pi$ (fully folded). At those configurations the arm loses the ability to move in one direction entirely, and any controller that inverts $J$ demands infinite joint velocity.
+
+The **manipulability ellipsoid** — the image of the unit joint-velocity ball under $J$ — visualizes this: it is round where the arm is dexterous and flattens to a line at a singularity.
+
+<ReacherKinematics />
+
+<Callout variant="warning" title="What this means for a learned policy">
+A policy that outputs task-space velocities inherits the singularity problem: it will happily command motions the arm cannot execute near a singular configuration.
+
+A policy that outputs joint commands does not have this problem at all — it simply cannot express an impossible motion. This is the first concrete instance of a theme that runs through Part III: **the action space you choose determines which failures are possible.** Chapter 17 makes it the organizing question.
+</Callout>
+
+## 13.3 Dynamics: the manipulator equation
+
+Kinematics ignores mass. To command torques we need dynamics, and the systematic route is Lagrangian mechanics.
+
+Form the Lagrangian $\mathcal{L} = T - V$ (kinetic minus potential energy) and apply the Euler–Lagrange equation:
+
+$$\frac{d}{dt}\frac{\partial \mathcal{L}}{\partial \dot q_i} - \frac{\partial \mathcal{L}}{\partial q_i} = \tau_i.$$
+
+For any serial manipulator this always produces the same structure — the **manipulator equation**:
+
+$$M(q)\,\ddot q + C(q,\dot q)\,\dot q + g(q) = \tau.$$
+
+Each term has a clean physical reading. $M(q)$ is the **mass matrix**: symmetric, positive definite, and *configuration-dependent* — an extended arm has more rotational inertia than a folded one, which is why a controller tuned in one configuration misbehaves in another. $C(q,\dot q)\dot q$ collects **Coriolis and centrifugal** effects, the velocity-dependent coupling that makes fast motion qualitatively harder than slow motion. $g(q)$ is **gravity**, the term that is usually largest and, helpfully, the easiest to cancel exactly.
+
+For Reacher, writing $\alpha = m_1 \ell_{c1}^2 + m_2(\ell_1^2 + \ell_{c2}^2) + I_1 + I_2$, $\beta = m_2 \ell_1 \ell_{c2}$, $\delta = m_2 \ell_{c2}^2 + I_2$:
+
+$$M(q) = \begin{bmatrix} \alpha + 2\beta \cos q_2 & \delta + \beta\cos q_2 \\ \delta + \beta \cos q_2 & \delta \end{bmatrix}, \qquad C(q,\dot q) = \begin{bmatrix} -\beta \dot q_2 \sin q_2 & -\beta(\dot q_1 + \dot q_2)\sin q_2 \\ \beta \dot q_1 \sin q_2 & 0 \end{bmatrix}.$$
+
+A useful structural fact: $\dot M - 2C$ is skew-symmetric, which encodes energy conservation and underpins the stability proofs of most classical robot controllers.
+
+<Callout variant="insight" title="Underactuation is the interesting case">
+Reacher has one actuator per degree of freedom — **fully actuated** — and a fully actuated robot can, in principle, be made to follow any trajectory by inverting its dynamics.
+
+Pendle cannot. A pendulum with a weak motor at the pivot has fewer actuators than degrees of freedom in the directions it needs, and no amount of cleverness lets it move directly to upright; it must pump energy over several swings. That is **underactuation**, and it is why Pendle's swing-up is genuinely hard while Reacher's reaching is not.
+
+Every legged robot is underactuated during flight. Every thrown or caught object is. This is a large part of why locomotion needed RL while pick-and-place, in structured settings, did not.
+</Callout>
+
+## 13.4 Classical control: the baselines RL must beat
+
+Three controllers, in increasing order of how much they know about the robot.
+
+**PID** knows nothing. It drives the error to zero using proportional, integral and derivative terms:
+
+$$\tau = K_p e + K_i \int e\, dt + K_d \dot e.$$
+
+It is model-free, ubiquitous, and remarkably effective for slow, well-geared, fully actuated systems. It struggles with coupling, gravity that varies with configuration, and anything fast.
+
+**Computed torque** knows the model and cancels it. Choosing
+
+$$\tau = M(q)\big(\ddot q_d + K_d \dot e + K_p e\big) + C(q,\dot q)\dot q + g(q)$$
+
+makes the closed-loop error dynamics exactly linear: $\ddot e + K_d \dot e + K_p e = 0$. This is feedback linearization, and it is beautiful when the model is right. Its weakness is precisely its strength — it depends entirely on model accuracy, and Chapter 15 is about how wrong models actually are.
+
+**LQR** is optimal control for a linearized system, and it deserves special attention here because it is exactly the machinery of Chapter 5 in continuous form. For dynamics $x_{k+1} = A x_k + B u_k$ and cost $\sum_k (x_k^\top Q x_k + u_k^\top R u_k)$, the optimal policy is linear state feedback $u = -Kx$ with $K = (R + B^\top P B)^{-1} B^\top P A$, where $P$ solves the discrete algebraic Riccati equation
+
+$$P = Q + A^\top P A - A^\top P B\,(R + B^\top P B)^{-1} B^\top P A.$$
+
+<Callout variant="insight" title="LQR is value iteration with quadratics">
+Assume the value function is quadratic, $V(x) = x^\top P x$. Plug it into the Bellman optimality equation, minimize over $u$ analytically (the objective is quadratic in $u$, so set the gradient to zero), and the result is another quadratic in $x$ — with the new matrix given by the Riccati recursion.
+
+The Riccati equation **is** the Bellman optimality equation for the linear-quadratic case, and iterating it is value iteration. Chapter 5's contraction argument applies, which is why the recursion converges.
+
+This is worth internalizing: the divide between "control theory" and "reinforcement learning" is largely one of assumptions, not of ideas. LQR is what happens when you can solve the Bellman equation in closed form. RL is what happens when you cannot.
+</Callout>
+
+<RustSnippet title="rl-sim/src/reacher/dynamics.rs" caption="Reacher's analytic dynamics and a discrete LQR solver in nalgebra. These are the baselines Chapters 14–20 must beat — and it is worth knowing that on reaching tasks, they often do not lose.">
+
+```rust
+use nalgebra::{Matrix2, Vector2};
+
+pub struct ReacherParams {
+    pub m1: f64, pub m2: f64,
+    pub l1: f64, pub l2: f64,
+    pub lc1: f64, pub lc2: f64,
+    pub i1: f64, pub i2: f64,
+    pub g: f64,
+}
+
+impl ReacherParams {
+    /// Configuration-dependent mass matrix M(q) — symmetric, positive definite.
+    pub fn mass_matrix(&self, q: &Vector2<f64>) -> Matrix2<f64> {
+        let alpha = self.m1 * self.lc1.powi(2)
+            + self.m2 * (self.l1.powi(2) + self.lc2.powi(2))
+            + self.i1 + self.i2;
+        let beta = self.m2 * self.l1 * self.lc2;
+        let delta = self.m2 * self.lc2.powi(2) + self.i2;
+        let c2 = q[1].cos();
+
+        Matrix2::new(
+            alpha + 2.0 * beta * c2, delta + beta * c2,
+            delta + beta * c2,       delta,
+        )
+    }
+
+    /// Coriolis/centrifugal matrix C(q, q̇).
+    pub fn coriolis(&self, q: &Vector2<f64>, dq: &Vector2<f64>) -> Matrix2<f64> {
+        let beta = self.m2 * self.l1 * self.lc2;
+        let s2 = q[1].sin();
+        Matrix2::new(
+            -beta * dq[1] * s2, -beta * (dq[0] + dq[1]) * s2,
+             beta * dq[0] * s2,  0.0,
+        )
+    }
+
+    /// Forward dynamics: q̈ = M⁻¹(τ − C q̇ − g).
+    pub fn accel(&self, q: &Vector2<f64>, dq: &Vector2<f64>, tau: &Vector2<f64>) -> Vector2<f64> {
+        let m = self.mass_matrix(q);
+        let c = self.coriolis(q, dq);
+        let grav = self.gravity(q);
+        m.try_inverse().expect("M(q) is positive definite") * (tau - c * dq - grav)
+    }
+}
+
+/// Discrete LQR by iterating the Riccati recursion to its fixed point.
+/// This is Chapter 5's value iteration, specialized to quadratic value functions.
+pub fn dlqr(a: &Matrix2<f64>, b: &Matrix2<f64>, q: &Matrix2<f64>, r: &Matrix2<f64>)
+    -> Matrix2<f64>
+{
+    let mut p = *q;
+    for _ in 0..500 {
+        let s = r + b.transpose() * p * b;
+        let k = s.try_inverse().unwrap() * b.transpose() * p * a;
+        let p_next = q + a.transpose() * p * (a - b * k);
+        if (p_next - p).norm() < 1e-12 { p = p_next; break; }
+        p = p_next;
+    }
+    (r + b.transpose() * p * b).try_inverse().unwrap() * b.transpose() * p * a
+}
+```
+
+</RustSnippet>
+
+## 13.5 Where learning actually enters
+
+Given all this machinery, what is left for reinforcement learning? Four distinct entry points, and confusing them is a common source of wasted effort.
+
+**Learning the policy** — replace the controller entirely. Correct when the dynamics are too complex or contact-rich to model, as in legged locomotion over rough terrain. Usually wasteful when a classical controller already works.
+
+**Learning the model** — keep classical control, learn the dynamics it needs. This is Chapter 12's territory and Chapter 15's system identification. Often the highest-value option, because a small correction to a mostly-right model goes a long way.
+
+**Learning a residual** — run a hand-designed controller and let a policy learn a correction on top, $\tau = \tau_{\text{classical}} + \tau_{\text{learned}}$. The classical part guarantees baseline competence and safety; the learned part handles what the model missed. Chapter 17 builds this properly, and it is frequently the pragmatic answer for real deployments.
+
+**Learning to tune** — treat controller gains as the action space and let RL adapt them online. Modest, low-risk, and underused.
+
+<Callout variant="warning" title="Beat the baseline, or explain why not">
+Before applying RL to a robot problem, implement the classical controller. It is usually a day of work, and one of two things will happen.
+
+Either it works — in which case you have saved months and should ship it. Or it fails — in which case you now know precisely *how* it fails, which tells you what the learned policy must do differently and gives you a number to beat.
+
+Published robot-RL results that do not report a classical baseline should be read with that omission in mind. The benchmark suite this chapter builds exists so that every later chapter in this book can report one.
+</Callout>
+
+## 13.6 State estimation, and Chapter 4's confession revisited
+
+One more piece of reality. The controllers above assume you know $q$ and $\dot q$. You measure encoder counts and integrate noisy signals.
+
+The **extended Kalman filter** is the standard answer: maintain a Gaussian belief over the state, propagate it through linearized dynamics (predict), and correct it with each measurement (update). It is Chapter 4's belief update, specialized to Gaussians and linearized dynamics.
+
+This is where Chapter 4's confession becomes concrete. The observation is not the state; a filter produces an estimate with real error; and a policy trained on ground-truth simulator state will encounter estimation error it has never seen. Chapter 15's teacher–student method exists precisely to handle this, and Chapter 19's recurrent policies learn to do the filtering themselves.
+
+## 13.7 Chapter bridge
+
+The black box is open. Reacher is a mechanism with derivable kinematics, a Jacobian that says what it can and cannot do, dynamics that follow from the Lagrangian, and classical controllers that already solve a respectable fraction of the problem. We know where learning belongs — and, equally useful, where it does not.
+
+Chapter 14 asks what makes robot RL hard in ways that have nothing to do with algorithms. Kober's four curses: the dimensionality we quantified in Chapter 5, the sample cost that shaped Chapter 11, the under-modelling that Chapter 12 fought, and the one we have so far avoided entirely — **goal specification**. Reward functions are the interface between human intent and an optimizer that will exploit any gap in your phrasing, and the results are a catalogue of instructive disasters.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Both elbows',
+    difficulty: 2,
+    body: 'Derive Reacher’s inverse kinematics completely, including both elbow solutions and the reachability conditions. Then determine which solution a continuous IK-following controller should choose, and what happens at the boundary between them.',
+  },
+  {
+    layer: 'F',
+    title: 'Jacobian and singularities',
+    difficulty: 2,
+    body: 'Compute det J for Reacher and identify all singular configurations. At q₂ = 0, determine the direction in which end-effector motion becomes impossible, and verify it against the manipulability ellipsoid.',
+  },
+  {
+    layer: 'F',
+    title: 'The full Lagrangian derivation',
+    difficulty: 3,
+    body: 'Derive M(q), C(q,q̇) and g(q) for Reacher from the Lagrangian, showing every step. Verify that M is symmetric positive definite and that Ṁ − 2C is skew-symmetric.',
+  },
+  {
+    layer: 'F',
+    title: 'LQR is value iteration',
+    difficulty: 3,
+    body: 'Starting from the Bellman optimality equation with a quadratic value function V(x) = xᵀPx and linear dynamics, derive the Riccati recursion. Identify precisely which step corresponds to Chapter 5’s max over actions.',
+  },
+  {
+    layer: 'C',
+    title: 'Feel the redundancy',
+    difficulty: 1,
+    body: 'In the kinematics sandbox, hold the end-effector at a fixed point and move through both elbow solutions. Then move to the workspace boundary and describe what happens to the manipulability ellipsoid.',
+  },
+  {
+    layer: 'C',
+    title: 'PID versus LQR under disturbance',
+    difficulty: 2,
+    body: 'Compare PID and LQR on Pendle’s stabilization with an impulse disturbance. Tune PID as well as you can. Then increase the disturbance until each fails, and report the margin between them.',
+  },
+  {
+    layer: 'P',
+    title: 'Computed torque',
+    difficulty: 3,
+    body: 'Implement computed-torque control for Reacher and verify the error dynamics are linear when the model is exact. Then perturb the mass parameters by 10%, 25% and 50%, and measure how tracking degrades. This is a preview of Chapter 15.',
+  },
+  {
+    layer: 'P',
+    title: 'The baseline suite',
+    difficulty: 2,
+    body: 'Build a benchmark harness that evaluates any controller on Reacher reaching and Pendle swing-up with pinned seeds, reporting success rate, settling time and energy. Every later chapter’s learned policy will be measured against it.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§1.2 RL in the context of optimal control, and §1.3 on the physical structure that distinguishes robot problems from generic MDPs.',
+  },
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 4 — the value iteration that §13.4 shows LQR to be a closed-form instance of.',
+  },
+  {
+    key: 'siciliano2009',
+    authors: 'Siciliano, B., Sciavicco, L., Villani, L. & Oriolo, G.',
+    year: 2009,
+    title: 'Robotics: Modelling, Planning and Control',
+    venue: 'Springer',
+    note: 'The standard reference for everything in §13.1–13.4: kinematics, Jacobians, dynamics, and control.',
+  },
+  {
+    key: 'spong2006',
+    authors: 'Spong, M. W., Hutchinson, S. & Vidyasagar, M.',
+    year: 2006,
+    title: 'Robot Modeling and Control',
+    venue: 'Wiley',
+    note: 'The Lagrangian derivation of the manipulator equation, and the skew-symmetry property used in stability proofs.',
+  },
+  {
+    key: 'yoshikawa1985',
+    authors: 'Yoshikawa, T.',
+    year: 1985,
+    title: 'Manipulability of Robotic Mechanisms',
+    venue: 'International Journal of Robotics Research 4(2)',
+    note: 'The manipulability ellipsoid, in the original.',
+  },
+  {
+    key: 'khatib1987',
+    authors: 'Khatib, O.',
+    year: 1987,
+    title: 'A unified approach for motion and force control of robot manipulators: The operational space formulation',
+    venue: 'IEEE Journal on Robotics and Automation 3(1)',
+    note: 'Operational-space control — the task-space formulation that Chapter 20’s impedance action spaces build on.',
+  },
+  {
+    key: 'anderson1990',
+    authors: 'Anderson, B. D. O. & Moore, J. B.',
+    year: 1990,
+    title: 'Optimal Control: Linear Quadratic Methods',
+    venue: 'Prentice Hall',
+    note: 'LQR and the Riccati equation, with the convergence analysis.',
+  },
+  {
+    key: 'thrun2005',
+    authors: 'Thrun, S., Burgard, W. & Fox, D.',
+    year: 2005,
+    title: 'Probabilistic Robotics',
+    venue: 'MIT Press',
+    note: 'The EKF and the belief-state machinery of §13.6, developed in full.',
+  },
+]} />

@@ -1,0 +1,385 @@
+---
+title: 'Policy Gradients: REINFORCE → PPO'
+chapter: 10
+quote:
+  text: Policy search methods are often the preferred approach in robotics, as they scale to high-dimensional continuous action spaces and allow the incorporation of task-appropriate prior structure into the policy.
+  author: Jens Kober, J. Andrew Bagnell & Jan Peters
+  affiliation: On why robotics chose policy search
+  source: Reinforcement Learning in Robotics — A Survey, IJRR 2013
+---
+
+<ChapterOverview
+  summary="Chapter 9 hit a wall: computing max over actions requires enumerating them, and robots command continuous torques. So stop learning a value function and extracting a policy from it — parameterize the policy directly and ascend the gradient of expected return. The policy gradient theorem makes that computable despite the fact that the distribution you are averaging over depends on the parameters you are differentiating. The result is PPO: the algorithm behind more real-world robot RL successes than every method in Chapter 9 combined."
+  outcomes={[
+    'State three concrete reasons robotics prefers policy search over value-based methods',
+    'Derive the policy gradient theorem line by line, including why the state-distribution term vanishes',
+    'Explain why baselines reduce variance without introducing bias, and derive the advantage form',
+    'Derive GAE and identify it as Chapter 7’s λ-return applied to advantages',
+    'Explain the trust-region argument and how PPO’s clipped surrogate approximates it cheaply',
+    'List the implementation details that actually decide whether PPO works, and why each matters',
+  ]}
+  foundation="The policy gradient theorem with full derivation, score-function estimators and their variance, baselines and advantage, GAE, the performance-difference lemma, TRPO’s trust region, and PPO’s clipped surrogate."
+  conceptual="Three unbiased gradient estimators sampled hundreds of times, so the variance collapse from baselines is something you see rather than something you are told."
+  practical="REINFORCE → A2C → PPO in burn with rayon-vectorized environments, solving Pendle's swing-up with a Gaussian policy."
+/>
+
+## 10.1 Why robotics chose policy search
+
+Three reasons, all of which matter more on hardware than on benchmarks.
+
+**Continuous actions are natural.** A policy that outputs the mean and standard deviation of a Gaussian over joint torques needs no argmax. Chapter 9's wall simply is not there.
+
+**Updates are smooth.** A small parameter change produces a small change in behaviour. Value-based methods can flip the argmax at many states from one gradient step to the next, and a robot whose policy changes discontinuously mid-training is a robot that breaks something. This alone is worth a great deal of sample efficiency.
+
+**Prior structure fits naturally.** You can constrain the policy class to whatever you know: a movement primitive with learnable weights (Chapter 17), a residual on top of a hand-tuned controller, an action space that respects joint limits by construction. Kober and colleagues make this argument at length, and it remains correct.
+
+The cost is that policy gradient methods are usually **on-policy** — data must come from the current policy, so it is discarded after each update. That is expensive. It is also, per Chapter 8, exactly why they are stable: dropping the off-policy ingredient breaks the deadly triad.
+
+## 10.2 The policy gradient theorem
+
+Parameterize the policy as $\pi_\theta(a\mid s)$ and define the objective as expected return from the start-state distribution:
+
+$$J(\theta) = \mathbb{E}_{\pi_\theta}\left[\sum_{t=0}^{\infty} \gamma^t R_{t+1}\right].$$
+
+We want $\nabla_\theta J$. The difficulty is immediate: $J$ averages over trajectories whose distribution depends on $\theta$. Differentiating an expectation whose measure moves is not a routine operation.
+
+The **score-function identity** resolves it. For any distribution $p_\theta$,
+
+$$\nabla_\theta p_\theta(x) = p_\theta(x)\, \nabla_\theta \log p_\theta(x),$$
+
+which is just the chain rule on $\log$, rearranged. It converts a gradient of a probability into an expectation of a gradient — and expectations we can sample.
+
+<Theorem kind="Theorem" n="10.1" title="Policy gradient theorem">
+For the episodic objective,
+
+$$\nabla_\theta J(\theta) \;\propto\; \sum_s \mu(s) \sum_a q_{\pi}(s,a)\, \nabla_\theta \pi_\theta(a \mid s) \;=\; \mathbb{E}_{\pi_\theta}\!\left[ q_\pi(S_t, A_t)\, \nabla_\theta \log \pi_\theta(A_t \mid S_t) \right],$$
+
+where $\mu$ is the on-policy state distribution.
+</Theorem>
+
+<Proof>
+Start with the gradient of the state-value function and expand using $v_\pi(s) = \sum_a \pi_\theta(a\mid s) q_\pi(s,a)$ and the product rule:
+
+$$
+\begin{aligned}
+\nabla v_\pi(s) &= \nabla \left[ \sum_a \pi_\theta(a\mid s)\, q_\pi(s,a) \right] \\
+&= \sum_a \Big[ \nabla \pi_\theta(a\mid s)\, q_\pi(s,a) + \pi_\theta(a\mid s)\, \nabla q_\pi(s,a) \Big].
+\end{aligned}
+$$
+
+Now expand $q_\pi(s,a) = \sum_{s',r} p(s',r\mid s,a)\left[r + \gamma v_\pi(s')\right]$. The reward and the dynamics do **not** depend on $\theta$, so
+
+$$\nabla q_\pi(s,a) = \gamma \sum_{s'} p(s'\mid s,a)\, \nabla v_\pi(s').$$
+
+Substituting gives a recursion in $\nabla v_\pi$:
+
+$$\nabla v_\pi(s) = \sum_a \Big[ \nabla \pi_\theta(a\mid s)\, q_\pi(s,a) + \gamma\, \pi_\theta(a\mid s) \sum_{s'} p(s'\mid s,a)\, \nabla v_\pi(s') \Big].$$
+
+Unrolling this repeatedly, each step pushes the $\nabla v_\pi$ term one transition further into the future while accumulating a $\gamma$. Collecting terms by the number of steps $k$ needed to reach each state gives
+
+$$\nabla v_\pi(s_0) = \sum_{s} \left( \sum_{k=0}^{\infty} \gamma^k \Pr(s_0 \to s, k, \pi) \right) \sum_a \nabla \pi_\theta(a\mid s)\, q_\pi(s,a),$$
+
+and the bracketed quantity is precisely the (discounted) on-policy state distribution $\mu(s)$. Finally, apply the score-function identity $\nabla \pi_\theta = \pi_\theta \nabla \log \pi_\theta$ to turn the inner sum into an expectation over actions drawn from $\pi_\theta$. $\qquad \blacksquare$
+</Proof>
+
+<Callout variant="insight" title="What the theorem buys, and why it is remarkable">
+Look at what is **absent** from the final expression: the environment dynamics $p(s'\mid s,a)$. Nowhere does the gradient require knowing how the world responds. It requires only $\nabla \log \pi_\theta$ — the gradient of your own policy, which you wrote and can differentiate exactly.
+
+That is why the theorem matters. The distribution over states shifts as $\theta$ changes, and you might expect a term accounting for that shift. There is none, because the derivation shows that shift is already absorbed into $\mu$. You can estimate the gradient purely from sampled experience, with no model at all.
+
+You have seen this before. Chapter 3's gradient bandit was this theorem on a one-state MDP, baseline and all.
+</Callout>
+
+**REINFORCE** turns the theorem into an algorithm: sample an episode, and for each step update
+
+$$\theta \leftarrow \theta + \alpha\, \gamma^t\, G_t\, \nabla_\theta \log \pi_\theta(A_t \mid S_t).$$
+
+It is unbiased and it is nearly unusable, because the variance of $G_t$ is enormous — the return accumulates every random event in the trajectory, and multiplying that by the score function does not help.
+
+## 10.3 Baselines and advantage
+
+Chapter 3 already gave the fix. Subtract any function $b(s)$ that does not depend on the action:
+
+$$\nabla_\theta J = \mathbb{E}\left[\big(q_\pi(S_t, A_t) - b(S_t)\big) \nabla_\theta \log \pi_\theta(A_t\mid S_t)\right].$$
+
+<Proof title="Why the baseline is free">
+The added term has expectation zero:
+
+$$\mathbb{E}\left[b(S_t) \nabla \log \pi_\theta(A_t\mid S_t)\right] = \sum_s \mu(s)\, b(s) \sum_a \pi_\theta(a\mid s) \nabla \log \pi_\theta(a\mid s) = \sum_s \mu(s)\, b(s) \sum_a \nabla \pi_\theta(a\mid s).$$
+
+Since $\sum_a \pi_\theta(a\mid s) = 1$ for every $s$, its gradient is zero, so the whole term vanishes. The estimator's mean is unchanged; only its variance moves. $\qquad \blacksquare$
+</Proof>
+
+The best practical baseline is $v_\pi(s)$, which makes the multiplier the **advantage**:
+
+$$A_\pi(s,a) = q_\pi(s,a) - v_\pi(s).$$
+
+The interpretation is exactly right. Advantage asks *"was this action better than what I typically do here?"* rather than *"was this outcome good?"* — and only the first question carries information about which action to prefer. A state where everything goes well produces large returns for every action, and without a baseline all of them get reinforced.
+
+<PolicyGradientLab />
+
+Turn up the reward offset. REINFORCE's histogram spreads badly even though a constant added to every return says nothing about which action was good — the score function multiplies it regardless. The baseline subtracts it straight back out. All three estimators have the same mean throughout; only the spread differs, and spread is what you pay for in samples.
+
+## 10.4 Actor–critic and GAE
+
+We do not know $v_\pi$, so learn it: a **critic** $V_\phi(s)$ trained by the TD methods of Chapter 6, and an **actor** $\pi_\theta$ updated by the policy gradient using the critic's advantage estimate. This is generalized policy iteration again — Chapter 5's pattern, with a parameterized policy and a learned value.
+
+How should the advantage be estimated? The one-step form $\delta_t = R_{t+1} + \gamma V(S_{t+1}) - V(S_t)$ has low variance and inherits the critic's bias. The Monte Carlo form $G_t - V(S_t)$ is unbiased and noisy. This is Chapter 7's dilemma verbatim, so it takes Chapter 7's answer.
+
+**Generalized advantage estimation** is the $\lambda$-return applied to advantages:
+
+$$\hat A_t^{\text{GAE}(\gamma,\lambda)} = \sum_{l=0}^{\infty} (\gamma\lambda)^l\, \delta_{t+l}.$$
+
+At $\lambda = 0$ it is the one-step TD error; at $\lambda = 1$ it is the Monte Carlo advantage. In practice $\lambda \approx 0.95$ works across an unusually wide range of tasks, which is why it is one of the few hyperparameters practitioners rarely touch.
+
+## 10.5 Trust regions and PPO
+
+One problem remains, and it is the one that decides whether training survives.
+
+Policy gradient tells you a direction, not a step size. Take too large a step and the policy changes drastically; the data you collected is now from a policy that no longer exists, the next batch is collected under a worse policy, and performance collapses without recovering. Unlike supervised learning, **a bad update poisons all future data**.
+
+The **performance-difference lemma** quantifies the risk: the improvement from $\pi_{\text{old}}$ to $\pi$ is exactly
+
+$$J(\pi) - J(\pi_{\text{old}}) = \mathbb{E}_{s \sim d_\pi, a\sim \pi}\left[A_{\pi_{\text{old}}}(s,a)\right],$$
+
+where the states are drawn from the **new** policy's distribution — which we cannot sample without running it. Approximating $d_\pi$ by $d_{\pi_{\text{old}}}$ gives a surrogate objective that is accurate only while the policies remain close. TRPO enforces closeness with a hard KL constraint and solves the resulting problem with conjugate gradients — principled, and heavy.
+
+**PPO** achieves nearly the same effect with a clipped objective. With the probability ratio $r_t(\theta) = \frac{\pi_\theta(A_t\mid S_t)}{\pi_{\theta_{\text{old}}}(A_t\mid S_t)}$:
+
+$$L^{\text{CLIP}}(\theta) = \mathbb{E}\left[\min\Big(r_t(\theta)\hat A_t,\;\; \text{clip}\big(r_t(\theta),\, 1-\epsilon,\, 1+\epsilon\big)\hat A_t\Big)\right].$$
+
+<Callout variant="insight" title="What the clip actually does">
+Read the two branches separately. When $\hat A_t > 0$ the action was better than average and we want to increase its probability — but the clip caps the objective at $r = 1+\epsilon$, so once the probability has risen enough, further increase yields no additional reward. When $\hat A_t < 0$ the clip floors it at $1-\epsilon$.
+
+The `min` is what makes this a pessimistic bound rather than merely a clamp: it takes the *worse* of the clipped and unclipped objectives, so the update never benefits from moving further than the trust region allows, in either direction.
+
+The result is a first-order method — plain Adam, no conjugate gradients — that empirically stays inside a trust region. That simplicity is why PPO, not TRPO, is what Tang's survey finds underneath most successful sim-to-real robot systems.
+</Callout>
+
+<Callout variant="warning" title="The implementation details are not details">
+Published ablations have repeatedly found that PPO's performance depends as much on its surrounding machinery as on the clipped objective itself. The ones that matter:
+
+**Advantage normalization** per batch — without it the effective learning rate drifts with reward scale.
+**Observation normalization** with running statistics — a robot's joint angles and velocities differ by orders of magnitude.
+**Value-loss clipping** and a tuned value-loss coefficient.
+**Entropy bonus** to prevent premature collapse to a deterministic policy.
+**Gradient clipping** by global norm, typically 0.5.
+**Multiple epochs over each batch** — usually 3–10; more and the ratio drifts too far.
+**Approximate KL as a watchdog**: monitor it, and early-stop the epoch loop if it exceeds a threshold.
+
+If your PPO does not work, the fault is more often in this list than in the algorithm.
+</Callout>
+
+<RustSnippet title="rl-deep/src/ppo.rs" caption="The PPO surrogate loss in burn, with the diagnostics that make training debuggable. Approximate KL and clip fraction are the two numbers to watch: KL spiking means the step was too large, clip fraction near zero means it was too small.">
+
+```rust
+use burn::prelude::*;
+
+pub struct PpoConfig {
+    pub clip_eps: f32,
+    pub entropy_coef: f32,
+    pub value_coef: f32,
+    pub target_kl: f32,
+}
+
+pub struct PpoDiagnostics {
+    pub policy_loss: f32,
+    pub value_loss: f32,
+    pub entropy: f32,
+    pub approx_kl: f32,
+    pub clip_fraction: f32,
+}
+
+impl<B: AutodiffBackend> Ppo<B> {
+    pub fn surrogate(&self, batch: &RolloutBatch<B>, cfg: &PpoConfig)
+        -> (Tensor<B, 1>, PpoDiagnostics)
+    {
+        let (mean, log_std) = self.actor.forward(batch.states.clone());
+        let log_probs = gaussian_log_prob(&mean, &log_std, &batch.actions);
+
+        // r_t(θ) = π_θ(a|s) / π_old(a|s), computed in log space for stability.
+        let ratio = (log_probs.clone() - batch.old_log_probs.clone()).exp();
+
+        // Advantage normalization — not optional in practice.
+        let adv = normalize(batch.advantages.clone());
+
+        let unclipped = ratio.clone() * adv.clone();
+        let clipped = ratio.clone().clamp(1.0 - cfg.clip_eps, 1.0 + cfg.clip_eps) * adv;
+
+        // min() takes the pessimistic branch: the update never profits from
+        // stepping outside the trust region in either direction.
+        let policy_loss = -unclipped.min_pair(clipped).mean();
+
+        let values = self.critic.forward(batch.states.clone()).squeeze(1);
+        let value_loss = (values - batch.returns.clone()).powf_scalar(2.0).mean();
+
+        let entropy = gaussian_entropy(&log_std).mean();
+
+        let loss = policy_loss.clone()
+            + value_loss.clone() * cfg.value_coef
+            - entropy.clone() * cfg.entropy_coef;
+
+        // Schulman's low-variance KL estimator; early-stop the epoch if it spikes.
+        let log_ratio = log_probs - batch.old_log_probs.clone();
+        let approx_kl = ((log_ratio.clone().exp() - 1.0) - log_ratio).mean();
+
+        let clip_fraction = ratio
+            .sub_scalar(1.0)
+            .abs()
+            .greater_elem(cfg.clip_eps)
+            .float()
+            .mean();
+
+        (loss, PpoDiagnostics {
+            policy_loss: policy_loss.into_scalar().elem(),
+            value_loss: value_loss.into_scalar().elem(),
+            entropy: entropy.into_scalar().elem(),
+            approx_kl: approx_kl.into_scalar().elem(),
+            clip_fraction: clip_fraction.into_scalar().elem(),
+        })
+    }
+}
+```
+
+</RustSnippet>
+
+## 10.6 Chapter bridge
+
+We changed what is learned. Instead of a value function with a policy extracted from it, the policy is the parameter vector, and the policy gradient theorem makes its gradient estimable from experience alone — with no model, and with the state-distribution shift already absorbed. Baselines and GAE tamed the variance; trust regions tamed the step size; PPO made the whole thing simple enough to run with Adam.
+
+What we did not fix is sample efficiency. PPO is on-policy: every batch is used for a few epochs and thrown away. For a simulator with thousands of parallel environments that is acceptable, and Chapter 18 shows it is how locomotion is actually trained. For a robot learning on hardware, discarding data is a luxury nobody can afford.
+
+Chapter 11 returns to off-policy learning — this time with continuous actions and a replay buffer, accepting the deadly triad's risks in exchange for reusing every transition many times. Reacher gets his proper debut as a continuous-control task, and maximum-entropy RL turns exploration from a schedule you tune into a quantity the objective optimizes.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'The theorem, unrolled',
+    difficulty: 3,
+    body: 'Reproduce the proof of Theorem 10.1, being explicit about the unrolling step and how the discounted state distribution μ emerges. State exactly where the assumption that p and r do not depend on θ is used.',
+  },
+  {
+    layer: 'F',
+    title: 'Baselines are free',
+    difficulty: 2,
+    body: 'Prove that any action-independent baseline leaves the policy gradient unbiased. Then derive the variance-minimizing baseline and explain why v_π(s) is used instead despite not being optimal.',
+  },
+  {
+    layer: 'F',
+    title: 'GAE telescopes',
+    difficulty: 2,
+    body: 'Show that GAE with λ = 1 reduces to the Monte Carlo advantage and with λ = 0 to the one-step TD error. Then write GAE as an exponentially weighted average of n-step advantage estimators, mirroring Chapter 7’s λ-return.',
+  },
+  {
+    layer: 'F',
+    title: 'Reading the clip',
+    difficulty: 2,
+    body: 'Sketch L^CLIP as a function of the ratio r, separately for positive and negative advantage. Mark where the gradient is zero. Then explain what the min() adds over simply clipping the ratio.',
+  },
+  {
+    layer: 'C',
+    title: 'Variance versus offset',
+    difficulty: 1,
+    body: 'In the gradient lab, record the variance of all three estimators at reward offsets of 0, 10, 20, 40. REINFORCE should scale with the offset while the baseline versions do not. Explain the mechanism.',
+  },
+  {
+    layer: 'C',
+    title: 'The GAE frontier',
+    difficulty: 2,
+    body: 'Sweep GAE λ from 0 to 0.99 and record estimator variance. Then argue why the lowest-variance setting is not necessarily the best choice for learning.',
+  },
+  {
+    layer: 'P',
+    title: 'Build the ladder',
+    difficulty: 3,
+    body: 'Implement REINFORCE, then add a baseline, then GAE, then clipping — four algorithms, each a small edit of the last. Run all four on Pendle’s swing-up across five seeds and plot the learning curves together.',
+  },
+  {
+    layer: 'P',
+    title: 'Ablate the details',
+    difficulty: 3,
+    body: 'Take working PPO and disable, one at a time: advantage normalization, observation normalization, gradient clipping, the entropy bonus. Quantify the damage from each. At least one should hurt more than you expect.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 13: the policy gradient theorem, REINFORCE, baselines, and actor–critic methods.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§2.2.2 policy search, and §2.3 value-function approaches versus policy search — the argument reproduced in §10.1.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§5 — the finding that stable on-policy methods dominate the mature zero-shot sim-to-real results.',
+  },
+  {
+    key: 'williams1992',
+    authors: 'Williams, R. J.',
+    year: 1992,
+    title: 'Simple statistical gradient-following algorithms for connectionist reinforcement learning',
+    venue: 'Machine Learning 8',
+    note: 'REINFORCE, in the original.',
+  },
+  {
+    key: 'sutton2000',
+    authors: 'Sutton, R. S., McAllester, D., Singh, S. & Mansour, Y.',
+    year: 2000,
+    title: 'Policy Gradient Methods for Reinforcement Learning with Function Approximation',
+    venue: 'NeurIPS 12',
+    note: 'The policy gradient theorem, with the compatible-function-approximation condition.',
+  },
+  {
+    key: 'schulman2015',
+    authors: 'Schulman, J., Levine, S., Abbeel, P., Jordan, M. & Moritz, P.',
+    year: 2015,
+    title: 'Trust Region Policy Optimization',
+    venue: 'ICML 2015',
+    note: 'The performance-difference lemma, the monotonic improvement bound, and the KL-constrained update.',
+  },
+  {
+    key: 'schulman2016',
+    authors: 'Schulman, J., Moritz, P., Levine, S., Jordan, M. & Abbeel, P.',
+    year: 2016,
+    title: 'High-Dimensional Continuous Control Using Generalized Advantage Estimation',
+    venue: 'ICLR 2016',
+    note: 'GAE — Chapter 7’s λ-return, applied to advantages.',
+  },
+  {
+    key: 'schulman2017',
+    authors: 'Schulman, J., Wolski, F., Dhariwal, P., Radford, A. & Klimov, O.',
+    year: 2017,
+    title: 'Proximal Policy Optimization Algorithms',
+    venue: 'arXiv:1707.06347',
+    url: 'https://arxiv.org/abs/1707.06347',
+    note: 'The clipped surrogate objective.',
+  },
+  {
+    key: 'engstrom2020',
+    authors: 'Engstrom, L., Ilyas, A., Santurkar, S., Tsipras, D., Janoos, F., Rudolph, L. & Madry, A.',
+    year: 2020,
+    title: 'Implementation Matters in Deep RL: A Case Study on PPO and TRPO',
+    venue: 'ICLR 2020',
+    note: 'The evidence behind §10.5’s warning: the surrounding machinery contributes as much as the objective.',
+  },
+]} />

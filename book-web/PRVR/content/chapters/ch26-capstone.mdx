@@ -1,0 +1,1168 @@
+---
+title: "Capstone: A Complete Autonomous Robot"
+description: Twenty-five chapters built parts; this one builds the robot. Explore, map, plan, control, detect, recover — one stack, every internal inspectable, running at real time in your browser.
+chapter: 26
+part: PART VII
+partTitle: Frontiers and Integration
+difficulty: Advanced
+readingTime: 70 min
+quote: Sound mathematical theory, clear assumptions, therefore it's easier to predict failure modes.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 1 (1999–2000 draft)
+---
+
+import { GrandDemo } from '@/components/ch/ch26/grand-demo';
+import { StackAnatomy } from '@/components/ch/ch26/stack-anatomy';
+import { FailureTheater } from '@/components/ch/ch26/failure-theater';
+import { RetrospectiveScorecard } from '@/components/ch/ch26/retrospective-scorecard';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write the exploration mission as a POMDP, and see precisely why solving it directly is hopeless',
+    'Read an autonomy stack as a tower of named approximations, each with a failure mode you can predict from its assumption',
+    'Derive the chance-constrained safety margin that lets a certainty-equivalent planner stay safe under pose uncertainty',
+    'Derive the latency budget that decides whether a moving obstacle is handled or hit',
+    'Build three failure detectors out of statistics this book already derived, and choose their thresholds defensibly',
+    'Compose the whole thing in Rust as typed tasks on a bus, with a supervisor the compiler forces you to keep exhaustive',
+  ]}
+  prerequisites={[
+    'The whole book, honestly — but the load-bearing chapters are 12 (recovery), 13 (occupancy grids), 16 (scan matching), 19 (distance fields), 20 (planning), 23 (MPPI), and 24 (exploration)',
+    'Chapter 22 for the belief-space vocabulary the mission POMDP is written in',
+    'Rust traits, enums with data, and pattern matching — the supervisor is one big match',
+  ]}
+  builds="Nothing. This is the last chapter, and the whole point is that nothing new is introduced: every algorithm here is a citation into an earlier one."
+>
+Rusty is about to be dropped into an apartment it has never seen, with no map, no
+starting pose beyond the origin of its own coordinate frame, and ninety seconds of
+patience. It will come out the other side with a floorplan.
+
+That is not a new algorithm. Every piece of it — the scan matcher, the log-odds map,
+the distance transform, the frontier scorer, the lattice planner, the sampling
+controller, the particle filter — you have already built. What you have not built is
+the thing that makes them one robot rather than seven demos, and that thing turns out
+to have mathematics of its own: interface contracts, staleness bounds, chance
+constraints, and detection statistics with thresholds someone has to defend.
+
+The argument of this chapter is that an autonomy stack is not an architecture diagram.
+It is a *tower of stated approximations* to a single intractable problem, and each
+layer's assumption is precisely a failure mode waiting to happen. So we will break it
+on purpose: kidnap the robot, walk a person through the LiDAR, cut the sensor. Each
+time, watch a named statistic cross a named threshold and a mode with a plan take over.
+Recovery in a well-built system is never luck.
+</Overview>
+
+## Ninety seconds
+
+<Deferred>
+  <GrandDemo />
+</Deferred>
+
+It is running the real thing. There is no recorded trace, no scripted trajectory, no
+hidden ground truth feeding the estimator: what you are watching is a scan matcher
+registering sweeps against a map it is simultaneously building, a distance transform
+being recomputed five times a second, a frontier detector proposing goals, A\* routing
+through cells that are mostly still unknown, and 56 sampled rollouts being reweighted
+twenty times a second. Every number in the side panels is read straight out of the
+running stack.
+
+Three things are worth watching for before we start taking it apart.
+
+**The map is worse than the world, and everything downstream inherits that.** Turn on
+the ground-truth overlay and the gray dashed walls will not sit exactly on the dark
+cells. The planner does not know this. It routes through the map as though the map were
+the world — an assumption with a name (certainty equivalence) and a price we will
+compute exactly.
+
+**The orange ring around Rusty breathes.** That is the safety margin
+$r_{\text{robot}} + k_\sigma \sigma_{\text{pose}}$, and it grows whenever the pose
+belief loosens: during a sensor dropout, immediately after a mode switch, in a
+featureless stretch of corridor. A controller that ignored it would be brave in exactly
+the moments it should be timid.
+
+**Press Kidnap.** The fitness ratio $\rho$ on the left rail dives, the supervisor
+switches to `Relocalize`, six thousand particles scatter across the known-free space,
+and the cloud condenses over a few seconds of creeping. Nothing about that sequence is
+scripted. It is a threshold, a mode, and a behavior — and by the end of this chapter you
+will be able to derive every one of them.
+
+<KeyIdea title="The one sentence version">
+An autonomy stack is the mission POMDP under a stack of named approximations; each
+approximation buys tractability and sells you a specific failure, and the job of the
+supervisor is to hold a statistic against each sale.
+</KeyIdea>
+
+## Why not one big filter?
+
+The obvious question, having built all these parts, is why they should not be one
+optimization. Write down what the robot actually wants and the answer becomes clear
+quickly.
+
+The robot's belief is joint over its pose and the map, $b_t = p(x_t, m \mid z_{1:t},
+u_{1:t})$. It wants a policy $\pi$ mapping beliefs to controls that gathers map
+information as fast as possible without hitting anything:
+
+$$
+\pi^\star = \arg\max_\pi\; \E\!\left[\sum_t \gamma^t\, r(b_t, u_t)\right],
+\qquad
+r(b_t, u_t) = \underbrace{-\Delta H(m_t)}_{\text{information gained}} - \lambda\,c(u_t),
+\qquad \text{s.t. } P(\text{collision}) \le \delta
+$$
+
+This is a POMDP — [Chapter 22](/chapters/ch22-pomdps)'s object, at building scale — and
+it is hopeless three times over.
+
+The **state space** is the pose crossed with the map: three continuous dimensions plus
+one binary variable per cell. The apartment at 15 cm resolution is $80 \times 60 = 4800$
+cells, so the map alone lives in a space of size $2^{4800}$. The **belief space** is the
+space of distributions over that, which is worse by an exponential. And the **horizon**
+is the whole mission: a thousand decisions, each of which changes what the robot will be
+able to see later, so the value function does not decompose over time.
+
+Even the tractable-looking pieces are not. Exact information gain for one candidate
+viewpoint requires integrating over every measurement the robot might receive there,
+which requires ray-casting a distribution over maps. Point-based POMDP solvers get you
+to a few dozen states, not $2^{4800}$.
+
+So nobody solves it. What everyone does instead — SLAM Toolbox and Nav2, the Cartographer
+stack, every warehouse robot you have ever seen — is factor the problem into layers,
+approximate each layer independently, and then *engineer around* the approximations they
+made. This chapter is about doing that on purpose, with the approximations written down.
+
+## The stack, as measured dataflow
+
+<Deferred>
+  <StackAnatomy />
+</Deferred>
+
+Eight tasks. Each publishes a typed message at its own rate and consumes the messages of
+its neighbors, and nothing else — no task reaches into another's internals. On native
+Rust each runs on its own thread over a `crossbeam-channel`; in the browser a
+deterministic round-robin scheduler ticks whichever tasks are due. Same task code, same
+message types, same seed, same mission. The diagram above is not a drawing of that
+arrangement, it is an instrument attached to it: the hertz on each edge is the
+publisher's own counter, and the switches really switch tasks off.
+
+Play with the switches for a minute, because the failures are the argument. Turn off the
+**SLAM front end** and the pose belief degenerates to raw wheel odometry; the map does not
+explode, it *shears* — corridors drawn twice, at an angle, exactly the picture
+[Chapter 16](/chapters/ch16-scan-matching) opened with. Turn off the **frontier explorer**
+and something more unsettling happens: nothing. Every task is healthy, every rate is
+nominal, the robot sits still beside a room it has never entered. That is the failure
+mode of a layer whose job is to *want* something.
+
+<KeyIdea title="What a message is">
+Every value crossing a task boundary is a `Stamped<T>`: payload, timestamp, frame id.
+Estimator tasks publish *beliefs* — mean and covariance, or particles — never bare
+states. A pose without a covariance cannot be turned into a safety margin, and a pose
+without a frame is the single most expensive bug in mobile robotics.
+</KeyIdea>
+
+## The mathematics
+
+There are no new estimators in this chapter. What is new is precise statements about
+*composition*: what each layer assumes, what that assumption costs, and how you notice
+when it has been violated.
+
+<NotationTable
+  rows={[
+    { sym: 'b_t', meaning: 'Mission belief: the joint posterior over pose and map, p(x_t, m | z_{1:t}, u_{1:t}).' },
+    { sym: '\\tau_i', meaning: 'Period of task i, in seconds. The stack\'s rate table is {LiDAR 10, SLAM 10, map 10, ESDF 5, frontier 1, plan 1, control 20} Hz.' },
+    { sym: '\\varsigma_i', meaning: 'Staleness of task i: the age of its most recent publication. Bounded by τ_i when the task is healthy.' },
+    { sym: '\\rho_t = w_{fast}/w_{slow}', meaning: 'Dual-EMA fitness ratio — Chapter 12\'s recovery statistic, applied to scan-match fitness instead of particle weight.' },
+    { sym: '\\epsilon_t = \\nu_t^\\mathsf{T} S_t^{-1} \\nu_t', meaning: 'Normalized innovation squared (NIS) of the SLAM front end; χ²₃ under a correctly specified filter.' },
+    { sym: 'H(m_t)', meaning: 'Occupancy-map entropy in bits, Σ_i H(p_i); Ḣ its rate. The mission objective and half the stopping criterion.' },
+    { sym: '\\delta,\\; k_\\sigma = \\Phi^{-1}(1-\\delta)', meaning: 'Collision-chance bound and the corresponding inflation gain on the pose standard deviation.' },
+  ]}
+/>
+
+### Four definitions
+
+**D26.1 — Autonomy stack.** A set of tasks $\{T_i\}$ with periods $\tau_i$, exchanging
+typed messages. Every message is a `Stamped<T>`: payload, timestamp, frame identifier.
+An estimator task publishes a *belief*, never a point.
+
+**D26.2 — Mission.** The POMDP written above: maximize expected discounted map
+information subject to $P(\text{collision}) \le \delta$.
+
+**D26.3 — Stopping criterion.** Terminate when *both* hold: no frontier of area
+$\ge A_{\min}$ remains reachable, **and** $|\dot H(m_t)| < h_{\min}$ over a trailing
+window. Either condition alone is gameable — a single unreachable speck of unknown
+keeps a frontier count above zero forever, and a robot standing still has a perfectly
+flat entropy curve.
+
+**D26.4 — Mode.** The supervisor's discrete state, an exhaustive enum by design:
+
+$$
+\texttt{Mode} \in \{\;\texttt{Explore},\;\texttt{Navigate}\{goal\},\;\texttt{Relocalize},\;\texttt{Recover}(kind),\;\texttt{Done}\;\}
+$$
+
+### F1 — The layer tower
+
+**Statement.** Each subsystem in the stack is the mission POMDP of D26.2 under exactly
+one named approximation, and each approximation induces exactly one characteristic
+failure.
+
+| Layer | Approximation of D26.2 | What it buys | What it sells you |
+|---|---|---|---|
+| Exploration ([Ch. 24](/chapters/ch24-exploration)) | one-step greedy on information gain, ignoring the future | a scored list instead of a tree search | oscillating targets; the robot ping-pongs between two equally good frontiers |
+| Planning ([Ch. 20](/chapters/ch20-motion-planning)) | certainty equivalence in the map: plan on the MAP map as if it were the world | a graph search instead of planning in belief space | routes straight through walls that have not been seen yet |
+| Control ([Ch. 23](/chapters/ch23-mppi)) | certainty equivalence in the pose: roll out from $\mu_t$ as if it were $x_t$ | 56 rollouts instead of a belief-space integral | confident driving while the filter is lost |
+| SLAM ([Ch. 16](/chapters/ch16-scan-matching)) | MAP point estimate of the map marginal of $b_t$ | one map instead of a distribution over maps | a wrong loop closure is accepted with total confidence and is permanent |
+| Mapping ([Ch. 13](/chapters/ch13-occupancy-grids)) | cell independence given the pose | a `+=` per cell instead of a joint posterior | thin structures dissolve; a doorway can be carved open by two beams that disagree |
+
+<Derivation title="The chain of substitutions" result="\pi^\star \;\approx\; \texttt{control} \circ \texttt{plan} \circ \texttt{explore} \circ \texttt{slam}">
+Start from D26.2 and substitute one approximation at a time. Each step is a *choice*,
+and naming it is the whole point of the exercise.
+
+**Step 1 — factor the belief.** Write $b_t(x, m) = p(x_t \mid z_{1:t}, u_{1:t}, \hat m)\,
+\delta(m - \hat m_t)$: replace the map marginal by a point mass at its MAP estimate
+$\hat m_t$. This is what a pose-graph SLAM system publishes and it is the reason a
+false loop closure is unrecoverable — there is no probability mass left anywhere else to
+recover *to*.
+
+**Step 2 — separate the objective.** With $m$ fixed at $\hat m_t$, the reward
+$-\Delta H(m)$ depends on the robot's *trajectory* only through which cells it observes.
+Choose a goal now and worry about the path later:
+
+$$
+u^\star_{\text{mission}} \;\approx\; \texttt{plan}\big(\hat m_t,\; g^\star\big),
+\qquad
+g^\star = \arg\max_{g}\; \underbrace{I(g)}_{\text{cells revealed}}\, e^{-\lambda\, d(g)}
+$$
+
+The exponential is the greedy discount of [Chapter 24](/chapters/ch24-exploration). It
+is a one-step lookahead over a set of candidate goals, which is why two frontiers of
+nearly equal utility can make a robot oscillate: nothing in this expression knows that
+committing has value.
+
+**Step 3 — certainty equivalence in the map.** Planning to $g^\star$ over $\hat m_t$
+treats unknown cells as traversable with a penalty. That is deliberately optimistic: a
+pessimistic planner refuses to enter unknown space, and since every frontier is by
+definition adjacent to unknown space, a pessimistic explorer never explores. The price is
+paid whenever the optimism is wrong, and it is paid as a replan.
+
+**Step 4 — certainty equivalence in the pose.** MPPI rolls out from $\mu_t$, dropping
+$\Sigma_t$ entirely:
+
+<LinkedMath>
+$$
+u_t \;=\; \texttt{mppi}\big(\htmlClass{term-posterior}{\mu_t},\; \text{path},\; d_{\text{esdf}}\big)
+\quad\text{instead of}\quad
+\arg\min_u \E_{x \sim \htmlClass{term-posterior}{\Normal(\mu_t, \Sigma_t)}}\big[J(x, u)\big]
+$$
+</LinkedMath>
+
+This is the substitution F2 repairs. Dropping $\Sigma_t$ is exactly right when $\Sigma_t$
+is small and exactly catastrophic when it is not, so instead of restoring the expectation
+we restore a *bound*: keep the nominal trajectory far enough from obstacles that the true
+one is inside with probability $1-\delta$.
+
+**Step 5 — read off the failures.** Each substitution has a signature. Step 1 fails
+loudly (a sheared map) or silently (a confidently wrong loop). Step 2 fails as
+indecision. Step 3 fails as a replan. Step 4 fails as a collision — which is why it is
+the one we patch rather than merely detect. $\blacksquare$
+</Derivation>
+
+### F2 — Safety under pose uncertainty
+
+**Statement.** Let $d_{\text{esdf}}(x)$ be the distance from $x$ to the nearest obstacle
+in the map, $r_{\text{robot}}$ the robot radius, and $\sigma_{\text{pose}}^2$ the largest
+eigenvalue of the position block of $\Sigma_t$. If every point of the planned trajectory
+satisfies
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{d_{\text{esdf}}(\mu)} \;\ge\; r_{\text{robot}} + \htmlClass{term-posterior}{k_\sigma\, \sigma_{\text{pose}}},
+\qquad
+k_\sigma = \Phi^{-1}(1-\delta)
+$$
+</LinkedMath>
+
+then each point of the *true* trajectory collides with probability at most $\delta$.
+
+<Derivation title="From a Gaussian tail to a clearance in metres" result="d_{\text{esdf}}(\mu) \ge r_{\text{robot}} + \Phi^{-1}(1-\delta)\,\sigma_{\text{pose}}">
+**Step 1 — what a collision is.** The robot is a disc of radius $r$ centred at the true
+position $x$. It collides iff the true clearance is negative:
+$d_{\text{esdf}}(x) - r < 0$.
+
+**Step 2 — the error is Gaussian in the tangent plane.** Write $x = \mu + e$ with
+$e \sim \Normal(0, \Sigma_{xy})$, $\Sigma_{xy}$ the $2\times 2$ position block. The
+distance field is 1-Lipschitz — it is a distance — so for any unit vector $\hat n$,
+
+$$
+d_{\text{esdf}}(\mu + e) \;\ge\; d_{\text{esdf}}(\mu) - \hat n^{\mathsf{T}} e
+$$
+
+with equality in the worst case, when $\hat n$ points at the nearest obstacle.
+
+**Step 3 — project.** The scalar $\hat n^{\mathsf{T}} e$ is Gaussian with variance
+$\hat n^{\mathsf{T}} \Sigma_{xy} \hat n \le \lambda_{\max}(\Sigma_{xy}) =
+\sigma_{\text{pose}}^2$. We do not know $\hat n$ — the obstacle can be in any direction —
+so we take the worst case, which is the largest eigenvalue. This is why the margin uses
+$\lambda_{\max}$ and not, say, the trace: the nearest wall is free to lie along the
+belief's long axis, and in a corridor it usually does.
+
+**Step 4 — the tail bound.** Collision requires
+$\hat n^{\mathsf{T}} e > d_{\text{esdf}}(\mu) - r$, so
+
+$$
+P(\text{collision}) \;\le\; 1 - \Phi\!\left(\frac{d_{\text{esdf}}(\mu) - r}{\sigma_{\text{pose}}}\right)
+$$
+
+Setting the right-hand side to $\delta$ and solving gives the margin. $\blacksquare$
+
+**Two honest caveats.** First, this bounds the collision probability *per point*, not per
+path. A path of $n$ waypoints each safe at $\delta$ is safe at $n\delta$ by a union
+bound, so a genuine path-level guarantee needs $\delta/n$ per point — the Bonferroni
+correction of Exercise 1. Second, the bound assumes the pose error is actually Gaussian.
+It is not, particularly after a loop closure, and the steepness of the Gaussian tail that
+makes this margin so cheap is exactly what makes it fragile: a tenfold tightening of
+$\delta$, from 1% to 0.1%, costs only 3.8 cm at $\sigma = 5$ cm, which should make you
+suspicious of how much safety you are really buying.
+</Derivation>
+
+**Worked example, checkable by hand.** Take $\delta = 0.01$, so
+$k_\sigma = \Phi^{-1}(0.99) = 2.3263$ — that is the standard normal table, one entry. With
+Rusty's radius $r = 0.19$ m and a well-localized $\sigma_{\text{pose}} = 0.05$ m:
+
+$$
+\text{margin} \;=\; 0.19 + 2.3263 \times 0.05 \;=\; \boxed{0.3063\ \text{m}}
+$$
+
+Now cut the LiDAR while Rusty is at cruise. Each 0.1 s of open-loop prediction adds about
+$(0.11 \times 0.062)^2 \approx 4.9 \times 10^{-5}$ m² of along-track variance, so 2.5 s
+of driving *blind* would take $\sigma_{\text{pose}}$ from 0.025 m to roughly 0.043 m and
+the margin from 0.248 m to $0.19 + 2.3263 \times 0.043 = 0.290$ m — a four-centimetre
+squeeze on every corridor.
+
+It never gets that far, and the reason is worth stating plainly. The watchdog fires after
+0.3 s, Rusty decelerates to rest in about half a second, and a robot that is not moving
+accumulates no process noise: $\sigma_{\text{pose}}$ flattens at 0.027 m and the margin
+at 0.255 m and neither moves again until the scans come back. Stopping is not merely the
+cautious response to losing your sensor. It is the action that *bounds* $\sigma$, and
+that is why the margin and the watchdog are not redundant — the watchdog buys the stop,
+and the stop is what keeps the margin finite.
+
+### F3 — The latency budget
+
+**Statement.** A dynamic obstacle approaching at $v_{\text{obs}}$ is avoided rather than
+hit iff
+
+$$
+\underbrace{v_{\text{obs}}\,(\varsigma_{\text{map}} + \tau_{\text{plan}} + \tau_{\text{ctrl}})}_{\text{how far it moves while we react}}
+\;+\;
+\underbrace{\frac{v_{\text{rusty}}^2}{2 a_{\max}}}_{\text{braking distance}}
+\;<\;
+d_{\text{detect}}
+$$
+
+<Derivation title="Chaining the delays" result="v_{\text{obs}}(\varsigma_{\text{map}} + \tau_{\text{plan}} + \tau_{\text{ctrl}}) + v^2/2a_{\max} < d_{\text{detect}}">
+**Step 1 — the pipeline delay.** A measurement is only acted on after it has traversed
+every task between the sensor and the wheels. In the worst case each task has just
+published when the measurement arrives, so it waits a full period: the novelty flag waits
+$\varsigma_{\text{map}}$ for the next costmap, the costmap waits $\tau_{\text{plan}}$ for
+the next replan, and the path waits $\tau_{\text{ctrl}}$ for the next control tick. Delays
+in series add.
+
+**Step 2 — the obstacle keeps moving.** During that delay the obstacle covers
+$v_{\text{obs}}$ times the total.
+
+**Step 3 — and then you still have to stop.** Once the command changes, the robot needs
+$v^2/2a_{\max}$ to come to rest. Compare the sum with the range at which the obstacle is
+reliably detected. $\blacksquare$
+</Derivation>
+
+**The demo's numbers.** The rate table gives $\varsigma_{\text{map}} = 0.1$ s (mapping at
+10 Hz), $\tau_{\text{plan}} = 1.0$ s (replanning at 1 Hz), $\tau_{\text{ctrl}} = 0.05$ s
+(MPPI at 20 Hz), for a reaction delay of $1.15$ s. Rusty cruises at $0.62$ m/s and brakes
+at about $1.2$ m/s², so braking costs $0.62^2 / (2 \times 1.2) = 0.16$ m. Against the
+walker at $0.8$ m/s:
+
+$$
+0.8 \times 1.15 + 0.16 \;=\; 1.08\ \text{m} \;<\; d_{\text{detect}} \approx 2.5\ \text{m}
+$$
+
+Comfortable — but the detection range on the right deserves justifying rather than
+asserting, because it is the term everyone fudges. A walker is flagged when at least
+three beams land in cells the map calls confidently free. Measured across six seeds, the
+range at which that first happens ran from 2.45 m to over 5 m, depending on how much of
+the surrounding map had been confidently cleared when the person arrived. Budget with the
+worst of them, not the median.
+
+Now solve for the speed at which the bound stops holding:
+$v_{\text{obs}} \times 1.15 + 0.16 = 2.5$ gives $v_{\text{obs}} \approx 2.0$ m/s. That is
+Exercise 3, and the Grand Demo has a walker-speed slider so you can go looking for it.
+
+Notice which term dominates. The replanning period alone is $1.0$ of the $1.15$ s
+reaction delay — 87% of it. Doubling the LiDAR rate would buy essentially nothing;
+moving the replan from 1 Hz to 5 Hz would take the reaction delay to $0.35$ s and more
+than *triple* the safe obstacle speed. This is what a latency budget is for: it tells you
+which knob is worth turning, and the answer is very rarely the sensor.
+
+### F4 — Three detectors
+
+Every approximation above is a claim about the world. The supervisor's job is to hold a
+statistic against each claim, and — this is the part people skip — to pick the threshold
+for a reason.
+
+**(a) Mislocalization, from a fitness ratio.** [Chapter 12](/chapters/ch12-localization-global)
+tracks the average particle weight at two timescales and compares them. Transplant the
+same detector onto scan-match fitness $f_t$ — the fraction of beam endpoints landing
+within 25 cm of something the map already knows about:
+
+<LinkedMath>
+$$
+w_{\text{fast}} \leftarrow w_{\text{fast}} + \alpha_{\text{fast}}(f_t - w_{\text{fast}}),
+\qquad
+w_{\text{slow}} \leftarrow w_{\text{slow}} + \alpha_{\text{slow}}(f_t - w_{\text{slow}}),
+\qquad
+\htmlClass{term-posterior}{\rho_t} = \frac{w_{\text{fast}}}{w_{\text{slow}}}
+$$
+</LinkedMath>
+
+with $\alpha_{\text{fast}} = 0.5 \gg \alpha_{\text{slow}} = 0.05$. The justification
+transfers verbatim: $\rho$ is a *ratio*, so it is invariant to the absolute scale of the
+score, and the slow average supplies a baseline that no fixed threshold on $f_t$ could —
+a fitness of 0.6 is excellent in a cluttered room and alarming in a corridor.
+
+Note the statistic being fed in is deliberately stricter than ICP's own inlier count. ICP
+always converges to *something*; the question is not "did it converge?" but "does this
+sweep belong to this part of the map?".
+
+**(b) Divergence, from the innovation.** The SLAM front end's correction has an
+innovation $\nu_t = \log\!\big(\hat x_t^{-1} \, x_t^{\text{icp}}\big)$ and an innovation
+covariance $S_t = \bar\Sigma_t + R_t^{\text{icp}}$. Under a correctly specified filter
+$\epsilon_t = \nu_t^{\mathsf{T}} S_t^{-1} \nu_t \sim \chi^2_3$
+([Chapter 11](/chapters/ch11-localization-gaussian)'s gate, reused). One excursion past
+the 95% point happens once every twenty scans by construction and means nothing;
+$k$ in a row has probability $0.05^k$ under the null, which is one in 160 000 by $k=4$.
+That is the entire design of the test, and it is why the gate reports a *streak* rather
+than a flag.
+
+The same statistic gets a second, grosser threshold: past the 99.9% point of $\chi^2_3$
+twice running is not a filter that needs damping, it is a filter tracking the wrong
+hypothesis, and it routes to `Relocalize` rather than to `Recover`.
+
+**(c) Silence, from a watchdog.** A message that never arrives produces no statistic to
+test, so nothing upstream can notice it. The watchdog notices the *absence*: scan age
+$\varsigma_{\text{scan}} > 3\tau_{\text{scan}}$. Three periods is long enough to ride out
+one dropped sweep and short enough that the covariance has not yet grown past the F2
+margin.
+
+<Derivation title="Choosing ρ_min, and the worked example the widget reproduces" result="\rho_1 = 0.7450,\quad \rho_2 = 0.6200">
+A threshold nobody can defend is a threshold that will be tuned until the alarm stops
+going off, which is how safety systems die. So measure the null distribution first.
+
+Over four nominal missions with different seeds — 4232 scans in total, sampled after the
+first five seconds — the *smallest* $\rho_t$ ever observed was $0.919$ and the fifth
+percentile was $0.983$. Setting $\rho_{\min} = 0.80$ therefore leaves twelve percentage
+points of headroom below anything a healthy filter has ever produced, and requiring two
+consecutive violations makes a false alarm from measurement noise alone essentially
+impossible.
+
+Now the alarm, by hand. Suppose fitness has been steady at $0.98$, so
+$w_{\text{fast}} = w_{\text{slow}} = 0.98$, and a kidnapping drops it to $0.44$.
+
+After the first bad scan:
+
+$$
+w_{\text{fast}} = 0.98 + 0.5\,(0.44 - 0.98) = 0.71,
+\qquad
+w_{\text{slow}} = 0.98 + 0.05\,(0.44 - 0.98) = 0.953
+$$
+
+$$
+\rho_1 = \frac{0.71}{0.953} = 0.7450 \;<\; 0.80 \quad\text{(one violation)}
+$$
+
+After the second:
+
+$$
+w_{\text{fast}} = 0.71 + 0.5\,(0.44 - 0.71) = 0.575,
+\qquad
+w_{\text{slow}} = 0.953 + 0.05\,(0.44 - 0.953) = 0.92735
+$$
+
+$$
+\rho_2 = \frac{0.575}{0.92735} = 0.6200 \;<\; 0.80 \quad\text{(alarm)}
+$$
+
+Two scans at 10 Hz is 0.2 s. Press Kidnap in the Grand Demo and read the event log: the
+`KidnapSuspected` entry lands within two tenths of a second of the injection, with
+$\rho \approx 0.60$. The test at the end of this chapter pins both numbers.
+</Derivation>
+
+## The algorithms
+
+<Algorithm
+  name="stack_tick(bus, tasks, now)"
+  inputs="the message bus, the task set, the current time"
+  outputs="one scheduler quantum executed"
+  complexity="sum of the due tasks; ≈1.1 ms per quantum for the default apartment"
+>
+1. for each task $T_i$ in **topological order** do
+2. &nbsp;&nbsp;&nbsp;&nbsp;if $\lfloor \text{now}/\tau_i \rfloor > \lfloor \text{last}_i/\tau_i \rfloor$ and $T_i$ is enabled then
+3. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$T_i.\texttt{tick}(\text{bus}, \text{now})$
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\text{last}_i \leftarrow \text{now}$
+5. &nbsp;&nbsp;&nbsp;&nbsp;endif
+6. endfor
+7. for each $T_i$ do $\varsigma_i \leftarrow \text{now} - \text{last}_i$
+</Algorithm>
+
+Topological order matters and is worth dwelling on. Running tasks in dataflow order means
+a message published this quantum is consumed this quantum, so *all* observed staleness
+comes from task periods and none from the scheduler. That is precisely the property that
+makes the browser's cooperative scheduler and the native build's threads agree
+run-for-run — and it is also the property that lets F3 be an arithmetic statement about
+$\tau_i$ rather than a distribution over scheduling outcomes.
+
+<Algorithm
+  name="supervisor_step(mode, events)"
+  inputs="the current mode, this quantum's detector readings"
+  outputs="the next mode"
+  complexity="O(1)"
+>
+1. if $\varsigma_{\text{scan}} > 3\tau_{\text{scan}}$ then **return** `Recover(SensorDropout)`
+2. if scans have resumed and mode is `Recover(SensorDropout)` then **return** the remembered mode
+3. if a scan was matched this quantum then
+4. &nbsp;&nbsp;&nbsp;&nbsp;if $\rho_t < \rho_{\min}$ for $k_\rho$ consecutive scans then **return** `Relocalize`
+5. &nbsp;&nbsp;&nbsp;&nbsp;if $\epsilon_t > \chi^2_{3,\,0.999}$ for 2 consecutive scans then **return** `Relocalize`
+6. &nbsp;&nbsp;&nbsp;&nbsp;if $\epsilon_t > \chi^2_{3,\,0.95}$ for 4 consecutive scans then inflate $\Sigma_t$; **return** `Recover(Divergence)`
+7. match mode:
+8. &nbsp;&nbsp;&nbsp;&nbsp;`Explore` → pick $\arg\max$ utility frontier; `Navigate` if a path exists, else `Done` when D26.3 holds
+9. &nbsp;&nbsp;&nbsp;&nbsp;`Navigate{g}` → `Explore` when $g$ is reached, is no longer a frontier, is unreachable, or no progress for 4 s
+10. &nbsp;&nbsp;&nbsp;&nbsp;`Relocalize` → `Explore` once the cloud is unimodal, tight, **and verified** against the live sweep
+11. &nbsp;&nbsp;&nbsp;&nbsp;`Recover(Divergence)` → the remembered mode after a settling period
+12. &nbsp;&nbsp;&nbsp;&nbsp;`Done` → `Done`
+</Algorithm>
+
+Line 10 carries more weight than it looks. A converged particle cloud is a *hypothesis*,
+and accepting one without checking is how a robot ends up confidently in the wrong room.
+So the same discipline [Chapter 16](/chapters/ch16-scan-matching) applies to loop closure
+applies here: detection is cheap and often wrong, verification is expensive and has to be
+right. The verification is a direct one — re-score the live sweep against the map at the
+proposed pose and demand 75% agreement — and when it fails, the recovery scatters again
+rather than committing.
+
+## Implementation in Rust
+
+Three listings: the bus, the supervisor, and the mission with its regression test.
+
+### The bus
+
+Everything the stack sends is stamped and frame-tagged, and the frame is a *type*, not a
+string. That single decision is what makes an entire family of bugs — the family that
+puts a goal expressed in the map frame into a controller expecting the base frame —
+impossible rather than merely unlikely.
+
+```rust title="crates/capstone/src/bus.rs"
+use crossbeam_channel::{bounded, Receiver, Sender};
+use localize::GaussianBelief;          // Ch. 11: { mean: SE2, cov: Matrix3<f64> }
+use nalgebra::Vector2;
+use std::marker::PhantomData;
+
+/// A coordinate frame, as a zero-sized type. `Pose<Map>` and `Pose<Base>` are
+/// different types and cannot be mixed; the tag costs nothing at run time.
+pub trait Frame: Copy + 'static {
+    const NAME: &'static str;
+}
+#[derive(Clone, Copy)] pub struct Map;
+#[derive(Clone, Copy)] pub struct Odom;
+#[derive(Clone, Copy)] pub struct Base;
+impl Frame for Map  { const NAME: &'static str = "map"; }
+impl Frame for Odom { const NAME: &'static str = "odom"; }
+impl Frame for Base { const NAME: &'static str = "base"; }
+
+/// D26.1: nothing crosses a task boundary without a time and a frame on it.
+#[derive(Clone, Copy, Debug)]
+pub struct Stamped<T, F: Frame> {
+    pub t: SimTime,
+    pub v: T,
+    _frame: PhantomData<F>,
+}
+
+impl<T, F: Frame> Stamped<T, F> {
+    pub fn new(t: SimTime, v: T) -> Self {
+        Self { t, v, _frame: PhantomData }
+    }
+    /// Age in seconds. This is ς_i, the quantity Derivation F3 budgets.
+    pub fn staleness(&self, now: SimTime) -> f64 {
+        now - self.t
+    }
+}
+
+#[derive(Clone)]
+pub enum Msg {
+    Scan(Stamped<Scan, Base>),
+    Odom(Stamped<Twist2, Odom>),
+    /// Estimators publish *beliefs*. A pose alone cannot produce an F2 margin.
+    PoseBelief(Stamped<GaussianBelief, Map>),
+    MapPatch(Stamped<OccGridPatch, Map>),
+    Frontiers(Stamped<Vec<ScoredFrontier>, Map>),
+    Path(Stamped<Vec<Vector2<f64>>, Map>),
+    Cmd(Stamped<Cmd, Base>),
+    Event(StackEvent),
+}
+
+/// One capstone subsystem. The *same* impl runs threaded on native and
+/// cooperatively on wasm; `Task: Send` is what the native runner needs, and it
+/// is also what stops a task from smuggling an `Rc<RefCell<SmallRng>>` inside.
+pub trait Task: Send {
+    fn name(&self) -> &'static str;
+    fn period(&self) -> f64;
+    fn tick(&mut self, bus: &mut Bus, now: SimTime);
+}
+
+/// Bounded channels, on purpose: an unbounded queue turns a slow consumer into
+/// a memory leak and hides the very staleness F3 is trying to bound. When a
+/// costmap consumer falls behind we would rather drop the stale patch than
+/// deliver it late.
+pub struct Bus {
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+}
+
+impl Bus {
+    pub fn new(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity);
+        Self { tx, rx }
+    }
+    pub fn publish(&self, m: Msg) {
+        // A full bus is a scheduling bug, not a reason to block the producer.
+        let _ = self.tx.try_send(m);
+    }
+}
+```
+
+### The supervisor
+
+The mode is an enum with data, the detectors are three small structs, and
+`supervisor_step` is one `match`. That last point is not stylistic: when `Recover` was
+added to `Mode` late in the writing of this book, the compiler produced an `E0004` at
+every decision site and refused to build until each had been considered. A
+stringly-typed mode would have let the new state fall silently through to "do nothing",
+which is what a robot in an unhandled state does off a loading dock.
+
+```rust title="crates/capstone/src/tasks/supervisor.rs" {40-58,84-108}
+use nalgebra::{Matrix3, Vector3};
+use statrs::distribution::{ChiSquared, ContinuousCDF};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RecoverKind { SensorDropout, Divergence }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    Explore,
+    Navigate { goal: FrontierId },
+    Relocalize,
+    Recover(RecoverKind),
+    Done,
+}
+
+/// F4(a). Chapter 12's dual EMA, fed scan-match fitness instead of particle
+/// weight. The ratio is scale-free, which is why one pair of gains works in a
+/// corridor and in a warehouse.
+pub struct DualEmaDetector {
+    w_fast: f64,
+    w_slow: f64,
+    alpha_fast: f64,
+    alpha_slow: f64,
+    seeded: bool,
+    streak: u32,
+    rho_min: f64,
+    patience: u32,
+}
+
+impl DualEmaDetector {
+    pub fn rho(&self) -> f64 {
+        if self.w_slow > 0.0 { self.w_fast / self.w_slow } else { 1.0 }
+    }
+
+    /// Returns true when the alarm fires. Seeding both averages with the first
+    /// sample avoids a spurious spike on step two that is an artefact of
+    /// initialisation rather than a property of the data.
+    pub fn update(&mut self, fitness: f64) -> bool {
+        if !self.seeded {
+            self.w_fast = fitness;
+            self.w_slow = fitness;
+            self.seeded = true;
+            return false;
+        }
+        self.w_fast += self.alpha_fast * (fitness - self.w_fast);
+        self.w_slow += self.alpha_slow * (fitness - self.w_slow);
+        self.streak = if self.rho() < self.rho_min { self.streak + 1 } else { 0 };
+        self.streak >= self.patience
+    }
+}
+
+/// F4(b). A χ² gate that reports a *streak*: one excursion past the 95% point
+/// is expected once every twenty scans and means nothing.
+pub struct ChiSquareGate {
+    threshold: f64,
+    patience: u32,
+    streak: u32,
+}
+
+impl ChiSquareGate {
+    pub fn at(dof: f64, quantile: f64, patience: u32) -> Self {
+        let chi = ChiSquared::new(dof).expect("dof > 0");
+        Self { threshold: chi.inverse_cdf(quantile), patience, streak: 0 }
+    }
+
+    pub fn update(&mut self, nis: f64) -> bool {
+        self.streak = if nis > self.threshold { self.streak + 1 } else { 0 };
+        self.streak >= self.patience
+    }
+}
+
+pub struct Supervisor {
+    mode: Mode,
+    resume: Mode,
+    fitness: DualEmaDetector,        // F4(a)
+    gross: ChiSquareGate,            // χ²₃ at 99.9%, patience 2
+    divergence: ChiSquareGate,       // χ²₃ at 95%,   patience 4
+    scan_watchdog: Watchdog,         // F4(c)
+}
+
+impl Supervisor {
+    pub fn step(&mut self, ev: &Telemetry, now: SimTime) -> Mode {
+        // A missing message produces no statistic, so absence is checked first.
+        if self.scan_watchdog.expired(now) {
+            self.resume = self.mode;
+            self.mode = Mode::Recover(RecoverKind::SensorDropout);
+            return self.mode;
+        }
+        if matches!(self.mode, Mode::Recover(RecoverKind::SensorDropout)) {
+            self.mode = self.resume;
+            return self.mode;
+        }
+
+        // Both remaining detectors are statistics *of a scan match*, so they may
+        // only be fed once per scan — never once per scheduler quantum, which
+        // would silently halve their effective thresholds.
+        if ev.matched_this_tick {
+            if self.fitness.update(ev.icp_fitness) || self.gross.update(ev.nis) {
+                self.mode = Mode::Relocalize;
+                return self.mode;
+            }
+            if self.divergence.update(ev.nis) {
+                self.resume = self.mode;
+                self.mode = Mode::Recover(RecoverKind::Divergence);
+                return self.mode;
+            }
+        }
+
+        // The exhaustive match. Adding a variant to `Mode` breaks this build,
+        // which is the entire reason `Mode` is an enum.
+        self.mode = match self.mode {
+            Mode::Explore => match ev.best_frontier {
+                Some(g) if ev.path_exists => Mode::Navigate { goal: g },
+                _ if ev.stopping_criterion_met() => Mode::Done,
+                _ => Mode::Explore,
+            },
+            Mode::Navigate { goal } if ev.goal_finished(goal) => Mode::Explore,
+            Mode::Relocalize if ev.reloc_converged && ev.reloc_verified => Mode::Explore,
+            Mode::Recover(RecoverKind::Divergence) if now > self.settle_until => self.resume,
+            other => other,
+        };
+        self.mode
+    }
+}
+```
+
+### The margin, and the mission
+
+The F2 margin is four lines, and it is the only place in the stack where the pose
+covariance is allowed to change what the robot does.
+
+```rust title="crates/capstone/src/tasks/control.rs"
+use nalgebra::Matrix3;
+use statrs::distribution::{ContinuousCDF, Normal};
+
+/// Largest position standard deviation: the square root of the larger
+/// eigenvalue of the translation block, in closed form for 2×2.
+pub fn position_sigma(cov: &Matrix3<f64>) -> f64 {
+    let (a, b, c) = (cov[(0, 0)], cov[(0, 1)], cov[(1, 1)]);
+    let mean = 0.5 * (a + c);
+    let disc = (0.25 * (a - c).powi(2) + b * b).max(0.0).sqrt();
+    (mean + disc).max(0.0).sqrt()
+}
+
+/// Derivation F2: d_esdf(x) ≥ r_robot + k_σ σ_pose,  k_σ = Φ⁻¹(1 − δ).
+///
+/// Note what happens as the filter loses confidence: the margin grows, the
+/// planner finds fewer admissible cells, and eventually every MPPI rollout is
+/// infeasible and the robot stops. Nobody wrote "stop when lost".
+pub fn safety_margin(r_robot: f64, sigma_pose: f64, delta: f64) -> f64 {
+    let k_sigma = Normal::standard().inverse_cdf(1.0 - delta);
+    r_robot + k_sigma * sigma_pose
+}
+```
+
+And the mission entry point, with the regression that CI runs on every commit:
+
+```rust title="crates/capstone/src/mission.rs"
+pub struct MissionCfg {
+    pub seed: u64,
+    pub delta: f64,
+    pub rates: RateTable,
+    pub chaos: Vec<ChaosEvent>,
+}
+
+pub struct MissionReport {
+    pub coverage: f64,          // fraction of *reachable* cells known
+    pub traj_rmse: f64,         // against ground truth — a simulator-only luxury
+    pub odom_error: f64,        // where dead reckoning ended up, for contrast
+    pub contacts: usize,
+    pub entropy_curve: Vec<(SimTime, f64)>,
+    pub events: Vec<(SimTime, StackEvent)>,
+}
+
+/// Deterministic under `cfg.seed`: same trajectory, same events, same numbers,
+/// in `cargo test` and in the browser. That is why the wasm scheduler is
+/// round-robin rather than preemptive.
+pub fn run_mission(cfg: &MissionCfg) -> MissionReport { /* … */ }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// The worked example of Derivation F2, to the digit printed in the text.
+    #[test]
+    fn f2_margin_worked_example() {
+        assert_relative_eq!(
+            Normal::standard().inverse_cdf(0.99), 2.3263479, epsilon = 1e-6);
+        assert_relative_eq!(
+            safety_margin(0.19, 0.05, 0.01), 0.3063174, epsilon = 1e-6);
+        // A tenfold tighter bound costs under four centimetres. The Gaussian
+        // tail is steep, which is why this margin is cheap — and why it is a
+        // poor defence against error that is not really Gaussian.
+        assert_relative_eq!(
+            safety_margin(0.19, 0.05, 0.001) - safety_margin(0.19, 0.05, 0.01),
+            0.03819, epsilon = 1e-4);
+    }
+
+    /// The worked example of Derivation F4: fitness steady at 0.98, then a
+    /// kidnapping drops it to 0.44. The alarm must fire on the second scan.
+    #[test]
+    fn f4a_dual_ema_worked_example() {
+        let mut d = DualEmaDetector::new(0.5, 0.05, 0.80, 2);
+        assert!(!d.update(0.98));               // seeds w_fast = w_slow = 0.98
+        assert!(!d.update(0.44));
+        assert_relative_eq!(d.rho(), 0.745016, epsilon = 1e-5);
+        assert!(d.update(0.44));                // second violation ⇒ alarm
+        assert_relative_eq!(d.rho(), 0.620047, epsilon = 1e-5);
+    }
+
+    /// The book's end-to-end regression. CI fails if any of these regress.
+    #[test]
+    fn seed_42_maps_the_apartment() {
+        let r = run_mission(&MissionCfg::seed(42));
+        assert!(r.coverage >= 0.99, "coverage {}", r.coverage);
+        assert!(r.traj_rmse <= 0.20, "rmse {}", r.traj_rmse);
+        assert_eq!(r.contacts, 0);
+        // SLAM must beat dead reckoning by an order of magnitude, or the scan
+        // matcher is not earning its place in the stack.
+        assert!(r.odom_error / r.traj_rmse >= 10.0);
+    }
+}
+```
+
+<Callout type="info">
+Those three tests pass in the TypeScript port that runs the widgets on this page, in
+`lib/capstone/checks.ts`. Seed 42 maps the apartment in **87.4 s of simulated time**,
+reaching **99.7% coverage** with a trajectory RMSE of **0.124 m** and **zero** wall
+contacts, while dead reckoning over the same run ends up **2.90 m** from the truth. If
+the prose and the code ever disagree, the test settles it.
+</Callout>
+
+## Breaking it on purpose
+
+Three sabotages, one per row of F1's table, each with the statistic that is supposed to
+notice.
+
+<Deferred>
+  <FailureTheater />
+</Deferred>
+
+**Kidnap** attacks the assumption that the belief brackets the truth. Watch $\rho$: it is
+flat and near 1 for the whole warm-up, dives within two scans of the teleport, and the
+supervisor switches to `Relocalize`. Then watch what the recovery *does* — it stops
+mapping (integrating scans at a pose you have just admitted is wrong is the fastest way
+to destroy a map that was fine), abandons the goal, drops MPPI in favour of a reactive
+creep that steers by raw range data, and only commits when the cloud is unimodal, tight,
+*and* verified. That creep is not decoration: a stationary robot in a rectangular room
+can drive a particle cloud into one confident mode in half a second — in the wrong room,
+because from a single viewpoint the two rooms are the same measurement. Motion is what
+separates them. It is the cheapest possible taste of belief-space planning: act to
+disambiguate, then commit.
+
+The recovery does not always succeed, and the widget does not hide it. The apartment's
+south rooms are deliberate mirror images of each other
+([Chapter 12](/chapters/ch12-localization-global) built that symmetry on purpose), so on
+some seeds the cloud settles in the mirrored room and the verification step accepts it —
+because at that pose the sweep really does match the map. That is Exercise 4.
+
+**Walker** attacks the static-world assumption. A person crosses in front of the LiDAR;
+several beams stop early. The novelty test is a single line — a beam whose endpoint lands
+in a cell the map calls *confidently free* is a beam the map cannot explain — and it has
+two consequences, which are opposite on purpose. Those beams are **withheld from
+mapping**, so the map never learns the person and does not need to unlearn them. And
+their endpoints are **injected into the controller's distance field as transient
+obstacles**, so MPPI steers around a person who is not in the map at all. Same
+measurement, opposite treatment, decided by which downstream consumer is asking.
+
+**Dropout** attacks the assumption that messages arrive. It is the quietest failure and
+the most instructive: nothing errors. The estimator simply predicts without correcting,
+$\Sigma_t$ grows, and the F2 margin grows with it. The chart plots both. Watch them rise
+for a few tenths of a second — and then watch them go *flat*, because by then the watchdog
+has fired and Rusty has stopped, and a stationary robot accumulates no process noise. The
+two mechanisms are doing different jobs: the watchdog is the fast detector, and the
+margin is the graceful degradation that would have stopped the robot anyway, a few
+seconds later, if the watchdog had not existed.
+
+The interesting engineering question is what happens if the dropout lasts thirty seconds
+instead of two and a half, and the answer is that the stack behaves correctly and
+uselessly: it sits still, perfectly safe, indefinitely. Deciding what to do then — call
+for help, drive home on odometry alone, retry the sensor — is a product question, not a
+probability question, and this is the chapter to be honest about where that boundary is.
+
+**And one sabotage that is not a chaos button.** The Grand Demo's *calibrated sensor
+model* toggle is [Chapter 25](/chapters/ch25-learning)'s contribution to the stack, and
+switching it off is the most realistic failure on this page, because it is the one you
+inflict on yourself. An uncalibrated model claims a smaller $\sigma$ than the sensor has
+and treats consecutive LiDAR beams as five times more independent than they are. Over
+five seeds, that takes the mean pose $\sigma$ from $0.0176$ m to $0.0127$ m — a filter
+looking 28% more confident while being no more accurate — shrinks the F2 margin, and
+raises the mean NIS from $0.76$ to $2.48$. Three of the five runs raised a false alarm,
+and two of them failed to finish.
+
+That is worth sitting with. Overconfidence did not show up as a bad estimate. It showed
+up as a *consistency* failure: the filter's own $\chi^2$ test started rejecting the
+filter's own updates, and the supervisor spent the mission responding to alarms that were
+correct about the model and wrong about the world. Calibration is not a nicety at the
+bottom of the stack; it is what makes every detector above it meaningful.
+
+## What Rust cost, and what it bought
+
+<Deferred>
+  <RetrospectiveScorecard />
+</Deferred>
+
+Three honesty items that the panels above cannot express on their own.
+
+**The simulator grades its own homework.** Trajectory RMSE against ground truth exists
+only because we own the world. On hardware there is no truth column, and evaluation
+becomes: held-out maps, loop-closure precision and recall, repeatability across repeated
+runs, and the map-consistency number [Chapter 16](/chapters/ch16-scan-matching) defined —
+how far the second pass over a corridor lands from the first. That last one is the most
+useful metric in this book precisely because a robot can compute it about itself.
+
+**The browser proves throughput, not scheduling.** WASM is single-threaded here, so the
+in-page stack is cooperative, not preemptive. The identical-semantics claim holds because
+the scheduler is deterministic and topological, and that is a real and useful property —
+but it is not a proof that the native, threaded build meets its deadlines. Real-time
+scheduling is a claim about worst cases under contention, and nothing on this page tests
+that.
+
+**Every ecosystem statement here is dated.** The crate versions in this book were pinned
+in August 2026. Sparse solvers, factor-graph libraries, and Lie-group crates in Rust are
+all younger than their C++ counterparts and all moving. Check before you trust.
+
+## Where to go next
+
+**Onto ROS 2.** The architecture above was deliberately shaped like the modern ROS 2
+navigation stack, so the mapping is one-to-one: our SLAM task is `slam_toolbox`, our ESDF
+layer is a Nav2 costmap layer, our planner is the planner server, our MPPI is the
+controller server (Nav2 ships one), and our supervisor is a behavior tree. Rust bindings
+exist — `rclrs` from the `ros2-rust` project, with `r2r` as an alternative — and porting a
+single task is the natural first step, because the message boundary is already exactly
+where the ROS topic would go. That is Exercise 6.
+
+**Onto hardware.** The three things that break first are, in order: time (your sensor
+stamps and your clock disagree, and F3 becomes a distribution rather than an arithmetic
+statement), extrinsics (the LiDAR is not where the URDF says it is, and every scan match
+inherits the error), and the motion model (real wheels slip in ways
+[Chapter 9](/chapters/ch09-motion-models)'s $\alpha$'s do not describe). None of these is
+a new algorithm. All of them are calibration, which is
+[Chapter 25](/chapters/ch25-learning)'s subject.
+
+**Into three dimensions.** Everything here generalizes, and most of it gets harder in one
+specific way: the map. Occupancy grids do not scale to 3-D at useful resolution, which is
+why [Chapter 19](/chapters/ch19-map-representations) spent its time on octrees and TSDFs;
+the ESDF, the planner, and MPPI all carry over almost unchanged on top of them.
+
+**To more than one robot.** Multi-robot SLAM is out of scope for a single-browser demo
+and is genuinely different: the hard part is not the estimation but deciding which map
+is whose and merging them without a shared frame. It is one of the liveliest areas in the
+field and a good place to read next.
+
+<KeyIdea title="The closing claim, stated plainly">
+Everything you studied in this book is running on this page, unmodified, at real time,
+with every internal inspectable. Not a simplified version of it; the same code, seeded so
+that your run and mine are the same run. That is what it means for a book to be honest
+about its algorithms.
+</KeyIdea>
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="From a point guarantee to a path guarantee">
+    Derivation F2 bounds the collision probability at a single point of the trajectory.
+    Show that a path of $n$ waypoints, each individually safe at level $\delta$, is only
+    guaranteed safe at level $n\delta$, and derive the Bonferroni-corrected per-point
+    level needed for a path-level guarantee at $\delta$.
+
+    Then compute the cost: for a 30-waypoint path at $\delta = 0.01$ and
+    $\sigma_{\text{pose}} = 0.05$ m, how much wider is the corrected margin than the
+    naive one? Finally, argue in two sentences why the union bound is loose here — what
+    is the relationship between the collision events at consecutive waypoints?
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Write the mission down, then take it apart">
+    Write the exploration mission of D26.2 as a formal POMDP tuple
+    $\langle \mathcal{S}, \mathcal{A}, \mathcal{O}, T, Z, R, \gamma \rangle$, being
+    explicit about what $\mathcal{S}$ contains and how large it is for the apartment at
+    15 cm resolution.
+
+    Then, from memory, name the approximation each of the five layers in F1's table
+    makes and the failure it induces. Finally: if you had one graduate student and one
+    year, which single assumption would you spend the effort removing, and what evidence
+    from the widgets on this page supports that choice?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="A threshold you can defend">
+    The chapter sets $\rho_{\min} = 0.80$ with patience 2 by measuring the null
+    distribution over four nominal missions. Suppose instead you measure a mean of
+    $\bar\rho = 1.00$ with standard deviation $0.03$ and decide to set the threshold at
+    $\bar\rho - 3s$.
+
+    (a) What false-alarm rate per scan does that imply if $\rho$ were Gaussian, and what
+    rate per hour at 10 Hz? (b) With patience $k$, how does that rate change, and what
+    does patience cost you in detection latency? (c) $\rho$ is a ratio of two correlated
+    EMAs and is not Gaussian. Which direction does that error most likely go, and what
+    would you measure instead of assuming?
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict the walker speed that wins">
+    Using F3 and the numbers in the Timing tab of the Grand Demo, predict the walker
+    speed at which the stack starts failing to avoid the person. Write your prediction
+    down before you test it.
+
+    Now test it: raise the walker-speed slider and press Walker repeatedly, watching the
+    novelty count and the trajectory. Then change one rate at a time in your head — LiDAR
+    to 20 Hz, replanning to 5 Hz, control to 50 Hz — and rank them by how much each
+    raises the safe speed. Which term in F3 dominated, and by how much?
+
+    One honest complication to account for in your answer: the corridor is 1.2 m wide, so
+    a fast walker crosses the robot's path in well under a second and the geometry, not
+    just the latency, decides the outcome. Does that make your prediction optimistic or
+    pessimistic?
+  </Exercise>
+
+  <Exercise level="C" difficulty={3} title="Find a seed where recovery is confidently wrong">
+    In the Failure Theater's Kidnap tab, re-roll the seed until you find a run where the
+    particle cloud converges, passes the verification gate, and is nevertheless in the
+    wrong place. (Turn on the ground-truth overlay in the Grand Demo to confirm.)
+
+    Explain the symmetry that caused it in terms of the apartment's floorplan. Then
+    propose two fixes and say what each costs: one that changes the *sensor* and one that
+    changes the *behavior*. Which would you ship?
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Add a ReturnHome mode">
+    Add `Mode::ReturnHome` to the supervisor: after `Done`, plan a path back to the
+    starting pose and drive it, then stop. The change should touch only `supervisor.rs`
+    and `mission.rs`.
+
+    Do it by adding the variant *first* and building before writing any other code, so
+    you experience the `E0004` cascade from the Retrospective Scorecard firsthand. Count
+    the sites the compiler flags. Then ask: how many of those would a `_ => {}` arm have
+    hidden, and what would each have done at run time?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Make the margin honest about non-Gaussian error">
+    F2 assumes the pose error is Gaussian. Replace that assumption with a sampled one:
+    draw $N$ poses from the current belief, evaluate $d_{\text{esdf}}$ at each, and set
+    the margin so that at most $\delta N$ samples are in collision — a sample-average
+    approximation of the chance constraint.
+
+    Implement it in the control task, compare margins against the closed form under a
+    Gaussian belief (they should agree as $N$ grows), and then break the agreement: run
+    the comparison immediately after a `Relocalize` completes, when the belief is a
+    freshly-collapsed particle cloud rather than a Gaussian. Report the disagreement in
+    centimetres, and say whether the closed form was optimistic or pessimistic.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="The book this one modernizes. It has no integration chapter — the reader finishes knowing filters, maps, and planners but never sees them composed with rates, interfaces, and failure handling. That gap is what Chapter 26 exists to fill."
+  />
+  <Reference
+    authors="Yamauchi, B."
+    year={1997}
+    title="A Frontier-Based Approach for Autonomous Exploration"
+    venue="Proceedings of the 1997 IEEE International Symposium on Computational Intelligence in Robotics and Automation (CIRA), 146–151"
+    doi="10.1109/CIRA.1997.613851"
+    note="The original frontier idea, and still the one the capstone's explorer implements: drive to the boundary between known-free and unknown, and when none remains the map is done."
+  />
+  <Reference
+    authors="Blackmore, L., Ono, M., and Williams, B. C."
+    year={2011}
+    title="Chance-Constrained Optimal Path Planning With Obstacles"
+    venue="IEEE Transactions on Robotics 27(6), 1080–1094"
+    doi="10.1109/TRO.2011.2161160"
+    note="The rigorous version of Derivation F2, including the risk-allocation machinery that replaces this chapter's crude Bonferroni correction when you need a path-level guarantee that is not wasteful."
+  />
+  <Reference
+    authors="Williams, G., Drews, P., Goldfain, B., Rehg, J. M., and Theodorou, E. A."
+    year={2018}
+    title="Information-Theoretic Model Predictive Control: Theory and Applications to Autonomous Driving"
+    venue="IEEE Transactions on Robotics 34(6), 1603–1622"
+    doi="10.1109/TRO.2018.2865891"
+    note="The MPPI formulation the control task uses, with the free-energy derivation of the exponential weighting that Chapter 23 follows."
+  />
+  <Reference
+    authors="Macenski, S. and Jambrecic, I."
+    year={2021}
+    title="SLAM Toolbox: SLAM for the Dynamic World"
+    venue="Journal of Open Source Software 6(61), 2783"
+    doi="10.21105/joss.02783"
+    note="The production counterpart of the capstone's SLAM task: scan-to-map matching against a persistent map with a pose-graph back end. Read it to see which of this chapter's simplifications a deployed system does not make."
+  />
+  <Reference
+    authors="Macenski, S., Foote, T., Gerkey, B., Lalancette, C., and Woodall, W."
+    year={2022}
+    title="Robot Operating System 2: Design, Architecture, and Uses in the Wild"
+    venue="Science Robotics 7(66), eabm6074"
+    doi="10.1126/scirobotics.abm6074"
+    note="What the bus in this chapter becomes at production scale — typed topics, QoS policies, lifecycle-managed nodes. The design rationale is the best available argument for why stamped, frame-tagged messages are not pedantry."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the Desks of ROS Maintainers: A Survey of Modern & Capable Mobile Robotics Algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="Written by the Nav2 maintainers, and the fastest way to map every task in this chapter onto a production counterpart by name — including the costmap layers, the planner server, and the MPPI controller."
+  />
+  <Reference
+    authors="Placed, J. A., Strader, J., Carrillo, H., Atanasov, N., Indelman, V., Carlone, L., and Castellanos, J. A."
+    year={2023}
+    title="A Survey on Active Simultaneous Localization and Mapping: State of the Art and New Frontiers"
+    venue="IEEE Transactions on Robotics 39(3), 1686–1705"
+    doi="10.1109/TRO.2023.3248510"
+    note="Where to go after the greedy frontier scorer: this is the modern treatment of the exploration objective in D26.2, including the belief-space formulations that would remove the first approximation in F1's table."
+  />
+</References>

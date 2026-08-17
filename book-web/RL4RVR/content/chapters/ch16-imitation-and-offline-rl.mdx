@@ -1,0 +1,355 @@
+---
+title: 'Demonstrations, Imitation & Offline RL'
+chapter: 16
+quote:
+  text: Human demonstrations are effective for enabling real-world learning, particularly in manipulation tasks that are not prohibitively complex to demonstrate.
+  author: Chen Tang and colleagues
+  affiliation: UT Austin · University of Virginia · Sony AI
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Some tasks have no usable simulator and no writable reward. But many of them are easy to demonstrate — a person can show the robot in thirty seconds what would take days to specify. This chapter starts with why naive imitation fails in a way supervised learning does not (errors compound quadratically in the horizon, and we prove it), builds the correction, and then develops offline RL: extracting good policies from a fixed dataset without any environment interaction at all. It is the closest thing robot learning has to the pretraining paradigm that transformed the rest of machine learning."
+  outcomes={[
+    'Compare demonstration modalities and state what each one can and cannot capture',
+    'Prove the T² compounding-error bound for behaviour cloning and explain the mechanism',
+    'Explain DAgger’s correction and why it is the same objective as Chapter 15’s distillation',
+    'Derive the MaxEnt IRL objective and explain what the partition function costs',
+    'Explain distributional shift in offline RL and how CQL and IQL each avoid it',
+    'Design an offline-to-online fine-tuning schedule that does not destroy the pretrained policy',
+  ]}
+  foundation="Behaviour cloning's compounding-error bound, DAgger's no-regret guarantee, MaxEnt IRL with its partition function, CQL's lower-bound property, and IQL's expectile regression."
+  conceptual="A cloned policy drifting off the demonstrated lane inside a growing error cone — and the cone collapsing to a linear band the moment DAgger is switched on."
+  practical="Browser teleoperation recording demonstration datasets, BC and DAgger in burn, IQL on logged Reacher data, then SAC fine-tuning."
+/>
+
+## 16.1 Where data can come from
+
+Reinforcement learning's default assumption is that the robot generates its own data by exploring. Chapter 14 priced that assumption honestly. Demonstrations offer a different bargain: a human supplies the data, and the robot never has to discover the behaviour from scratch.
+
+The modalities differ in what they can express and what they cost.
+
+| Modality | How it works | Captures | Fails at |
+|---|---|---|---|
+| **Teleoperation** | Human drives the robot through its own actuators | Exact robot-executable actions | Contact forces are hard to feel through the interface |
+| **Kinesthetic teaching** | Human physically guides the arm | Natural, dynamically feasible motion | Only works on backdrivable, gravity-compensated arms |
+| **Motion capture** | Track a human performing the task | Rich, fast, natural motion | Correspondence problem — human bodies are not robot bodies |
+| **Video** | Learn from ordinary recordings | Enormous scale, no special equipment | No action labels at all; must be inferred |
+
+<Callout variant="insight" title="Demonstration replaces reward design, not exploration">
+The deepest reason demonstrations help is not that they save samples. It is that they **sidestep Chapter 14's fourth curse entirely.**
+
+You do not need to write a reward for "fold the towel neatly" — a concept that has defeated every attempt at scalar specification. You show the robot three folds and the specification problem evaporates. This is why manipulation, the competency where reward design is hardest, is also the one where demonstrations dominate the successful results.
+</Callout>
+
+## 16.2 Behaviour cloning, and why it fails
+
+The obvious approach: treat $D = \{(s_i, a_i)\}$ as a supervised learning dataset and fit $\pi_\phi(s) \approx a$. This is **behaviour cloning**, and it is genuinely the right first thing to try — it is simple, stable, and sometimes sufficient.
+
+But it fails in a way that supervised learning does not, and the failure is structural rather than a matter of insufficient data.
+
+<Theorem kind="Theorem" n="16.1" title="Compounding error in behaviour cloning (Ross & Bagnell, 2010)">
+Let $\pi_\phi$ have expected 0–1 loss at most $\varepsilon$ under the demonstrator's state distribution $d_{\pi^*}$. Then over a horizon $T$, the expected cost of the cloned policy satisfies
+
+$$J(\pi_\phi) \le J(\pi^*) + T^2 \varepsilon,$$
+
+and this bound is tight — there exist problems achieving it.
+</Theorem>
+
+<Proof>
+The mechanism is a cascade. Suppose the policy first errs at step $t$. That single mistake moves the robot to a state slightly outside the demonstrated distribution — a state where the training data contains no examples, so the policy's behaviour there is undefined by the data and can be arbitrarily bad.
+
+Formally: let $p_t$ be the probability that the first mistake occurs at step $t$. Once off-distribution, the policy may incur cost up to $O(T - t)$ for the remaining horizon, since nothing constrains its behaviour there. Summing over when the first mistake happens:
+
+$$J(\pi_\phi) - J(\pi^*) \le \sum_{t=1}^{T} p_t \cdot O(T-t) \le \varepsilon \sum_{t=1}^{T} O(T - t) = O(T^2\varepsilon).$$
+
+The factor $T$ counts opportunities to make a first mistake; the second factor $T$ counts how long the consequences persist. **Tightness** is shown by a chain MDP where a single wrong action moves the agent to an absorbing state the demonstrator never visited, from which all subsequent cost is incurred. $\qquad \blacksquare$
+</Proof>
+
+<CovariateShift />
+
+<Callout variant="warning" title="The difference from ordinary supervised learning">
+In supervised learning, test inputs are drawn from the same distribution as training inputs, so error $\varepsilon$ gives cost $O(T\varepsilon)$ over $T$ predictions — linear.
+
+In sequential decision-making, **the policy's own mistakes change the distribution it will face next**. Training and test distributions are coupled through the policy, which is why the bound is quadratic. This is **covariate shift**, and no amount of additional data from the demonstrator's distribution removes it — the missing data is precisely the data the demonstrator never generated.
+</Callout>
+
+**DAgger** breaks the loop with an idea that is obvious in retrospect: query the expert *on the states the learner actually visits*. Roll out the current policy, ask the expert what it would have done at each visited state, add those labels to the dataset, and retrain. Iterate.
+
+Because the training distribution now converges to the learner's own state distribution, the bound improves to $O(T\varepsilon)$ — linear, and DAgger comes with a no-regret guarantee. The cost is that the expert must remain available and answerable during training, which is fine for a scripted or privileged expert and expensive for a human.
+
+<Callout variant="insight" title="You have already seen DAgger">
+Chapter 15's teacher–student distillation minimized a KL divergence under **the student's** trajectory distribution, and the text flagged that detail as mattering enormously.
+
+This is why. Training the student on the teacher's states is behaviour cloning, with the $T^2$ bound. Training on the student's own states is DAgger, with the linear bound. The privileged teacher is always available to answer, so the expensive part of DAgger is free — which is a large part of why the teacher–student recipe works as well as it does on quadrupeds.
+</Callout>
+
+## 16.3 Inverse RL: recover the reward instead
+
+Behaviour cloning copies actions. **Inverse reinforcement learning** aims higher: infer the *reward function* the demonstrator was optimizing, then optimize it yourself. The prize is generalization — a reward function transfers to new situations where a copied policy would flounder.
+
+The problem is famously ill-posed: infinitely many reward functions explain any behaviour, including the degenerate $r \equiv 0$. **Maximum-entropy IRL** resolves the ambiguity with a principled tie-breaker: among all reward functions consistent with the demonstrations, prefer the one whose induced trajectory distribution has maximum entropy — commit to nothing beyond what the data forces.
+
+The model is that trajectories are exponentially preferred by return:
+
+$$p(\tau) = \frac{1}{Z}\exp\big(R_\psi(\tau)\big), \qquad Z = \int \exp\big(R_\psi(\tau)\big)\, d\tau,$$
+
+and the reward parameters are fitted by maximum likelihood on the demonstrations. The gradient takes a clean and instructive form:
+
+$$\nabla_\psi \mathcal{L} = \mathbb{E}_{\tau \sim \text{demos}}\left[\nabla_\psi R_\psi(\tau)\right] - \mathbb{E}_{\tau \sim p_\psi}\left[\nabla_\psi R_\psi(\tau)\right].$$
+
+Raise the reward of what the expert did; lower the reward of what your current model predicts. The two terms balance exactly when the model's expected features match the demonstrator's.
+
+<Callout variant="warning" title="The partition function is the whole difficulty">
+That second expectation requires sampling from $p_\psi$ — which means solving the forward RL problem for the current reward estimate. Every gradient step contains a full RL problem.
+
+For small discrete MDPs, soft value iteration computes it exactly. For robots, it must be approximated, and the standard approach is adversarial: **GAIL** replaces the explicit reward with a discriminator distinguishing agent from expert trajectories, turning IRL into a GAN. That works, and inherits GAN training instability.
+
+The practical assessment: IRL is the right tool when you genuinely need the reward function — to transfer, to inspect, or to combine with other objectives. When you only need the behaviour, cloning plus fine-tuning is usually less trouble.
+</Callout>
+
+## 16.4 Offline RL: learning from a fixed dataset
+
+Now the modern framing, and the one Tang's survey identifies as most promising for real-world robot learning.
+
+Given a fixed dataset $D$ of transitions — from demonstrations, from earlier policies, from scripted controllers, from anything — learn the best possible policy **with no further environment interaction**. No exploration, no resets, no risk.
+
+The obstacle is specific and lethal. Off-policy algorithms like SAC evaluate $Q(s, a)$ at actions $a$ proposed by the current policy. If the policy proposes an action absent from the dataset, $Q$ is an extrapolation — and neural networks extrapolate confidently and wrongly. The policy then optimizes toward that erroneous high value, queries even further out of distribution, and the estimates diverge. Running SAC on a fixed dataset typically produces a policy far worse than the data it learned from.
+
+<Callout variant="insight" title="The fix is pessimism, and there are two flavours">
+**CQL** adds a term that pushes down $Q$ at out-of-distribution actions while pushing it up at actions in the dataset:
+
+$$\min_Q\; \alpha\Big(\mathbb{E}_{s\sim D, a\sim\mu}\left[Q(s,a)\right] - \mathbb{E}_{(s,a)\sim D}\left[Q(s,a)\right]\Big) + \mathcal{L}_{\text{TD}}(Q).$$
+
+The result provably lower-bounds the true $Q$, so the policy cannot be seduced by fictitious value. It is safe, and tuning $\alpha$ is fiddly — too much pessimism and the policy refuses to improve on the data at all.
+
+**IQL** avoids querying out-of-distribution actions entirely. It never evaluates $Q$ at unseen actions; instead it estimates the *upper expectile* of the value distribution over actions present in the data, using expectile regression with $\tau > 0.5$:
+
+$$L(V) = \mathbb{E}_{(s,a)\sim D}\left[\big|\tau - \mathbb{1}[Q(s,a) - V(s) < 0]\big| \cdot \big(Q(s,a) - V(s)\big)^2\right],$$
+
+then extracts a policy by advantage-weighted regression. Because it only ever touches in-distribution actions, it is markedly easier to tune — which is why it has become the default starting point.
+</Callout>
+
+<RustSnippet title="rl-deep/src/offline/iql.rs" caption="IQL's three components in burn. Note that the actor is trained by weighted regression onto dataset actions — the policy never proposes an action the data cannot vouch for, which is exactly what makes it stable offline.">
+
+```rust
+use burn::prelude::*;
+
+pub struct Iql<B: Backend> {
+    q1: Critic<B>,
+    q2: Critic<B>,
+    q_target: (Critic<B>, Critic<B>),
+    value: ValueNet<B>,
+    actor: GaussianPolicy<B>,
+    /// Expectile parameter. τ = 0.5 is plain regression; τ → 1 approaches a max
+    /// over the actions the dataset actually contains.
+    expectile: f32,
+    /// Temperature for advantage weighting; higher copies the best actions harder.
+    beta: f32,
+    gamma: f32,
+}
+
+impl<B: AutodiffBackend> Iql<B> {
+    /// Asymmetric loss: underestimates are penalized more than overestimates,
+    /// so V converges to an upper expectile of Q over in-dataset actions.
+    fn expectile_loss(&self, diff: Tensor<B, 1>) -> Tensor<B, 1> {
+        let weight = diff
+            .clone()
+            .lower_elem(0.0)
+            .float()
+            .mul_scalar(-1.0)
+            .add_scalar(1.0)              // 1 where diff ≥ 0, 0 where diff < 0
+            .mul_scalar(self.expectile)
+            .add(
+                diff.clone().lower_elem(0.0).float().mul_scalar(1.0 - self.expectile)
+            );
+        (weight * diff.powf_scalar(2.0)).mean()
+    }
+
+    pub fn value_loss(&self, batch: &Batch<B>) -> Tensor<B, 1> {
+        // Q at DATASET actions only — never at actions the policy proposes.
+        let q1 = self.q_target.0.forward(batch.states.clone(), batch.actions.clone());
+        let q2 = self.q_target.1.forward(batch.states.clone(), batch.actions.clone());
+        let q = q1.min_pair(q2).detach();
+        let v = self.value.forward(batch.states.clone());
+        self.expectile_loss(q - v)
+    }
+
+    /// Advantage-weighted regression: imitate dataset actions, weighted by how
+    /// much better than average they were.
+    pub fn actor_loss(&self, batch: &Batch<B>) -> Tensor<B, 1> {
+        let q1 = self.q_target.0.forward(batch.states.clone(), batch.actions.clone());
+        let q2 = self.q_target.1.forward(batch.states.clone(), batch.actions.clone());
+        let adv = (q1.min_pair(q2) - self.value.forward(batch.states.clone())).detach();
+
+        // exp(β·A), clamped so one lucky transition cannot dominate the batch.
+        let weight = adv.mul_scalar(self.beta).exp().clamp_max(100.0);
+        let log_prob = self.actor.log_prob(batch.states.clone(), batch.actions.clone());
+        -(weight * log_prob).mean()
+    }
+}
+```
+
+</RustSnippet>
+
+## 16.5 Offline-to-online: the deployment recipe
+
+The pattern that Tang's survey finds behind the most capable manipulation systems is a three-stage pipeline, and it is worth stating as a recipe.
+
+1. **Collect** a few hundred demonstrations by teleoperation.
+2. **Pretrain offline** with IQL or CQL — a competent policy with zero risk, zero resets, and no supervision.
+3. **Fine-tune online** with a small amount of real interaction, which is where performance exceeds the demonstrator's.
+
+Stage 3 has a well-documented failure mode. Switching directly to an online off-policy algorithm often causes an immediate performance collapse: the fresh online data is off-distribution relative to the offline dataset, value estimates lurch, and the pretrained policy is destroyed within a few hundred steps.
+
+The mitigations are all forms of easing the transition: keep the offline data in the replay buffer and sample a mixture; anneal the pessimism coefficient down rather than dropping it; and use a conservative policy-update constraint for the first phase of online training. Getting this transition right is more consequential than the choice between CQL and IQL.
+
+## 16.6 Chapter bridge
+
+We have three ways to use data that the robot did not generate by exploring: clone the actions (cheap, and quadratically fragile), recover the reward (general, and expensive), or learn a policy offline from whatever transitions exist (the modern default). And we have the pipeline that combines them with online RL.
+
+One question remains open, and it has been quietly present since Chapter 13. Everything here learns *what to do*. Nothing has examined **what the policy should output** — joint torques, position targets, task-space velocities, or entire parameterized movements.
+
+Chapter 17 takes that up, and it turns out to matter as much as the learning algorithm. Kober's insight — that the representation of motor skills is a first-class design decision — survives intact into the deep era, and Tang's action-space taxonomy is its modern statement. We build dynamic movement primitives, and recreate the ball-in-a-cup experiment with both the 2013 pipeline and a modern one, honestly compared.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'The T² bound',
+    difficulty: 3,
+    body: 'Reproduce the proof of Theorem 16.1. Then construct the tight example explicitly: a chain MDP where one wrong action is unrecoverable, and verify the bound is achieved.',
+  },
+  {
+    layer: 'F',
+    title: 'DAgger’s linear bound',
+    difficulty: 3,
+    body: 'State DAgger’s no-regret guarantee and explain which property of online learning it relies on. Why does training on the learner’s own state distribution remove the extra factor of T?',
+  },
+  {
+    layer: 'F',
+    title: 'The MaxEnt IRL gradient',
+    difficulty: 3,
+    body: 'Derive the MaxEnt IRL likelihood gradient, showing where the partition function produces the second expectation. Then explain why computing it exactly requires solving the forward RL problem.',
+  },
+  {
+    layer: 'F',
+    title: 'CQL lower-bounds Q',
+    difficulty: 3,
+    body: 'Sketch the argument that CQL’s learned Q lower-bounds the true Q for sufficiently large α. Then explain the failure mode when α is too large — what does the policy do?',
+  },
+  {
+    layer: 'C',
+    title: 'The cone and the fix',
+    difficulty: 1,
+    body: 'In the covariate-shift widget, record the final deviation at horizons 40, 120 and 280 with DAgger off, then on. Confirm the quadratic-versus-linear growth empirically.',
+  },
+  {
+    layer: 'C',
+    title: 'When is cloning enough?',
+    difficulty: 2,
+    body: 'Find the combination of per-step error ε and horizon T at which behaviour cloning’s final deviation stays acceptable. Then name a real robot task that falls inside that regime and one that does not.',
+  },
+  {
+    layer: 'P',
+    title: 'Teleoperate and clone',
+    difficulty: 2,
+    body: 'Record 50 Reacher demonstrations through the browser interface, train a BC policy, and measure success rate. Then deliberately start episodes off the demonstrated distribution and measure again — the gap is covariate shift, quantified.',
+  },
+  {
+    layer: 'P',
+    title: 'Offline to online, without the collapse',
+    difficulty: 3,
+    body: 'Pretrain IQL on logged Reacher data, then fine-tune with SAC. First switch abruptly and record the performance collapse. Then retry with the offline data retained in the buffer and the pessimism annealed, and report how much of the collapse each mitigation removes.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§5.1 prior knowledge through demonstration — the pre-deep-learning statement of why imitation matters for robots.',
+  },
+  {
+    key: 'akinola',
+    authors: 'Akinola, I.',
+    year: 'n.d.',
+    title: 'Reinforcement Learning for Robotics',
+    venue: 'Columbia University lecture notes',
+    baseline: true,
+    note: 'The demonstration-modality taxonomy of §16.1, and the covariate-shift framing of behaviour cloning.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.3 expert-usage axis and §5 real-world learning — the evidence for the offline-to-online recipe in §16.5.',
+  },
+  {
+    key: 'ross2010',
+    authors: 'Ross, S. & Bagnell, J. A.',
+    year: 2010,
+    title: 'Efficient Reductions for Imitation Learning',
+    venue: 'AISTATS 2010',
+    note: 'Theorem 16.1 and its tightness.',
+  },
+  {
+    key: 'ross2011',
+    authors: 'Ross, S., Gordon, G. J. & Bagnell, J. A.',
+    year: 2011,
+    title: 'A Reduction of Imitation Learning and Structured Prediction to No-Regret Online Learning',
+    venue: 'AISTATS 2011',
+    note: 'DAgger, with the linear-regret guarantee.',
+  },
+  {
+    key: 'ziebart2008',
+    authors: 'Ziebart, B. D., Maas, A., Bagnell, J. A. & Dey, A. K.',
+    year: 2008,
+    title: 'Maximum Entropy Inverse Reinforcement Learning',
+    venue: 'AAAI 2008',
+    note: 'The MaxEnt formulation and its partition-function gradient.',
+  },
+  {
+    key: 'ho2016',
+    authors: 'Ho, J. & Ermon, S.',
+    year: 2016,
+    title: 'Generative Adversarial Imitation Learning',
+    venue: 'NeurIPS 29',
+    note: 'GAIL — sidestepping the partition function by making the reward a discriminator.',
+  },
+  {
+    key: 'kumar2020',
+    authors: 'Kumar, A., Zhou, A., Tucker, G. & Levine, S.',
+    year: 2020,
+    title: 'Conservative Q-Learning for Offline Reinforcement Learning',
+    venue: 'NeurIPS 33',
+    note: 'CQL and its lower-bound property.',
+  },
+  {
+    key: 'kostrikov2021',
+    authors: 'Kostrikov, I., Nair, A. & Levine, S.',
+    year: 2021,
+    title: 'Offline Reinforcement Learning with Implicit Q-Learning',
+    venue: 'arXiv:2110.06169',
+    url: 'https://arxiv.org/abs/2110.06169',
+    note: 'IQL: expectile regression that never queries out-of-distribution actions.',
+  },
+  {
+    key: 'levine2020',
+    authors: 'Levine, S., Kumar, A., Tucker, G. & Fu, J.',
+    year: 2020,
+    title: 'Offline Reinforcement Learning: Tutorial, Review, and Perspectives on Open Problems',
+    venue: 'arXiv:2005.01643',
+    url: 'https://arxiv.org/abs/2005.01643',
+    note: 'The reference survey for §16.4, including a careful treatment of distributional shift.',
+  },
+]} />

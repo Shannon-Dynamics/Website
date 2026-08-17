@@ -1,0 +1,1222 @@
+---
+title: Occupancy Grid Mapping
+description: A map is not a drawing — it is a field of beliefs, one tiny binary Bayes filter per cell, run a hundred thousand times in parallel. And that parallelism is a lie with a bill attached.
+chapter: 13
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Intermediate
+readingTime: 55 min
+quote: The basic idea of the occupancy grids is to represent the map as a field of random variables, arranged in an evenly spaced grid.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 9
+---
+
+import { MapWeaver } from '@/components/ch/ch13/map-weaver';
+import { InverseModelWorkbench } from '@/components/ch/ch13/inverse-model-workbench';
+import { IndependenceTrap } from '@/components/ch/ch13/independence-trap';
+import { FusionFumble } from '@/components/ch/ch13/fusion-fumble';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write down the map posterior, and name precisely which approximation makes it computable',
+    'Derive the log-odds recursion of occupancy grid mapping from Bayes rule, including the −ℓ₀ term',
+    'Build the hand-crafted inverse range sensor model, and see it for the design choice it is',
+    'Learn an inverse model from the forward model, and prove that doing so is Bayes-optimal',
+    'Show, with numbers, where per-cell independence breaks, and repair it with MAP inference',
+    'Fuse sensors that disagree about what "occupied" means, without deleting the furniture',
+    'Implement the whole thing in Rust as a flat Vec<f32> of log odds updated by integer ray traversal',
+  ]}
+  prerequisites={[
+    'The binary Bayes filter with static state and its log-odds form (Chapter 8)',
+    'The beam range-finder model p(z | x, m) (Chapter 10) — it comes back as the forward model here',
+    'Rusty, the Apartment, and ray-cast LiDAR (Chapter 4)',
+  ]}
+>
+[Chapter 12](/chapters/ch12-localization-global) ended with Rusty localizing beautifully against a
+map we handed it. This chapter turns the problem inside out: an oracle now hands us the *poses*,
+and the map is what we have to find. That sounds like a lesser problem, and in one sense it is —
+but it is where the field's most-used data structure comes from, and it is the substrate that ROS
+2's Nav2 costmaps and SLAM Toolbox submaps are still built on twenty-five years later.
+
+The idea is small enough to state in one line. Chop the plane into cells, attach a binary random
+variable to each, and run the static binary Bayes filter of
+[Chapter 8](/chapters/ch08-nonparametric-filters) on every one of them independently. In log odds
+that filter is a single `+=`, so a hundred thousand of them cost less than one Kalman update. The
+map that comes out has three states, not two: occupied, free, and — the state that makes it
+useful for planning — *gray*, meaning nobody has looked.
+
+The word "independently" is doing an enormous amount of work in that paragraph, and the second
+half of this chapter is about the bill. Beams couple cells; the true posterior over maps does not
+factor; and the factored filter does not merely lose information, it *manufactures* contradictions
+that were never in the data — closing doorways that are demonstrably open. We will watch that
+happen, then fix it the honest way and count the cost.
+</Overview>
+
+## The problem with drawing what you see
+
+Strip the map out of a Chapter 12 log and you are left with a stack of scans and a list of poses.
+The naive thing to do is obvious: transform every scan endpoint into world coordinates and mark
+the cell it lands in as occupied. Draw the dots.
+
+This fails within seconds, and it fails in three separate ways. A person walks through the
+corridor and is permanently inked into the floor plan. A grazing beam that skipped off a door
+frame puts an obstacle in the middle of the doorway. And, most importantly, the map you get has no
+way to distinguish "I looked and there was nothing there" from "I never looked" — which is exactly
+the distinction a path planner needs, because one of those is a corridor and the other might be a
+staircase.
+
+The probabilistic answer keeps the dots but stops treating them as facts. Each beam is a *piece of
+evidence* about the cells it crosses, and a map is what you get by accumulating evidence.
+
+<Deferred>
+  <MapWeaver />
+</Deferred>
+
+Watch a full lap before reading on. Three things are worth noticing, and each corresponds to a
+piece of mathematics below.
+
+**Gray is a state, not a background color.** The two north rooms are never entered, and everything
+in them that the LiDAR cannot reach through a doorway sits at $p = 0.5$ from the first frame to the
+last. That is the correct answer: no measurement has ever told the robot anything about those
+cells. A planner reading this map knows not to route through them without looking first — which is
+the entire subject of [Chapter 24](/chapters/ch24-exploration).
+
+**Repetition is what makes walls crisp.** One pass down the corridor leaves a smear a few cells
+thick, because each beam's evidence is soft and the sensor is noisy. The wall sharpens on the
+second and third pass, as cells that keep getting the same answer accumulate log odds and cells
+that got a stray reading get argued back down. No cell is ever certain, which is why a wrong one
+can be fixed.
+
+**Every cell is running its own filter.** The chart under the map is not a summary — it is three of
+the grid's cells, plotted individually. The wall cell climbs, the corridor cell falls, and the
+closet cell the robot never sees stays flat on zero. Tile that chart a hundred thousand times and
+you have the map.
+
+<KeyIdea title="The one sentence version">
+An occupancy grid map is a field of independent binary Bayes filters, one per cell, each
+accumulating log-odds evidence from an inverse sensor model. The independence is false, it is
+what makes the algorithm cheap, and knowing exactly how it is false is what separates a map you
+can plan on from one you cannot.
+</KeyIdea>
+
+## Building intuition: the scan as a paintbrush
+
+Here is the metaphor to carry through the chapter. A map is slow-developing film, and every scan
+is a brush stroke. The stroke is not a point — it is a shape, wide at the far end, that deposits
+*negative* evidence everywhere the beam passed through and *positive* evidence in a band at the
+range it stopped. Beyond the stopping point it deposits nothing at all, because a beam that hit a
+wall says nothing whatsoever about what is behind it.
+
+Undeveloped film is gray. That is the whole trick: the resting state of a cell is not "empty", it
+is "unexposed".
+
+Two properties of that brush matter, and both come straight from
+[Chapter 8](/chapters/ch08-nonparametric-filters):
+
+1. **In log odds, evidence adds.** A cell's belief after $t$ scans is the sum of $t$ signed
+   increments plus its prior. That is why occupancy mapping is one of the cheapest algorithms in
+   this book, and why the widget above can fold a sixty-beam scan into *two* ten-thousand-cell maps
+   twelve times a second, in a browser tab, in about a millisecond a frame.
+2. **Saturated cells stop listening.** After forty consistent readings a cell's log odds are so
+   large that forty contradicting readings are needed to move it. That is a genuine bug in a world
+   with doors and people, and the standard patch — clamping $\lvert \ell \rvert$ at some
+   $\ell_{\max}$ — is the second slider in the widget above. It comes from Nav2-era practice, not
+   from Thrun.
+
+### Notation for this chapter
+
+<NotationTable
+  rows={[
+    { sym: 'm = \\{m_i\\}', meaning: 'The map as a set of cells; each mᵢ ∈ {0,1} is the binary occupancy of cell i. "1" is occupied.' },
+    { sym: 'p(m_i)', meaning: 'Occupancy prior of a cell. 0.5 unless stated otherwise.' },
+    { sym: '\\ell_{t,i}', meaning: 'Log odds of cell i after t measurements (the book-wide symbol, TOC §2).' },
+    { sym: '\\ell_0', meaning: 'Prior in log odds, log p(mᵢ) / (1 − p(mᵢ)). Zero for a uniform prior.' },
+    { sym: '\\ell_{occ}, \\ell_{free}', meaning: 'The two evidence levels of the hand-crafted inverse model.' },
+    { sym: 'p(m_i \\mid z_t, x_t)', meaning: 'Inverse sensor model: what one measurement says about one cell.' },
+    { sym: '\\alpha, \\beta', meaning: 'Obstacle thickness and beam opening angle — the two constants you choose.' },
+    { sym: 'H(m)', meaning: 'Map entropy, Σᵢ H_b(pᵢ) in bits: how much is left to learn.' },
+  ]}
+/>
+
+One deliberate exception to the book's color code lives in this chapter. Maps are drawn in
+**grayscale** — white free, black occupied, mid-gray unknown — because that convention is older
+and stronger than ours, and because the middle of the ramp carrying the meaning "I don't know" is
+precisely the point being made. Beams, evidence, and inverse-model overlays stay
+<span style={{ color: 'var(--pr-measurement)' }}>green</span>; the $\ell_0$ reference line stays
+<span style={{ color: 'var(--pr-prior)' }}>blue</span>.
+
+## The mathematics
+
+### The map posterior, and the one approximation everything rests on
+
+The quantity we want is the posterior over maps given all measurements and all poses:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(m \mid z_{1:t},\, x_{1:t})}
+$$
+</LinkedMath>
+
+Controls $u_{1:t}$ do not appear. The path is given, so the controls carry no extra information
+about it and drop out of every expression in this chapter.
+
+This posterior is not merely expensive, it is absurd. A modest $12 \times 9$ metre apartment at
+$10$ cm resolution is $10{,}800$ cells, so the map lives in a space of $2^{10800}$ possibilities.
+Representing one distribution over that space is not a matter of buying more memory.
+
+So we make a decomposition — and, unlike most of the literature, we are going to give it a name
+and put it on trial later:
+
+<KeyIdea title="Approximation #1 — per-cell independence">
+$$
+p(m \mid z_{1:t}, x_{1:t}) \;\approx\; \prod_i p(m_i \mid z_{1:t}, x_{1:t})
+$$
+The joint posterior over maps is replaced by the product of its marginals. Every occupancy mapper
+in production makes this approximation. Almost none of them admit it.
+</KeyIdea>
+
+Each factor $p(m_i \mid z_{1:t}, x_{1:t})$ is now a binary estimation problem with *static* state —
+the cell does not move, does not change, and has no motion model. That is exactly the filter of
+[Chapter 8](/chapters/ch08-nonparametric-filters), and we already know its log-odds form.
+
+### Log odds, and why the map is stored in them
+
+$$
+\ell_{t,i} \;=\; \log \frac{p(m_i \mid z_{1:t}, x_{1:t})}{1 - p(m_i \mid z_{1:t}, x_{1:t})}
+\qquad\Longleftrightarrow\qquad
+p(m_i \mid z_{1:t}, x_{1:t}) \;=\; 1 - \frac{1}{1 + \exp \ell_{t,i}}
+$$
+
+Two reasons, one numerical and one structural. Numerically, probabilities near $0$ and $1$ lose
+precision exactly where a map spends most of its life, and log odds are well behaved out to
+$\pm 700$ in `f64`. Structurally — and this is the reason that matters — Bayes' rule for a static
+binary variable becomes **addition**, so integrating a scan is a loop of `+=` over a flat array.
+
+### The recursion
+
+<Algorithm
+  name="occupancy_grid_mapping({ℓ_{t−1,i}}, x_t, z_t)"
+  inputs="the previous map in log odds, the (known) pose, the scan"
+  outputs="{ℓ_{t,i}}"
+  complexity="O(B · L/ρ) per scan with ray traversal — B beams, range L, resolution ρ. Not O(|m|)."
+>
+1. for all cells $m_i$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;if $m_i$ in perceptual field of $z_t$ then
+3. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\ell_{t,i} = \ell_{t-1,i} + \texttt{inverse\_sensor\_model}(m_i, x_t, z_t) - \ell_0$
+4. &nbsp;&nbsp;&nbsp;&nbsp;else
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\ell_{t,i} = \ell_{t-1,i}$
+6. &nbsp;&nbsp;&nbsp;&nbsp;endif
+7. endfor
+8. return $\{\ell_{t,i}\}$
+</Algorithm>
+
+That is Thrun et al., Table 9.1, and it is the whole algorithm. Line 3 is three terms: what you
+believed, what this measurement says, and a correction that removes the prior so it is not counted
+once per measurement. Everything interesting is hidden inside `inverse_sensor_model` and inside
+the phrase "perceptual field".
+
+Note the complexity line. Written literally the table sweeps every cell for every scan, which for
+the Apartment would be $10{,}800$ cells $\times$ $60$ beams. In practice you invert the loop: walk
+each beam through the grid with an integer line algorithm and touch only the cells it crosses,
+which is a few hundred per beam. The two are equivalent for a pencil-thin LiDAR beam. For a sonar
+whose cone is wider than the spacing between beams they are *not*, and the difference is a plot
+point in this chapter, not a detail.
+
+<Derivation
+  title="D1 — the static-state log-odds recursion"
+  result="ℓ_{t,i} = ℓ_{t−1,i} + logit p(m_i | z_t, x_t) − ℓ_0"
+>
+Write $p^+ = p(m_i \mid z_{1:t}, x_{1:t})$ and $p^- = p(\neg m_i \mid z_{1:t}, x_{1:t})$, so
+$\ell_{t,i} = \log p^+ / p^-$. We derive a recursion for the *ratio*, because every normalizer
+will cancel and never has to be computed.
+
+**Step 1 — split off the newest measurement with Bayes' rule.**
+
+<LinkedMath>
+$$
+p(m_i \mid z_{1:t}, x_{1:t}) = \frac{
+  \htmlClass{term-measurement}{p(z_t \mid m_i, z_{1:t-1}, x_{1:t})}\;
+  \htmlClass{term-prior}{p(m_i \mid z_{1:t-1}, x_{1:t})}}
+  {p(z_t \mid z_{1:t-1}, x_{1:t})}
+$$
+</LinkedMath>
+
+The state is static and complete, so $z_t$ depends only on $m_i$ and the current pose:
+$p(z_t \mid m_i, z_{1:t-1}, x_{1:t}) = p(z_t \mid m_i, x_t)$. The second factor is
+$p(m_i \mid z_{1:t-1}, x_{1:t-1})$, the previous posterior — a pose the robot has not yet used
+tells us nothing about a static map.
+
+**Step 2 — swap the forward model for the inverse model.** This is the step that gives the
+algorithm its name. Apply Bayes' rule again, in the other direction:
+
+$$
+p(z_t \mid m_i, x_t) = \frac{p(m_i \mid z_t, x_t)\; p(z_t \mid x_t)}{p(m_i)}
+$$
+
+Substituting,
+
+$$
+p^+ \;=\; \frac{p(m_i \mid z_t, x_t)\, p(z_t \mid x_t)\, p(m_i \mid z_{1:t-1}, x_{1:t-1})}
+               {p(m_i)\, p(z_t \mid z_{1:t-1}, x_{1:t})}
+$$
+
+**Step 3 — write the same thing for the complement.** Replace $m_i$ by $\neg m_i$ throughout:
+
+$$
+p^- \;=\; \frac{\bigl(1 - p(m_i \mid z_t, x_t)\bigr)\, p(z_t \mid x_t)\, \bigl(1 - p(m_i \mid z_{1:t-1}, x_{1:t-1})\bigr)}
+               {\bigl(1 - p(m_i)\bigr)\, p(z_t \mid z_{1:t-1}, x_{1:t})}
+$$
+
+**Step 4 — take the ratio.** Both $p(z_t \mid x_t)$ and the evidence
+$p(z_t \mid z_{1:t-1}, x_{1:t})$ appear identically in numerator and denominator and vanish:
+
+$$
+\frac{p^+}{p^-}
+= \underbrace{\frac{p(m_i \mid z_t, x_t)}{1 - p(m_i \mid z_t, x_t)}}_{\text{this measurement}}
+\cdot \underbrace{\frac{p(m_i \mid z_{1:t-1}, x_{1:t-1})}{1 - p(m_i \mid z_{1:t-1}, x_{1:t-1})}}_{\text{what you believed}}
+\cdot \underbrace{\frac{1 - p(m_i)}{p(m_i)}}_{\text{prior, removed}}
+$$
+
+**Step 5 — take logs.** The product becomes a sum, and the third factor is exactly $-\ell_0$:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\ell_{t,i}}
+= \htmlClass{term-prior}{\ell_{t-1,i}}
++ \htmlClass{term-measurement}{\log \frac{p(m_i \mid z_t, x_t)}{1 - p(m_i \mid z_t, x_t)}}
+- \ell_0
+$$
+</LinkedMath>
+
+with boundary condition $\ell_{0,i} = \ell_0$. $\blacksquare$
+
+**Why the $-\ell_0$ term is not optional.** The inverse model returns a *posterior* — it already
+contains the prior. Adding it $t$ times without subtracting $\ell_0$ each time embeds the prior
+$t$ times, so with $p(m_i) = 0.2$ (that is, $\ell_0 = -1.386$) a cell that receives nothing but
+uninformative readings drifts steadily toward "free" at $1.386$ nats per scan, purely from
+bookkeeping. With the common choice $p(m_i) = 0.5$ we have $\ell_0 = 0$ and the bug is invisible,
+which is exactly why it is a bug worth naming.
+</Derivation>
+
+### The inverse sensor model
+
+`inverse_sensor_model` answers a question that runs backwards from everything in
+[Chapter 10](/chapters/ch10-sensor-models). The *forward* model $p(z_t \mid x_t, m)$ reasons from
+causes to effects: given a map, what would the sensor read? The *inverse* model
+$p(m_i \mid z_t, x_t)$ reasons from effects to causes: given this reading, what is that cell?
+
+The inverse direction is the unnatural one — it depends on the prior over maps, it is only defined
+per cell, and no sensor datasheet contains it. Here is the standard hand-built answer:
+
+<Algorithm
+  name="inverse_range_sensor_model(i, x_t, z_t)"
+  inputs="cell index, pose x_t = (x, y, θ), scan z_t with bearings θ_{k,sens}"
+  outputs="ℓ ∈ {ℓ_0, ℓ_occ, ℓ_free}"
+  complexity="O(1) per cell, given the nearest-beam lookup"
+>
+1. let $(x_i, y_i)$ be the center of mass of $m_i$
+2. $r = \sqrt{(x_i - x)^2 + (y_i - y)^2}$
+3. $\phi = \operatorname{atan2}(y_i - y,\; x_i - x) - \theta$
+4. $k = \arg\min_j \lvert \phi - \theta_{j,\mathrm{sens}} \rvert$
+5. if $r > \min(z_{\max},\, z_t^k + \alpha/2)$ or $\lvert \phi - \theta_{k,\mathrm{sens}} \rvert > \beta/2$ then
+6. &nbsp;&nbsp;&nbsp;&nbsp;return $\ell_0$
+7. if $z_t^k < z_{\max}$ and $\lvert r - z_t^k \rvert < \alpha/2$ then
+8. &nbsp;&nbsp;&nbsp;&nbsp;return $\ell_{occ}$
+9. if $r \le z_t^k$ then
+10. &nbsp;&nbsp;&nbsp;&nbsp;return $\ell_{free}$
+11. endif
+</Algorithm>
+
+Three regions, in order: no information beyond the reading or outside the cone; occupied in a band
+of thickness $\alpha$ centered on the reading; free everywhere nearer than that. $\alpha$ is meant
+to be "how thick an obstacle is, plus the discretization"; $\beta$ is the beam's opening angle.
+
+<Callout type="warn">
+Line 7 of Table 9.2 in the 1999–2000 draft reads $\lvert r - z_{\max} \rvert < \alpha/2$. That
+cannot be what is meant: taken literally it paints a shell of obstacles at the sensor's maximum
+range and never marks the actual return. Every working implementation, including
+`lib/mapping/occgrid.ts` in this repository, uses $\lvert r - z_t^k \rvert$. If you are typing the
+table in from a photocopy, this is the line that will cost you an afternoon.
+</Callout>
+
+Notice what is *not* derived here. $\ell_{occ}$, $\ell_{free}$, $\alpha$, and $\beta$ are four
+numbers somebody chose. That is the subject of the next section.
+
+### A worked example you can check by hand
+
+Take a single cell with a uniform prior, so $\ell_0 = 0$, and an inverse model that reports
+$p = 0.7$ for occupied and $p = 0.3$ for free:
+
+$$
+\ell_{occ} = \ln \frac{0.7}{0.3} = 0.8473,
+\qquad
+\ell_{free} = \ln \frac{0.3}{0.7} = -0.8473
+$$
+
+Now feed the cell three readings — occupied, occupied, free — and apply D1 three times. Since
+$\ell_0 = 0$, each step is one addition:
+
+| step | reading | $\ell$ | $p = 1 - 1/(1 + e^{\ell})$ |
+|---|---|---|---|
+| 0 | — | $0$ | $0.5000$ |
+| 1 | occupied | $0.8473$ | $0.7000$ |
+| 2 | occupied | $1.6946$ | $0.8448$ |
+| 3 | free | $0.8473$ | $0.7000$ |
+
+Two things to take from three lines of arithmetic. The second consistent reading buys much less
+than the first in probability ($+0.145$ versus $+0.200$) but exactly as much in log odds — that
+is what "evidence adds" means. And the contradicting third reading returns the cell precisely to
+where one reading had put it, because the filter has no memory beyond the running sum. Order does
+not matter; only the tally does.
+
+```rust title="crates/ch13_occgrid/tests/micro_example.rs"
+use approx::assert_relative_eq;
+use ch13_occgrid::{log_odds_from_prob, prob_from_log_odds};
+
+/// The worked-example table, pinned. The book prints these six numbers; if this
+/// test ever fails, the book is wrong, not the test.
+#[test]
+fn worked_example_ch13_three_readings() {
+    let l_occ = log_odds_from_prob(0.7);
+    let l_free = log_odds_from_prob(0.3);
+    assert_relative_eq!(l_occ, 0.847_298, epsilon = 1e-5);
+    assert_relative_eq!(l_free, -l_occ, epsilon = 1e-6);
+
+    // ℓ_t = ℓ_{t−1} + evidence − ℓ₀, and ℓ₀ = 0 for a uniform prior.
+    let readings = [l_occ, l_occ, l_free];
+    let want = [(0.847_298_f32, 0.700_000_f32), (1.694_596, 0.844_827), (0.847_298, 0.700_000)];
+
+    let mut l = 0.0f32;
+    for (evidence, (want_l, want_p)) in readings.iter().zip(want) {
+        l += evidence;
+        assert_relative_eq!(l, want_l, epsilon = 1e-5);
+        assert_relative_eq!(prob_from_log_odds(l), want_p, epsilon = 1e-5);
+    }
+
+    // The invariant that makes log odds worth using: only the tally matters.
+    let shuffled: f32 = [l_free, l_occ, l_occ].iter().sum();
+    assert_relative_eq!(shuffled, l, epsilon = 1e-6);
+}
+```
+
+The TypeScript port carries the same check in `lib/__checks__.ts`, and the widgets on this page run
+that port — so the numbers in the table, the numbers in the Rust test, and the numbers under the
+cursor in Map Weaver are the same numbers.
+
+## Where does the inverse model come from?
+
+$\alpha$, $\beta$, $\ell_{occ}$, $\ell_{free}$. Four constants, no derivation, and every one of
+them changes the map. Before accepting them, look at what they actually paint.
+
+<Deferred>
+  <InverseModelWorkbench />
+</Deferred>
+
+The hand-crafted model is a step function in two variables: it is equally confident about a cell
+$5$ cm off the beam axis and one $\beta/2 - \epsilon$ off it, then falls off a cliff. It is equally
+confident about a return at $0.5$ m and one at $4.5$ m, though the second one's cone has swept an
+arc ten times as long. And it carves free space with total conviction on a max-range reading,
+which in real hardware is most often a beam that hit glass, a dark surface, or nothing at all.
+
+There is a principled alternative, and it is one of the most under-appreciated sections of the
+original book.
+
+<Derivation
+  title="D3 — a learned inverse model is Bayes-optimal regression"
+  result="argmin E[cross-entropy] = p(m_i | z, x)"
+>
+**Statement.** Let triplets $(m, x_t, z_t)$ be generated by sampling a map from the map prior,
+sampling a pose in it, and sampling a measurement from the *forward* model
+$p(z_t \mid x_t, m)$; let the label be the true occupancy $\mathrm{occ}(m_i)$ of a target cell.
+Then among *all* functions $f(z_t, x_t, i) \in [0,1]$, the minimizer of the expected cross-entropy
+
+$$
+J(f) = -\,\E\bigl[\, \mathrm{occ}(m_i) \log f + (1 - \mathrm{occ}(m_i)) \log (1 - f) \,\bigr]
+$$
+
+is $f^\star(z_t, x_t, i) = p(m_i \mid z_t, x_t)$: exactly the inverse sensor model.
+
+**Step 1 — what we cannot compute.** Bayes' rule gives the inverse model in closed form,
+
+<LinkedMath>
+$$
+p(m_i \mid z, x) = \eta \int_{m : m(i) = m_i} \htmlClass{term-measurement}{p(z \mid x, m)}\, \htmlClass{term-prior}{p(m)} \; dm
+$$
+</LinkedMath>
+
+an integral over every map whose $i$-th cell takes the given value. It is not merely hard, it is
+the same $2^{|m|}$ we ran away from at the start of the chapter.
+
+**Step 2 — sample instead.** We cannot integrate over maps, but we can *draw* from the same
+distribution: $m^{[k]} \sim p(m)$, then $x^{[k]}$ uniform inside it, then
+$z^{[k]} \sim p(z \mid x^{[k]}, m^{[k]})$ — that last step is just running the Chapter 10 beam
+model in generative mode, which is what a simulator is. Record $\mathrm{occ}(m_i)^{[k]}$.
+
+**Step 3 — condition and minimize pointwise.** Write the expectation by conditioning on the input
+$\xi = (z, x, i)$:
+
+$$
+J(f) = \E_{\xi}\Bigl[\, -\,q(\xi) \log f(\xi) - (1 - q(\xi)) \log(1 - f(\xi)) \,\Bigr],
+\qquad q(\xi) := \Prob(m_i = 1 \mid \xi)
+$$
+
+Because $f$ is unconstrained, the outer expectation is minimized by minimizing the bracket
+separately at each $\xi$.
+
+**Step 4 — one derivative.** For fixed $q$, $g(f) = -q\log f - (1-q)\log(1-f)$ has
+$g'(f) = -q/f + (1-q)/(1-f)$, which vanishes at $f = q$, and $g''> 0$ throughout $(0,1)$. So the
+unique minimizer is $f^\star(\xi) = q(\xi) = p(m_i \mid z, x)$. $\blacksquare$
+
+**Step 5 — what this buys.** Any sufficiently flexible function approximator trained by gradient
+descent on this loss converges toward the true inverse model, *automatically consistent with the
+sensor physics and with the prior over maps you sampled from*. No $\alpha$, no $\beta$, no
+$\ell_{occ}$. The invariances are enforced by the choice of inputs, not by the loss: give the
+model the cell's range and bearing **in the beam frame** and the reading, and it cannot possibly
+learn anything about absolute coordinates.
+</Derivation>
+
+<Algorithm
+  name="learn_inverse_sensor_model(p(z | x, m), p(m), simulator)"
+  inputs="the forward model, the map prior, and a way to sample from both"
+  outputs="f̂(r, ψ, z) ≈ p(m_i | z, x)"
+  complexity="offline: O(samples × epochs). O(1) per cell at run time."
+>
+1. for $k = 1$ to $K$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;sample a map $m^{[k]} \sim p(m)$
+3. &nbsp;&nbsp;&nbsp;&nbsp;sample a pose $x^{[k]}$ inside it
+4. &nbsp;&nbsp;&nbsp;&nbsp;sample a measurement $z^{[k]} \sim p(z \mid x^{[k]}, m^{[k]})$
+5. &nbsp;&nbsp;&nbsp;&nbsp;pick a target cell; record its beam-frame coordinates $(r, \psi)$ and its true occupancy
+6. endfor
+7. fit $\hat f$ by minimizing $J(W) = -\sum_k \bigl[\, m^{[k]} \log \hat f + (1 - m^{[k]}) \log(1 - \hat f)\,\bigr]$
+8. return $\hat f$
+</Algorithm>
+
+Toggle **Learned inverse model** in the workbench above and compare. The version running there is a
+logistic regression on fifteen bounded features of $(r, \psi, z)$, trained by SGD on $24{,}000$
+triplets sampled exactly as in the table — a model small enough to print, which is the point;
+[Chapter 25](/chapters/ch25-learning) does this properly with `candle`. One structural property is
+worth calling out: a logistic regressor's score $w^\mathsf{T}\varphi$ **is** a log odds, so the
+quantity line 3 of Table 9.1 wants comes straight out of the model with no sigmoid and no
+inversion.
+
+What it learned, and none of it was specified:
+
+- **Soft edges.** The transition from "free" to "occupied" is a smooth ramp about half of $\alpha$
+  wide, because the reading is noisy and the surface's position is uncertain by more than a cell.
+- **The band sits slightly past the reading.** A cone returns the *nearest* point of a surface that
+  usually continues past it, so the on-axis cell at range exactly $z$ is more often in front of the
+  wall than in it.
+- **A narrower waist than $\beta$.** Evidence concentrates on the beam axis and decays smoothly,
+  rather than filling the cone uniformly and then stopping dead.
+- **Its own $\ell_0$.** Far beyond the reading the learned curve flattens onto about $-0.3$, not
+  $0$. That number is the prior of the maps it was trained on, and line 3 of Table 9.1 must
+  subtract *that* value. Feed a learned model into a mapper that assumes $\ell_0 = 0$ and every
+  cell in every perceptual field picks up a constant drift.
+- **Skepticism at $z_{\max}$.** Press **Max-range reading**: the free-space evidence drops by well
+  over half, because one training reading in twenty was a $z_{\max}$ dropout from a wall that was
+  really there. The hand-crafted model carves at full confidence regardless.
+
+## The independence trap
+
+Now the bill for Approximation #1.
+
+The trouble is easiest to see with two cells. Put $A$ and $B$ side by side at the same range,
+both inside one sonar cone, both with prior $0.5$, and take one reading of $z = 2.0$ m from a
+sensor whose forward model is the Chapter 10 mixture ($z_{hit} = 0.8$, $\sigma_{hit} = 0.15$,
+$z_{short} = 0.1$, $z_{\max}$-weight $0.05$, $z_{rand} = 0.05$, range $3$ m). The forward model
+needs only the range to the *first* occupied cell, so three of the four maps predict the same
+$z^\star = 2$:
+
+| $m_A$ | $m_B$ | $z^\star$ | $p(z = 2 \mid m)$ | joint posterior |
+|---|---|---|---|---|
+| 0 | 0 | $3.000$ | $0.0309$ | $\mathbf{0.0047}$ |
+| 1 | 0 | $2.000$ | $2.1600$ | $0.3318$ |
+| 0 | 1 | $2.000$ | $2.1600$ | $0.3318$ |
+| 1 | 1 | $2.000$ | $2.1600$ | $0.3318$ |
+
+The marginals come out at $p(m_A) = p(m_B) = 0.6635$. Now ask the factored representation for the
+probability that *both cells are free* — the query a planner makes when it wants to drive between
+them:
+
+$$
+\underbrace{(1 - 0.6635)^2 = 0.1132}_{\text{factored}}
+\qquad\text{versus}\qquad
+\underbrace{0.0047}_{\text{true}}
+$$
+
+The factored map is off by a factor of **24**. And not in a subtle direction: "both free" is the
+one configuration the measurement flatly rules out — something in that cone stopped the beam — yet
+the product of marginals gives it eleven percent. The measurement induced a strong *negative*
+correlation between $A$ and $B$ ("at least one of you is occupied") and a product of marginals is
+structurally incapable of representing a correlation of any kind.
+
+Scale that from two cells to a doorway.
+
+<Deferred>
+  <IndependenceTrap />
+</Deferred>
+
+The left pane is Table 9.1 executed literally, cell by cell, with a $22°$ sonar cone. Beams that
+graze the door post report a short range, and the inverse model dutifully paints occupied evidence
+across the *entire* arc at that range — including the cells in the middle of the opening that a
+different beam has already carved free. The filter's only conflict-resolution mechanism is
+addition, so the doorway ends up whatever color the vote count makes it: a one-cell wall, with
+carved free space behind it. That map is not just wrong, it is *impossible* — there is no physical
+configuration of the world in which a sealed wall has open floor behind it that a sensor could
+have seen.
+
+### Maximum a posteriori occupancy mapping
+
+The honest alternative gives up on representing uncertainty and asks for the single most probable
+map instead:
+
+<LinkedMath>
+$$
+m^\star = \arg\max_m\; \log \htmlClass{term-measurement}{p(z_{1:t} \mid x_{1:t}, m)} + \log \htmlClass{term-prior}{p(m)}
+$$
+</LinkedMath>
+
+Both terms decompose. The likelihood is a sum over measurements of the Chapter 10 forward model —
+no inverse model appears anywhere — and the prior, for i.i.d. cells, collapses to something with
+only one map-dependent term:
+
+$$
+\log p(m) = \sum_i \Bigl[\, m_i \log p(m_i) + (1 - m_i) \log\bigl(1 - p(m_i)\bigr) \Bigr]
+= \underbrace{M \log\bigl(1 - p(m_i)\bigr)}_{\text{constant}} + \;\ell_0 \sum_i m_i
+$$
+
+using $\log p - \log(1-p) = \ell_0$. The constant drops out of the argmax, leaving a per-cell
+charge of $\ell_0$ nats for every cell you declare occupied — which, for a prior below one half,
+is a penalty. What remains is a discrete optimization over $2^{|m|}$ binary maps, which we attack
+by hill climbing.
+
+<Algorithm
+  name="MAP_occupancy_grid_mapping(x_{1:t}, z_{1:t})"
+  inputs="the path and the measurements; a forward model p(z | x, m)"
+  outputs="m*, a single binary map"
+  complexity="O(sweeps · |m| · B̄ᵢ), where B̄ᵢ is the number of beams incident on a cell"
+>
+1. set $m = \{0\}$
+2. repeat until convergence
+3. &nbsp;&nbsp;&nbsp;&nbsp;for all cells $m_i$ do
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$m_i = \arg\max_{k = 0,1} \; k\,\ell_0 + \sum_t \log p\bigl(z_t \mid x_t,\, m \text{ with } m_i = k\bigr)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+6. endrepeat
+7. return $m$
+</Algorithm>
+
+Two implementation notes carry the whole cost of the algorithm. First, flipping one cell changes
+the likelihood of only the beams whose cone passes through it, so a **beam–cell incidence cache**
+turns each evaluation from a sum over thousands of measurements into a sum over a handful.
+Second, incidence can be computed once on the empty map: occupancy decides where a ray *stops*,
+never where it *goes*, so a beam that misses a cell on the empty map can never be affected by it.
+
+The right pane of the widget above hill-climbs by steepest flip rather than in index order — same
+objective, same local maximum, but the visit order makes the reasoning legible: the first cells to
+move are the ones that explain the most measurement mass, and each one is annotated with the beams
+whose log-likelihood it raised.
+
+Watch what it produces, because it is not what you expect and the surprise is the lesson. The MAP
+map is **sparse**. It is a scatter of obstacle cells, not a floor plan — and it should be, because
+a reading is explained the moment *something* in its cone blocks it at the right range, and the
+optimizer has no reason to pay $\ell_0$ for cells the data does not demand. The cells it places
+behind the doorway sit on the far wall, seen *through* the opening. There is no conflict anywhere,
+because the joint posterior never asked for the whole arc.
+
+<Callout type="info">
+**Where this fits in practice.** MAP mapping with forward models is taught here for its lesson
+about dependencies, not as production practice. It is a batch algorithm, it needs every scan in
+memory, it returns a point estimate with no residual uncertainty, and it is only guaranteed to
+find a local maximum. Modern systems resolve most apparent "conflicting evidence" a different
+way — by fixing the poses ([Chapters 14](/chapters/ch14-ekf-slam)–[16](/chapters/ch16-scan-matching))
+and fusing submaps — because in real deployments pose error, not cell coupling, is what dominates
+the artifacts. The cell coupling is real; it is just not usually the biggest lie in the room.
+</Callout>
+
+## When two sensors disagree about what "occupied" means
+
+There is a second way to get a wrong map from correct measurements, and it does not need any
+approximation at all — only two sensors and a naive urge to add.
+
+<Deferred>
+  <FusionFumble />
+</Deferred>
+
+The failure has nothing to do with either sensor being wrong. The sonar rides at table height and
+correctly reports a table. The LiDAR rides at shin height, threads between four six-centimetre
+legs, and correctly reports free space. Both are telling the truth about their own slice of the
+world; it is the *question* that differs, and a single per-cell Bayes filter fed both streams
+silently assumes they answer the same one. Whichever sensor is polled more often wins, so the
+table's occupancy probability tracks the beam-count ratio rather than any physical fact.
+
+Thrun's remedy (eq. 9.9) is to keep one grid per modality and combine pessimistically:
+
+$$
+p(m_i) = \max_k\, p\bigl(m_i^{[k]}\bigr)
+$$
+
+This estimator is deliberately biased toward "occupied". That is the correct bias for navigation:
+a map that hallucinates an obstacle wastes a path, and a map that deletes one wastes a robot. The
+same logic is why a Nav2 costmap keeps separate obstacle, inflation, and voxel layers rather than
+one fused probability field.
+
+## Implementation in Rust
+
+Three design decisions before any code. The grid is a flat `Vec<f32>` of log odds with the index
+math written out, not an `ndarray` — the arithmetic is two multiplications and the visible index
+is worth more here than the abstraction. Cells store `f32`, because log odds clamped at $\pm 12$
+need six significant digits at most, and halving the map halves the cache misses that dominate the
+inner loop. And the inverse model is a **trait**, so the hand-crafted and learned versions are
+interchangeable at the call site — which is the entire argument of §9.3, expressed as a type.
+
+```rust title="crates/ch13_occgrid/src/lib.rs"
+use nalgebra::Vector2;
+use pr_core::geom::SE2;   // Chapter 3's hand-rolled SE(2)
+
+/// A cell index in row-major order. A newtype, so `grid.probability(idx)`
+/// cannot be handed a beam number by mistake.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct GridIdx(pub usize);
+
+/// An occupancy grid map, stored in log odds.
+///
+/// `log_odds[j * width + i]` is ℓ for the cell whose lower-left corner is at
+/// `origin + (i, j) * resolution`. Nothing here is generic over the numeric
+/// type: the map is the hot loop, and `f32` is a decision, not a default.
+pub struct OccGrid {
+    width: usize,
+    height: usize,
+    /// Metres per cell. 0.05 for a Nav2 costmap, 0.1 for everything in this book.
+    pub resolution: f32,
+    pub origin: Vector2<f32>,
+    /// ℓ = 0.0  ⇔  p = 0.5  ⇔  "nobody has looked here".
+    log_odds: Vec<f32>,
+    /// ℓ₀, the prior in log odds. Subtracted off every update (Table 9.1, line 3).
+    pub l0: f32,
+    /// Symmetric saturation bound. Without it a cell that has seen a wall five
+    /// hundred times needs five hundred contradictions to change its mind, and
+    /// a person who walked past at t = 3 is in the map forever.
+    pub l_clamp: f32,
+    /// Scratch set, owned by the grid so `integrate_scan` allocates nothing.
+    visited: std::collections::HashSet<usize>,
+}
+
+impl OccGrid {
+    pub fn new(width: usize, height: usize, resolution: f32, origin: Vector2<f32>) -> Self {
+        Self { width, height, resolution, origin, log_odds: vec![0.0; width * height],
+               l0: 0.0, l_clamp: 12.0, visited: Default::default() }
+    }
+
+    #[inline]
+    pub fn index(&self, i: usize, j: usize) -> GridIdx { GridIdx(j * self.width + i) }
+
+    #[inline]
+    pub fn len(&self) -> usize { self.log_odds.len() }
+
+    /// World point → cell coordinates. Returns `None` outside the map rather
+    /// than clamping: a beam leaving the map is not the same as a beam ending
+    /// at its edge, and conflating them paints a fake wall around the border.
+    pub fn world_to_cell(&self, p: Vector2<f32>) -> Option<(usize, usize)> {
+        let c = (p - self.origin) / self.resolution;
+        (c.x >= 0.0 && c.y >= 0.0 && c.x < self.width as f32 && c.y < self.height as f32)
+            .then(|| (c.x as usize, c.y as usize))
+    }
+
+    pub fn cell_center(&self, i: usize, j: usize) -> Vector2<f32> {
+        self.origin + Vector2::new(i as f32 + 0.5, j as f32 + 0.5) * self.resolution
+    }
+
+    /// p = 1 − 1/(1 + exp ℓ), the recovery of eq. (9.6).
+    #[inline]
+    pub fn probability(&self, c: GridIdx) -> f32 { prob_from_log_odds(self.log_odds[c.0]) }
+
+    /// Σᵢ H_b(pᵢ) in bits. Starts at exactly `width · height` for a uniform
+    /// prior and falls as the map resolves — the currency Chapter 24 spends.
+    pub fn entropy(&self) -> f32 {
+        self.log_odds.iter().map(|&l| binary_entropy(prob_from_log_odds(l))).sum()
+    }
+}
+
+#[inline]
+pub fn prob_from_log_odds(l: f32) -> f32 { 1.0 - 1.0 / (1.0 + l.exp()) }
+
+#[inline]
+pub fn log_odds_from_prob(p: f32) -> f32 { (p / (1.0 - p)).ln() }
+
+fn binary_entropy(p: f32) -> f32 {
+    if p <= 0.0 || p >= 1.0 { 0.0 } else { -(p * p.log2() + (1.0 - p) * (1.0 - p).log2()) }
+}
+```
+
+The inverse model as a trait, with Table 9.2 as its first implementor:
+
+```rust title="crates/ch13_occgrid/src/inverse.rs" {30-45}
+use nalgebra::Vector2;
+use pr_core::geom::SE2;
+
+/// One (range, bearing) ray of a scan — the inverse model's unit of evidence.
+#[derive(Copy, Clone, Debug)]
+pub struct Beam { pub range: f32, pub bearing: f32 }
+
+/// What one measurement says about one cell, in log odds.
+///
+/// The contract is deliberately `evidence`, not `probability`: implementors
+/// return the increment of Table 9.1 line 3, `inverse_sensor_model(...) − ℓ₀`,
+/// already net of their own prior. A learned model's ℓ₀ is whatever the maps it
+/// trained on happened to imply, and only the model knows it.
+pub trait InverseSensorModel {
+    fn evidence(&self, cell_center: Vector2<f32>, pose: &SE2, beam: &Beam) -> f32;
+
+    /// True when this model can say nothing beyond `range`, so the caller can
+    /// stop walking the ray. Table 9.1 does not need this; your frame budget does.
+    fn reach(&self, beam: &Beam) -> f32;
+}
+
+/// `inverse_range_sensor_model` — Thrun et al., Table 9.2.
+pub struct HandCraftedModel {
+    /// Obstacle thickness, metres. Wider ⇒ thicker walls, fewer holes, blurrier doorways.
+    pub alpha: f32,
+    /// Beam opening angle, radians. A LiDAR is a fraction of a degree; a sonar is 15–30°.
+    pub beta: f32,
+    pub max_range: f32,
+    pub l_occ: f32,
+    pub l_free: f32,
+    pub l0: f32,
+}
+
+impl InverseSensorModel for HandCraftedModel {
+    fn evidence(&self, cell: Vector2<f32>, pose: &SE2, beam: &Beam) -> f32 {
+        let d = cell - pose.translation();
+        let r = d.norm();
+        let phi = wrap_pi(d.y.atan2(d.x) - pose.angle() - beam.bearing);
+
+        // Line 5: beyond the reading, or outside the cone ⇒ this beam is silent.
+        if r > self.max_range.min(beam.range + self.alpha / 2.0) || phi.abs() > self.beta / 2.0 {
+            return 0.0;
+        }
+        // Line 7. Note `beam.range`, not `max_range`: see the warning in the text.
+        if beam.range < self.max_range && (r - beam.range).abs() < self.alpha / 2.0 {
+            return self.l_occ - self.l0;
+        }
+        // Line 9.
+        if r <= beam.range { self.l_free - self.l0 } else { 0.0 }
+    }
+
+    fn reach(&self, beam: &Beam) -> f32 { self.max_range.min(beam.range + self.alpha / 2.0) }
+}
+
+fn wrap_pi(a: f32) -> f32 { a - std::f32::consts::TAU * ((a + std::f32::consts::PI) / std::f32::consts::TAU).floor() }
+```
+
+And the recursion itself. Table 9.1 loops over all cells; we invert the loop and walk the beams.
+For a $60$-beam LiDAR standing in the middle of the Apartment corridor that is the difference
+between $10{,}800$ inverse-model evaluations per scan and $1{,}146$ — measured, not estimated, by
+counting the visited set.
+
+```rust title="crates/ch13_occgrid/src/lib.rs (continued)" {19-24,31-38}
+use crate::bresenham::supercover;
+use crate::inverse::{Beam, InverseSensorModel};
+use sim::Scan;   // Chapter 4's scan type: ranges, bearings, max_range
+
+impl OccGrid {
+    /// `occupancy_grid_mapping` — Thrun et al., Table 9.1, restricted to the
+    /// perceptual field by integer ray traversal.
+    pub fn integrate_scan<M: InverseSensorModel>(&mut self, pose: &SE2, scan: &Scan, model: &M) {
+        let Some((ri, rj)) = self.world_to_cell(pose.translation()) else { return };
+        // Cells near the sensor lie on several beams' rasters. Without this set
+        // they would be updated once per beam, over-carving free space into a
+        // hard zero that no later evidence can argue back.
+        self.visited.clear();
+
+        for (&range, &bearing) in scan.ranges.iter().zip(scan.bearings.iter()) {
+            let beam = Beam { range, bearing };
+            let reach = model.reach(&beam);
+            let dir = pose.angle() + bearing;
+            let end = pose.translation() + reach * Vector2::new(dir.cos(), dir.sin());
+            let Some((ei, ej)) = self.world_to_cell(end) else { continue };
+
+            for (i, j) in supercover(ri as i32, rj as i32, ei as i32, ej as i32) {
+                if i < 0 || j < 0 || i as usize >= self.width || j as usize >= self.height {
+                    continue;
+                }
+                let idx = self.index(i as usize, j as usize);
+                if !self.visited.insert(idx.0) { continue; }
+
+                let l = model.evidence(self.cell_center(i as usize, j as usize), pose, &beam);
+                // Line 3, and the clamp that keeps the cell revisable.
+                self.log_odds[idx.0] =
+                    (self.log_odds[idx.0] + l).clamp(-self.l_clamp, self.l_clamp);
+            }
+        }
+    }
+}
+```
+
+```rust title="crates/ch13_occgrid/src/bresenham.rs"
+/// Bresenham's line algorithm, integer arithmetic only, all eight octants.
+///
+/// The *supercover* variant: when the ideal line passes exactly through a
+/// lattice corner we emit both adjacent cells rather than one. Plain Bresenham
+/// slips diagonally between two occupied cells, which lets free-space carving
+/// leak through a wall and shows up as a single-cell hole that a planner will
+/// happily route a robot through.
+pub fn supercover(x0: i32, y0: i32, x1: i32, y1: i32) -> impl Iterator<Item = (i32, i32)> {
+    let (dx, dy) = ((x1 - x0).abs(), -(y1 - y0).abs());
+    let (sx, sy) = (if x0 < x1 { 1 } else { -1 }, if y0 < y1 { 1 } else { -1 });
+    let (mut x, mut y, mut err) = (x0, y0, dx + dy);
+
+    std::iter::from_fn(move || {
+        if x == x1 && y == y1 { return None; }
+        let out = (x, y);
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x += sx; }
+        if e2 <= dx { err += dx; y += sy; }
+        Some(out)
+    })
+    .chain(std::iter::once((x1, y1)))
+}
+```
+
+The learned inverse model of §9.3 is that same trait with a different body — a fixed feature map
+and a loop of SGD, small enough to print, which is the whole reason to prefer it here over a net:
+
+```rust title="crates/ch13_occgrid/src/learn.rs" {23-33}
+use nalgebra::SVector;
+use rand::{rngs::SmallRng, Rng, SeedableRng};   // seeded; never thread_rng()
+use sensor::BeamModel;                          // Chapter 10's forward model
+
+pub const N_FEATURES: usize = 15;
+type Phi = SVector<f32, N_FEATURES>;
+
+/// A logistic regression on φ(r, ψ, z). Its score **is** a log odds, so
+/// `evidence` needs no sigmoid — which is the one structural reason to prefer
+/// a logistic link here over anything fancier.
+pub struct LearnedModel {
+    w: Phi,
+    /// The model's own ℓ₀, read off as its answer about a cell no beam can see.
+    /// Nobody sets it: it is the prior of the maps that were sampled.
+    pub l0: f32,
+}
+
+/// `learn_inverse_sensor_model` — Thrun et al., §9.3.2 + §9.3.3.
+pub fn train(fwd: &BeamModel, prior: &MapPrior, seed: u64, epochs: usize) -> LearnedModel {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let data: Vec<(Phi, f32)> = (0..24_000)
+        .map(|_| {
+            let m = prior.sample(&mut rng);           // 1. a map from the map prior
+            let x = m.sample_pose(&mut rng);          // 2. a pose inside it
+            let z = fwd.sample(&x, &m, &mut rng);     // 3. a reading from the FORWARD model
+            let (r, psi) = m.sample_cell_in_beam_frame(&x, &mut rng);
+            (features(r, psi, z), m.occupancy_at(&x, r, psi) as u8 as f32)  // 4. the label
+        })
+        .collect();
+
+    let mut w = Phi::zeros();
+    let mut t = 0usize;
+    for _ in 0..epochs {
+        for &(phi, y) in shuffled(&data, &mut rng) {
+            // ∇J = (σ(w·φ) − y) φ. That is the whole of eq. (9.20)'s gradient.
+            let p = 1.0 / (1.0 + (-w.dot(&phi)).exp());
+            let lr = 0.06 / (1.0 + t as f32 / 8000.0);
+            w -= lr * (p - y) * phi;
+            t += 1;
+        }
+    }
+
+    // "No information" probe: far beyond a short reading, on the beam axis.
+    let l0 = w.dot(&features(0.92 * fwd.max_range, 0.0, 0.2 * fwd.max_range));
+    LearnedModel { w, l0 }
+}
+
+impl InverseSensorModel for LearnedModel {
+    fn evidence(&self, cell: Vector2<f32>, pose: &SE2, beam: &Beam) -> f32 {
+        let (r, psi) = beam_frame(cell, pose, beam);
+        self.w.dot(&features(r, psi, beam.range)) - self.l0
+    }
+    fn reach(&self, _beam: &Beam) -> f32 { self.max_range }
+}
+```
+
+The MAP mapper of Table 9.3, with the two optimizations that make it tractable:
+
+```rust title="crates/ch13_occgrid/src/map_map.rs"
+use sensor::BeamModel;   // Chapter 10's forward model, used forwards this time
+
+/// Which beams each cell can possibly affect.
+///
+/// Built once, on the **empty** map: occupancy decides where a ray stops, never
+/// where it goes, so a beam whose free-space raster misses cell `i` can never be
+/// changed by flipping `i`. That makes this cache exact, not a heuristic.
+struct Incidence { by_cell: Vec<Vec<u32>> }
+
+/// `MAP_occupancy_grid_mapping` — Thrun et al., Table 9.3.
+///
+/// Returns a *binary* map. There is no residual uncertainty in it, by
+/// construction; the sensitivity of the log-likelihood to each flip is the
+/// closest thing available, and it is overconfident because it only inspects
+/// the mode locally.
+pub fn map_occupancy_grid_mapping(
+    poses: &[SE2],
+    scans: &[Scan],
+    fwd: &BeamModel,
+    grid: &OccGrid,
+    max_flips: usize,
+) -> Vec<bool> {
+    let beams = ConeBeamSet::compile(grid, poses, scans, fwd.beta, fwd.sub_rays);
+    let inc = Incidence::build(&beams, grid.len());
+    let l0 = grid.l0;
+    let mut m = vec![false; grid.len()];   // line 1: start all-free
+
+    for _ in 0..max_flips {
+        // Steepest ascent rather than Table 9.3's index-order sweep: same
+        // objective, same local maximum, but the order in which cells move is
+        // the order in which they explain the data, which is worth watching.
+        let best = (0..m.len())
+            .map(|c| (c, flip_gain(&beams, &inc, &mut m, fwd, l0, c)))
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+
+        match best {
+            Some((c, g)) if g > 0.0 => m[c] = !m[c],
+            _ => break,   // line 2: converged — no single flip improves the posterior
+        }
+    }
+    m
+}
+
+/// Δ log-posterior from flipping cell `c`. Restores `m` before returning.
+fn flip_gain(
+    beams: &ConeBeamSet, inc: &Incidence, m: &mut [bool],
+    fwd: &BeamModel, l0: f32, c: usize,
+) -> f32 {
+    let touched = &inc.by_cell[c];
+    let before: f32 = touched.iter().map(|&b| beams.log_likelihood(b, m, fwd)).sum();
+    m[c] = !m[c];
+    let after: f32 = touched.iter().map(|&b| beams.log_likelihood(b, m, fwd)).sum();
+    let prior_delta = if m[c] { l0 } else { -l0 };
+    m[c] = !m[c];
+    after - before + prior_delta
+}
+```
+
+Finally the fusion rule, which is four lines and one comment:
+
+```rust title="crates/ch13_occgrid/src/fusion.rs"
+/// Thrun et al., eq. (9.9): one grid per sensor modality, combined by the most
+/// pessimistic component.
+///
+/// Deliberately biased toward "occupied". A map that hallucinates an obstacle
+/// wastes a path; a map that deletes one wastes a robot.
+pub fn fuse_max(grids: &[OccGrid]) -> Vec<f32> {
+    let n = grids[0].len();
+    (0..n)
+        .map(|c| grids.iter().map(|g| g.probability(GridIdx(c))).fold(0.0f32, f32::max))
+        .collect()
+}
+```
+
+<Callout type="info">
+Note which crates are *absent*. There is no `faer`, no `factrs`, no `petgraph` in this chapter:
+occupancy grid mapping has no linear system to solve and no graph to optimize. It is an array and
+a for-loop, and that is why it survived twenty-five years of everything else being replaced.
+`parry2d` appears only inside `sim`, where Chapter 4 built the ray caster that generates the scans.
+</Callout>
+
+## Putting it together: what a map is worth
+
+The entropy readout in Map Weaver is not decoration. Treating cells as independent — the same
+Approximation #1, now used for something benign — the map's total entropy is
+
+$$
+H(m) = \sum_i H_b(p_i), \qquad H_b(p) = -p \log_2 p - (1-p)\log_2(1-p)
+$$
+
+which starts at exactly one bit per cell ($10{,}800$ bits for the Apartment at $10$ cm) and falls
+as evidence arrives. Run the widget and watch it drop steeply while Rusty is in new
+territory and flatten when it is re-walking the corridor: the derivative of that curve is
+*information gain per second*, and choosing actions to maximize it is precisely what
+[Chapter 24](/chapters/ch24-exploration) does. Frontier exploration — drive to the boundary between
+free and unknown — is the greedy approximation to it.
+
+Entropy also gives you a monitor for free. Individual scans can raise it — a contradicting reading
+drags a confident cell back toward $0.5$, which is the filter working — but in a static world the
+*trend* is down. A sustained climb means something is disagreeing with the map: a person walking
+through, a door that has opened, or — far more often — a pose that is wrong.
+
+Which brings us to the confession.
+
+Every algorithm in this chapter assumed an oracle handing us $x_{1:t}$. Turn off **Pose oracle** in
+Map Weaver and watch what the identical scans, integrated at Rusty's own dead-reckoned poses, do to
+the apartment: walls double, corridors bend, and the map degrades into a long-exposure photograph
+of a moving camera. The cell coupling we spent half this chapter repairing is a real effect worth a
+factor of a few. Pose error is worth a factor of everything.
+
+That is not a defect in occupancy grids. It is the reason they are usually applied *after* the
+fact, to a trajectory some other algorithm has already estimated — which is exactly how Nav2 and
+SLAM Toolbox use them today. Getting that trajectory is the subject of the next six chapters, and
+it starts by putting the map into the state vector in [Chapter 14](/chapters/ch14-ekf-slam).
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Where ℓ₀ enters, and what happens without it">
+    Re-derive D1 with a non-uniform prior $p(m_i) = 0.2$. Show explicitly which step produces the
+    $-\ell_0$ term, then compute what a cell's log odds are after ten measurements that each return
+    exactly the prior, both with and without the correction. State the drift per scan in nats and
+    in probability.
+
+    <details>
+      <summary>Check</summary>
+      $\ell_0 = \ln(0.2/0.8) = -1.3863$. With the correction the cell stays at $-1.3863$ forever.
+      Without it, $\ell_{10} = 11 \ell_0 = -15.25$, i.e. $p = 2.4 \times 10^{-7}$: the filter has
+      become certain that an unobserved cell is free, on the strength of no evidence at all.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Two cells, one beam, and a query that breaks">
+    Reproduce the four-row joint posterior table in the independence-trap section from the beam
+    mixture of [Chapter 10](/chapters/ch10-sensor-models), for cells $A$ and $B$ side by side at
+    range $2$ m inside one cone, reading $z = 2.0$, $z_{\max} = 3$. Then do the *collinear*
+    version — $A$ at $1$ m and $B$ at $2$ m on the same ray — and compare the two coupling
+    structures. Which one does the factored representation get less wrong, and why?
+
+    <details>
+      <summary>Check</summary>
+      Collinear: the joint is $(0.0139,\, 0.0075,\, 0.9711,\, 0.0075)$ for
+      $(m_A m_B) = (00, 10, 01, 11)$, with marginals $p(A) = 0.0150$, $p(B) = 0.9786$. The factored
+      form overstates $p(A = 1 \wedge B = 1)$ by about $2\times$ — bad, but nothing like the
+      $24\times$ error on "both free" in the side-by-side case. Collinearity produces a mild
+      correlation (A being occupied *explains away* B); shared membership of one cone produces a
+      hard logical constraint, and hard constraints are what products of marginals cannot express.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Entropy is a lower bound in disguise">
+    Show that $H(m) = \sum_i H_b(p_i)$ computed from the factored posterior is an *upper* bound on
+    the entropy of the true joint posterior, and identify the gap. (Hint: the difference is a
+    mutual information, and it is non-negative.) Then explain in one sentence why an
+    information-gain explorer built on this number is systematically over-optimistic about how much
+    it will learn.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify: which cell flips first?">
+    In w13.2, before pressing play, write down which cells you expect the hill climb to flip first
+    and in what order. Then step it. Use the per-beam bar chart to explain the order you actually
+    got, and say why the very first flip is always worth far more than the tenth.
+    <details>
+      <summary>Check</summary>
+      The steepest flips are the cells lying in the intersection of the most cones at a range
+      matching those cones' readings — near the door posts and the middle of the wall, not the
+      wall's ends. Gain falls off sharply because each flip removes the beams it explains from
+      every subsequent candidate's account, while the $\ell_0$ cost of a flip stays constant.
+    </details>
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify: two artifacts of loud evidence">
+    In w13.1, push **evidence strength** to $3.0$ and predict two specific artifacts before you
+    look. Then turn on **Person in the corridor** and find the largest clamp $\ell_{\max}$ for
+    which a ghost decays within roughly five seconds of the person leaving. Report the value and
+    explain, from D1, why the decay time is linear in $\ell_{\max}$ and inversely proportional to
+    $\lvert \ell_{free} \rvert$.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Bresenham versus the honest sweep">
+    Implement both `integrate_scan` (beam traversal) and `occupancy_grid_mapping_all_cells` (the
+    literal Table 9.1 loop) and benchmark them on the Apartment at $0.1$ m and $0.05$ m resolution
+    with a $60$-beam LiDAR. Report the speedup and the number of cells each visits. Then construct
+    a sensor for which the two give *different maps*, not just different run times, and explain
+    precisely which line of Table 9.2 is responsible.
+    <details>
+      <summary>Hint</summary>
+      Any sensor whose $\beta$ exceeds the angular spacing between beams. The cone then covers cells
+      that no beam's raster passes through, and only the full sweep reaches them — which is exactly
+      the sonar of w13.2 and w13.4.
+    </details>
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Max fusion, with a regression test">
+    Implement `fuse_max` for the sonar + LiDAR scene of w13.4 and add a test asserting that the
+    mean occupancy probability over the table footprint stays above $0.55$ under max fusion and
+    falls below $0.10$ under log-odds summation, for a fixed seed. Then make the test *fail* by
+    changing only the LiDAR's beam count, and explain in the test's comment why that is the correct
+    thing for it to do.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Swap in the learned inverse model">
+    Train the logistic inverse model of §9.3 against your Chapter 10 beam model, implement it as a
+    second `InverseSensorModel`, and run Map Weaver's Apartment tour with each. Score both maps
+    cell-wise against ground truth with the Brier score $\frac{1}{N}\sum_i (p_i - m_i^\star)^2$,
+    and report where the learned model wins. Remember to use the learned model's own $\ell_0$ in
+    line 3 — and, as a diagnostic, run it once with $\ell_0 = 0$ and measure the drift you get.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Moravec, H. P. and Elfes, A."
+    year={1985}
+    title="High Resolution Maps from Wide Angle Sonar"
+    venue="Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), St. Louis, 116–121"
+    url="https://publications.ri.cmu.edu/high-resolution-maps-from-wide-angle-sonar"
+    note="The origin. Probability profiles projected from a 30° sonar cone onto a raster, with overlapping empty volumes reinforcing each other — this chapter's paintbrush metaphor is theirs, forty years early."
+  />
+  <Reference
+    authors="Elfes, A."
+    year={1989}
+    title="Using Occupancy Grids for Mobile Robot Perception and Navigation"
+    venue="Computer 22(6), 46–57"
+    doi="10.1109/2.30720"
+    note="Where the name and the formalism come from: the occupancy grid as a multi-dimensional random field with Bayesian incremental updating from several sensors and viewpoints."
+  />
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 9 is this chapter's spine: Tables 9.1–9.3, the multi-sensor fusion argument of §9.2.1, and the learned-inverse-model construction of §9.3 that D3 turns into a theorem."
+  />
+  <Reference
+    authors="Hornung, A., Wurm, K. M., Bennewitz, M., Stachniss, C., and Burgard, W."
+    year={2013}
+    title="OctoMap: An Efficient Probabilistic 3D Mapping Framework Based on Octrees"
+    venue="Autonomous Robots 34(3), 189–206"
+    doi="10.1007/s10514-012-9321-0"
+    note="The 3-D successor, and the reference for log-odds clamping as standard practice: it explicitly represents occupied, free, and unknown, which is the three-state property this chapter argues is the point. Chapter 19 picks it up."
+  />
+  <Reference
+    authors="Macenski, S., Martín, F., White, R., and Clavero, J. G."
+    year={2020}
+    title="The Marathon 2: A Navigation System"
+    venue="IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)"
+    url="https://arxiv.org/abs/2003.00368"
+    note="Nav2, where occupancy grids actually live today. Its layered costmap — separate obstacle, voxel, and inflation layers rather than one fused field — is the production form of this chapter's max-fusion argument."
+  />
+  <Reference
+    authors="Nuss, D., Reuter, S., Thom, M., Yuan, T., Krehl, G., Maile, M., Gern, A., and Dietmayer, K."
+    year={2018}
+    title="A Random Finite Set Approach for Dynamic Occupancy Grid Maps with Real-Time Application"
+    venue="The International Journal of Robotics Research 37(8), 841–866"
+    doi="10.1177/0278364918775523"
+    note="What to do when the static-state assumption behind the binary Bayes filter is simply false. Cells become a random finite set with velocity, and the ghost-decay hack this chapter uses becomes a principled filter."
+  />
+  <Reference
+    authors="van Kempen, R., Lampe, B., Woopen, T., and Eckstein, L."
+    year={2021}
+    title="A Simulation-based End-to-End Learning Framework for Evidential Occupancy Grid Mapping"
+    venue="IEEE Intelligent Vehicles Symposium (IV), Nagoya"
+    url="https://arxiv.org/abs/2102.12718"
+    note="D3, done at scale and in this decade: a deep inverse sensor model trained on simulated data, with no hand-labelled ground truth, quantifying both first- and second-order uncertainty."
+  />
+  <Reference
+    authors="Berlenko, T. and Krinkin, K."
+    year={2026}
+    title="Equivalence and Divergence of Bayesian Log-Odds and Dempster's Combination Rule for 2D Occupancy Grids"
+    venue="arXiv:2602.18872"
+    url="https://arxiv.org/abs/2602.18872"
+    note="A careful modern comparison of the log-odds update against evidential fusion on simulation, real lidar, and downstream planning — including the finding that which rule looks better depends on how you match the two parameterizations."
+  />
+</References>

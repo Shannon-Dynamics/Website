@@ -8,11 +8,65 @@ on:
 permissions:
   contents: write
 
+env:
+  # Where the site is served from. A GitHub Pages *project* site lives under
+  # /<repo>/, so every absolute URL the books bake in needs that prefix. Set
+  # this to an empty string if the site moves to a custom domain or a user site
+  # — it is the only place the prefix is written down.
+  SITE_BASE: /web-shannon-26
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────────────────
+      # The two interactive books are Next.js apps living in book-web/. They
+      # are built here rather than committed: their exports run to ~170 MB, and
+      # building at deploy time is also what keeps them from drifting out of
+      # sync with the chapter sources beside them.
+      # ────────────────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          # Next 16 (the PRVR book) needs >= 20.9
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            book-web/PRVR/package-lock.json
+            book-web/RL4RVR/package-lock.json
+
+      - name: Build — Probabilistic Robotics via Rust
+        working-directory: book-web/PRVR
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ env.SITE_BASE }}/books/probabilistic-robotics-via-rust
+          NEXT_PUBLIC_SHANNON_SITE: ${{ env.SITE_BASE }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build — Reinforcement Learning for Robotics
+        working-directory: book-web/RL4RVR
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ env.SITE_BASE }}/books/reinforcement-learning-for-robotics
+          NEXT_PUBLIC_SHANNON_SITE: ${{ env.SITE_BASE }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble the books into the site
+        run: |
+          set -euo pipefail
+          rm -rf books
+          mkdir -p books
+          cp -r book-web/PRVR/out books/probabilistic-robotics-via-rust
+          cp -r book-web/RL4RVR/out books/reinforcement-learning-for-robotics
+          # The sources and their node_modules must not ship. Deleting the tree
+          # outright is surer than trusting an exclude glob to match it — a miss
+          # would publish several hundred megabytes of dependencies.
+          rm -rf book-web
+          echo "Published book size:"
+          du -sh books/*
 
       - name: Deploy to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4

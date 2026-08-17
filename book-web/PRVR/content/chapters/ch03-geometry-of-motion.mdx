@@ -1,0 +1,1096 @@
+---
+title: The Geometry of Motion
+description: Frames, rotations, SE(2), and the exponential map — why a pose is not a vector, and how ⊞ and ⊟ let every filter in this book pretend that it is.
+chapter: 3
+part: PART I
+partTitle: Foundations
+difficulty: Intermediate
+readingTime: 55 min
+quote: Any rigid-body configuration can be achieved by starting from the fixed (home) reference frame and integrating a constant twist for a specified time.
+quoteAuthor: Kevin M. Lynch and Frank C. Park
+quoteSource: Modern Robotics, Chapter 3
+---
+
+import { WrapAroundTrap } from '@/components/ch/ch03/wrap-around-trap';
+import { FrameComposer } from '@/components/ch/ch03/frame-composer';
+import { ExpLogLens } from '@/components/ch/ch03/exp-log-lens';
+import { BananaPreview } from '@/components/ch/ch03/banana-preview';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Read and write Craig frame notation, and use the cancellation rule to compose transforms without guessing',
+    'Derive the SE(2) exponential and logarithm in closed form, including the small-angle guard the code needs',
+    'Explain why exp turns a constant twist into an arc, and what componentwise interpolation of (x, y, θ) gets wrong',
+    'Use ⊞ and ⊟ to add an increment to a pose, and state the axioms that make that legitimate',
+    'Implement the book’s SE2 type in Rust, and enforce frame correctness at compile time with newtypes',
+  ]}
+  prerequisites={[
+    'Matrix algebra: products, transposes, inverses, orthogonality',
+    'Gaussians in n dimensions (Chapter 2) — used only for the closing section',
+    'Enough calculus to differentiate a matrix-valued function of one variable',
+  ]}
+>
+Probabilistic robotics puts distributions on poses. A pose is not a vector, and almost every
+frustrating bug in a student SLAM system comes from forgetting it: the heading that averages to
+zero when it should average to 180°, the covariance ellipse drawn on a quantity that does not live
+in a plane, the trajectory that drifts because someone integrated a turn as if it were a straight
+line.
+
+This chapter builds the substrate honestly. Frames and rotation matrices, homogeneous transforms
+and the cancellation rule, the exponential map from the rotation ODE, SE(2) worked to the last
+decimal — and then the move that the classical robotics texts do not make, because they never put
+a distribution on anything: the retraction operators $\bplus$ and $\bminus$, which turn a curved
+manifold into a local vector space that a Kalman filter can work in without lying.
+
+It also forges the book's most reused artifact. The `SE2` type built here is imported by every
+filter, every motion model, and every SLAM system from [Chapter 4](/chapters/ch04-rusty-and-sensors)
+to [Chapter 26](/chapters/ch26-capstone). Get it right once.
+</Overview>
+
+## The average of 179° and −179°
+
+Rusty has two heading estimates. One says 179°, the other says −179°. They disagree by two
+degrees. What is the average heading?
+
+Add and halve: $(179 + (-179))/2 = 0$. The robot is now facing due east, ninety degrees off from
+where either estimate said, having averaged two nearly identical opinions into their exact
+opposite. Nothing was noisy, nothing was miscalibrated, and no floating-point rounding was
+involved. The arithmetic was simply applied to objects that do not support it.
+
+<Deferred>
+  <WrapAroundTrap />
+</Deferred>
+
+The failure is not an edge case to be patched with an `if` statement. It is structural: headings
+live on a circle, and a circle has no consistent notion of "add these two numbers." Every quantity
+in this book that involves an orientation — a pose, a rotation, a relative measurement between two
+poses — has the same property, and every operation a filter performs on such a quantity has to be
+defined rather than assumed.
+
+The repair visible in the purple needle is the entire chapter compressed into one line. Do not add
+the angles. Instead:
+
+1. Ask what rotation takes A to B. That is a *difference*, written $\bminus$, and on a circle it
+   is the short way around: $\theta_B \bminus \theta_A = 2°$, not $-358°$.
+2. Halve that rotation. Rotations *can* be scaled — they live in a genuine vector space, the
+   tangent space.
+3. Apply the halved rotation to A. That is $\bplus$, and the result is $180°$.
+
+Subtract on the manifold, work in the tangent space, come back to the manifold. Chapters
+[7](/chapters/ch07-ekf-ukf-manifolds), [9](/chapters/ch09-motion-models),
+[15](/chapters/ch15-factor-graphs), and [16](/chapters/ch16-scan-matching) are all applications of
+that sentence to progressively harder problems.
+
+<KeyIdea title="The one sentence version">
+A pose is an element of a Lie group, not a triple of numbers. The exponential map turns straight
+lines in the tangent space into arcs in the world, and $\bplus / \bminus$ let a filter do vector
+arithmetic in the tangent space and put the answer back where it belongs.
+</KeyIdea>
+
+## Building intuition: frames, and the notation that types them
+
+Before rotations there are frames. A **frame** is a choice of origin and orthonormal axes; a point
+in physical space has one position and as many coordinate triples as there are frames looking at
+it. Craig's notation makes the bookkeeping explicit by decorating every symbol with the frame it
+is expressed in:
+
+<NotationTable
+  rows={[
+    { sym: '\\{A\\},\\ \\{B\\}', meaning: 'Coordinate frames. Rusty carries a body frame {B}; the world frame {W} is bolted to the map.' },
+    { sym: '{}^{A}p', meaning: 'The point p, expressed in the coordinates of {A}. The point does not change; the triple does.' },
+    { sym: '{}^{A}_{B}T \\in \\SEtwo', meaning: 'The transform "A from B": it maps ᴮp to ᴬp, and equivalently describes the pose of {B} as seen from {A}.' },
+    { sym: '{}^{A}_{B}R \\in \\SOtwo', meaning: 'Its rotation block. The columns are {B}\'s axes written in {A}.' },
+    { sym: '\\boldsymbol{\\tau} = (v_x, v_y, \\omega)^\\mathsf{T}', meaning: 'Tangent (twist) coordinates for SE(2), translation first. Note the ordering — this book follows Solà, not Lynch–Park.' },
+    { sym: '\\tau^{\\wedge},\\ (\\cdot)^{\\vee}', meaning: 'Hat maps tangent coordinates to the 3×3 Lie-algebra matrix; vee undoes it.' },
+    { sym: '\\Ad_T', meaning: 'The adjoint of T: the 3×3 matrix that moves a twist from one frame to another.' },
+    { sym: 'x \\bplus \\delta,\\ y \\bminus x', meaning: 'Retraction x·exp(δ^) and its local inverse log(x⁻¹y)^∨. Right/local convention, fixed book-wide.' },
+    { sym: 'q \\in S^3', meaning: 'A unit quaternion; the double cover of SO(3).' },
+  ]}
+/>
+
+Read every transform name left to right as **target-from-source**. Then ${}^{A}_{B}T$ consumes
+something expressed in $\{B\}$ and produces something expressed in $\{A\}$, and the rule for
+chaining transforms writes itself: adjacent indices must match, and they cancel.
+
+<Deferred>
+  <FrameComposer />
+</Deferred>
+
+Two features of that widget deserve to be stated as mathematics rather than left as observations.
+
+### Derivation: rotation matrices are stacked axes
+
+<Derivation title="The columns of a rotation matrix are the frame's own axes" result="R = [ x̂ ŷ ], RᵀR = I, det R = +1">
+**Step 1 — expand the point in $\{B\}$'s basis.** Write ${}^{B}p = (p_1, p_2)\T$, which means
+$p = p_1\,\hat{x}_B + p_2\,\hat{y}_B$ as a geometric statement about arrows, independent of any
+frame.
+
+**Step 2 — express that statement in $\{A\}$.** Taking coordinates is linear, so
+
+$$
+{}^{A}p \;=\; p_1\, {}^{A}\hat{x}_B \;+\; p_2\, {}^{A}\hat{y}_B
+\;=\; \underbrace{\big[\, {}^{A}\hat{x}_B \;\; {}^{A}\hat{y}_B \,\big]}_{{}^{A}_{B}R}\, {}^{B}p .
+$$
+
+So the columns of ${}^{A}_{B}R$ are literally $\{B\}$'s axes, written in $\{A\}$'s coordinates.
+That is worth remembering when you are staring at four numbers in a debugger: the first column is
+where the body's nose points.
+
+**Step 3 — read off the constraints.** The axes are unit length and mutually perpendicular, and
+the $(i,j)$ entry of $R\T R$ is the dot product of columns $i$ and $j$. Hence $R\T R = I$, so
+$R^{-1} = R\T$. Taking determinants gives $(\det R)^2 = 1$; a right-handed frame maps to a
+right-handed frame, which selects $\det R = +1$ and excludes reflections.
+
+The set of such matrices is the **special orthogonal group**
+
+$$
+\SOtwo = \{\, R \in \R^{2\times 2} : R\T R = I,\ \det R = +1 \,\},
+$$
+
+and $\SOthree$ is defined identically with $3\times 3$ matrices. "Special" is the $\det = +1$;
+"orthogonal" is $R\T R = I$. Both are groups under matrix multiplication: closed, associative,
+with identity $I$ and inverse $R\T$.
+
+**A remark on reading a rotation two ways (Craig §2.2 vs §2.3).** The same matrix ${}^{A}_{B}R$
+can be read as a *mapping* — take coordinates in $\{B\}$, return coordinates in $\{A\}$ — or as an
+*operator* — take a vector in $\{A\}$ and rotate it. The numbers are identical; the intent is not.
+Confusing the two is the single most common sign error in robotics code, and it is exactly what
+the frame-annotated types in the Practical section are designed to prevent.
+</Derivation>
+
+### Derivation: the cancellation rule
+
+A homogeneous transform packages rotation and translation into one matrix that composes by
+multiplication:
+
+$$
+{}^{A}_{B}T \;=\;
+\begin{bmatrix} {}^{A}_{B}R & {}^{A}p_{B} \\ 0 & 1 \end{bmatrix} \in \SEtwo ,
+\qquad
+\begin{bmatrix} {}^{A}p \\ 1 \end{bmatrix}
+= {}^{A}_{B}T \begin{bmatrix} {}^{B}p \\ 1 \end{bmatrix}.
+$$
+
+<Derivation title="Composition, inversion, and why the indices cancel" result="ᴬ_CT = ᴬ_BT · ᴮ_CT,  T⁻¹ = (Rᵀ, −Rᵀt)">
+**Step 1 — compose the mappings.** Apply ${}^{B}_{C}T$ to a point expressed in $\{C\}$, then apply
+${}^{A}_{B}T$ to the result:
+
+$$
+{}^{A}p = {}^{A}_{B}T \left( {}^{B}_{C}T \, {}^{C}p \right) = \left( {}^{A}_{B}T \, {}^{B}_{C}T \right) {}^{C}p .
+$$
+
+Associativity of matrix multiplication is what lets us drop the parentheses, and the bracketed
+product must therefore be ${}^{A}_{C}T$.
+
+**Step 2 — read the index pattern.** In ${}^{A}_{B}T\,{}^{B}_{C}T$ the inner indices are both $B$
+and they cancel, leaving ${}^{A}_{C}T$. The expression ${}^{A}_{B}T\,{}^{A}_{L}T$ has inner indices
+$B$ and $A$; it does not cancel, and it is meaningless. This is a type check performed with a
+pencil, and the Practical section hands it to `rustc`.
+
+**Step 3 — invert by blocks.** Guess $\begin{bmatrix} R\T & -R\T t \\ 0 & 1\end{bmatrix}$ and
+multiply:
+
+$$
+\begin{bmatrix} R & t \\ 0 & 1\end{bmatrix}
+\begin{bmatrix} R\T & -R\T t \\ 0 & 1\end{bmatrix}
+=
+\begin{bmatrix} RR\T & -RR\T t + t \\ 0 & 1\end{bmatrix}
+=
+\begin{bmatrix} I & 0 \\ 0 & 1\end{bmatrix}. \;\blacksquare
+$$
+
+Note what the inverse is *not*: it is not $(-R, -t)$, and it is not $(R\T, -t)$. The translation
+must be rotated back into the other frame before it is negated, because it was measured in the
+frame you are leaving.
+
+**Transform equations.** Because inverses are available, chains can be solved rather than only
+evaluated. If a calibration rig tells you ${}^{W}_{B}T$ and ${}^{W}_{L}T$ and you want the sensor
+extrinsics ${}^{B}_{L}T$, write ${}^{W}_{B}T\,{}^{B}_{L}T = {}^{W}_{L}T$ and left-multiply by the
+inverse: ${}^{B}_{L}T = ({}^{W}_{B}T)^{-1}\,{}^{W}_{L}T$. That pattern —
+*unknown = inverse of what you have, times what you want* — is Craig's transform-equation
+technique, and it reappears in [Chapter 16](/chapters/ch16-scan-matching) as the definition of a
+loop-closure constraint.
+</Derivation>
+
+**A worked composition, checkable in your head.** Put Rusty at ${}^{W}_{B}T = (2, 1, 90°)$ and
+mount the lidar at ${}^{B}_{L}T = (0.3, 0, 0)$ — thirty centimetres forward on the robot's nose.
+Then
+
+$$
+{}^{W}_{L}T = {}^{W}_{B}T\,{}^{B}_{L}T
+= \big(2 + \cos 90°\cdot 0.3,\; 1 + \sin 90°\cdot 0.3,\; 90°\big)
+= (2,\; 1.3,\; 90°).
+$$
+
+The lidar sits 30 cm *north* of the robot, not east, because "forward" is a body-frame word. A
+landmark the lidar reports at ${}^{L}p = (1, 0)$ is therefore at
+${}^{W}p = (2 - 0,\; 1.3 + 1) = (2,\; 2.3)$ in the map — a metre "ahead" of the sensor is a metre
+north in the world, because the whole chain was rotated. The widget above runs the same product
+with a yawed mount, so its numbers differ; the arithmetic does not.
+
+## The mathematics
+
+### Rotations in three dimensions, and the traps
+
+$\SOthree$ is $\SOtwo$'s harder sibling. Three facts make it harder, and all three cost real
+robots real accuracy.
+
+**It is three-dimensional but embedded in nine numbers.** A $3\times3$ matrix has nine entries
+constrained by six equations ($R\T R = I$ is symmetric), leaving three degrees of freedom.
+Numerical drift pushes a matrix off that constraint surface, so long-running code must
+re-orthonormalize.
+
+**It is not commutative.** $R_1 R_2 \ne R_2 R_1$ in general. Rotate this page 90° about the
+vertical axis, then 90° about the horizontal one; reverse the order; the page ends up somewhere
+else. The Frame Composer above shows the same fact in the plane by applying one increment about
+the body frame and about the world frame.
+
+**Every minimal parameterization is singular somewhere.** Three-parameter representations of
+$\SOthree$ — roll-pitch-yaw and its twenty-three siblings — all have configurations where two of
+the three axes align and one degree of freedom silently disappears.
+
+<Callout type="warn">
+**Euler angles, in one box.** There are twelve valid axis sequences (ZYX, ZYZ, …) and each can be
+interpreted about fixed or current axes, giving twenty-four conventions that all get called "roll,
+pitch, yaw". They agree at zero and disagree everywhere else. Every one of them has a gimbal-lock
+singularity. This book uses Euler angles for exactly one purpose — printing a heading for a human
+to read — and never for math, storage, or interpolation. When you must interoperate with a system
+that uses them, write down the convention in the type name, not in a comment.
+</Callout>
+
+Unit quaternions are the standard repair: four numbers, one constraint, no singularities.
+
+<Derivation title="Unit quaternions in one honest page" result="q = (cos θ/2, û sin θ/2), p ↦ q p q*">
+**Step 1 — the rotation action.** Identify a point $p \in \R^3$ with the pure quaternion
+$(0, p)$. For a unit quaternion $q$, the map $p \mapsto q\,p\,q^{*}$ (with $q^{*}$ the conjugate)
+sends pure quaternions to pure quaternions and preserves norms, so it is an isometry of $\R^3$
+fixing the origin. Writing $q = (\cos\frac{\theta}{2},\ \hat\omega \sin\frac{\theta}{2})$ and
+expanding the product recovers Rodrigues' formula for a rotation by $\theta$ about $\hat\omega$.
+
+**Step 2 — composition is multiplication.** $q_1(q_2 p q_2^{*})q_1^{*} = (q_1q_2)p(q_1q_2)^{*}$,
+so composing rotations is multiplying quaternions: sixteen multiplies instead of twenty-seven, and
+no orthogonality constraint to maintain — only $\norm{q} = 1$, restored by a single division.
+
+**Step 3 — the double cover.** $(-q)\,p\,(-q)^{*} = q\,p\,q^{*}$, so $q$ and $-q$ name the same
+rotation. $S^3$ covers $\SOthree$ twice. Consequences that bite in practice: the "distance"
+between two quaternions must be taken to the nearer of $\pm q_2$; naively averaging a set of
+quaternions can cancel them to zero; and interpolation must use `slerp`, which moves along the
+great circle at constant angular rate, rather than a componentwise blend followed by
+renormalization.
+
+We derive quaternions here and then delegate them. `nalgebra`'s `UnitQuaternion` and `sophus`'s
+$\SEthree$ are correct, tested, and fast; re-implementing them teaches nothing that the
+two-dimensional case does not teach more clearly.
+</Derivation>
+
+### The exponential map
+
+Here is the question that unifies everything. A rigid body moves with constant velocity for one
+unit of time. Where does it end up?
+
+<Derivation title="From the rotation ODE to the exponential map" result="Ṙ = R[ω]×  ⟹  R(t) = R(0) exp([ω]× t)">
+**Step 1 — differentiate the orthogonality constraint.** $R(t)\T R(t) = I$ holds for all $t$.
+Differentiating,
+
+$$
+\dot{R}\T R + R\T \dot{R} = 0
+\quad\Longrightarrow\quad
+(R\T \dot{R})\T = -(R\T \dot{R}).
+$$
+
+So $R\T\dot R$ is **skew-symmetric**. Name it $[\omega]_\times$; in the plane that is $\omega S$
+with $S = \begin{bmatrix} 0 & -1 \\ 1 & 0\end{bmatrix}$, and in three dimensions it is the
+familiar cross-product matrix. The angular velocity is not an extra modelling assumption — it is
+forced by orthogonality.
+
+**Step 2 — solve the linear matrix ODE.** $\dot R = R\,[\omega]_\times$ with $\omega$ constant is
+solved by the matrix exponential, $R(t) = R(0)\exp([\omega]_\times t)$, exactly as the scalar
+equation $\dot r = r a$ is solved by $r_0 e^{at}$.
+
+**Step 3 — collapse the series in 2-D.** $S^2 = -I$, so the series splits into the cosine and sine
+series:
+
+$$
+\exp(\omega S) = \sum_{k\ge 0}\frac{(\omega S)^k}{k!} = I\cos\omega + S\sin\omega
+= \begin{bmatrix}\cos\omega & -\sin\omega\\ \sin\omega & \cos\omega\end{bmatrix}.
+$$
+
+The exponential of a skew matrix is a rotation matrix. In two dimensions everything commutes and
+this is exact and boring, which is precisely why $\SEtwo$ is the right place to learn.
+
+**Step 4 — collapse the series in 3-D.** With $\hat\omega$ a unit axis,
+$[\hat\omega]_\times^3 = -[\hat\omega]_\times$, so all powers reduce to $[\hat\omega]_\times$ and
+$[\hat\omega]_\times^2$, and
+
+$$
+\exp\!\big([\hat\omega]_\times\theta\big)
+= I + \sin\theta\,[\hat\omega]_\times + (1-\cos\theta)\,[\hat\omega]_\times^2 ,
+$$
+
+which is **Rodrigues' formula**. The three numbers $\hat\omega\theta$ are the *exponential
+coordinates* of the rotation.
+</Derivation>
+
+Now do the same for a full rigid motion. This is the derivation the rest of the book leans on.
+
+<Derivation title="SE(2) exp and log in closed form" result="exp(τ) = (R(ω), V(ω)ρ),  V(ω) = (1/ω)[sin ω, −(1−cos ω); 1−cos ω, sin ω]" defaultOpen>
+Write the tangent vector as $\boldsymbol\tau = (\rho, \omega)$ with $\rho = (v_x, v_y)\T$ the
+body-frame linear velocity. Its hat form is the $3\times3$ matrix
+
+$$
+\tau^{\wedge} = \begin{bmatrix} \omega S & \rho \\ 0 & 0 \end{bmatrix},
+\qquad
+S = \begin{bmatrix} 0 & -1 \\ 1 & 0 \end{bmatrix}.
+$$
+
+**Step 1 — write the motion as an ODE.** A body moving with constant *body-frame* velocity
+satisfies $\dot T = T\,\tau^{\wedge}$. Splitting into blocks with $T = (R, t)$:
+
+$$
+\dot R = R\,\omega S, \qquad \dot t = R\,\rho .
+$$
+
+The second equation is the whole story: the body-frame velocity $\rho$ has to be rotated into the
+world before it can be integrated, and the rotation is itself changing.
+
+**Step 2 — integrate.** From Step 1 of the previous derivation, $R(s) = R(s\omega)$ starting from
+$R(0)=I$. Substituting,
+
+$$
+t(1) = \int_0^1 R(s\omega)\,\rho\;ds = \left(\int_0^1 R(s\omega)\,ds\right)\rho \;=:\; V(\omega)\,\rho .
+$$
+
+**Step 3 — evaluate the integral entrywise.** With
+$\int_0^1 \cos(s\omega)\,ds = \frac{\sin\omega}{\omega}$ and
+$\int_0^1 \sin(s\omega)\,ds = \frac{1-\cos\omega}{\omega}$,
+
+$$
+V(\omega) = \frac{1}{\omega}
+\begin{bmatrix} \sin\omega & -(1-\cos\omega) \\ 1-\cos\omega & \sin\omega \end{bmatrix},
+\qquad
+\exp(\tau^{\wedge}) = \begin{bmatrix} R(\omega) & V(\omega)\rho \\ 0 & 1 \end{bmatrix}.
+$$
+
+**Step 4 — check the straight-line limit.** As $\omega \to 0$, $\frac{\sin\omega}{\omega}\to 1$
+and $\frac{1-\cos\omega}{\omega}\to 0$, so $V \to I$ and $\exp(\tau^{\wedge}) \to (I, \rho)$: pure
+translation. The formula degrades gracefully, which is exactly what a robot driving nearly
+straight needs.
+
+**Step 5 — invert.** $\det V = \frac{\sin^2\omega + (1-\cos\omega)^2}{\omega^2}
+= \frac{2(1-\cos\omega)}{\omega^2}$, so
+
+$$
+V(\omega)^{-1} = \begin{bmatrix} c & \omega/2 \\ -\omega/2 & c \end{bmatrix},
+\qquad
+c = \frac{\omega\sin\omega}{2(1-\cos\omega)} = \frac{\omega}{2}\cot\frac{\omega}{2},
+$$
+
+using $1 - \cos\omega = 2\sin^2\frac{\omega}{2}$ and $\sin\omega = 2\sin\frac{\omega}{2}\cos\frac{\omega}{2}$.
+The logarithm is then
+
+$$
+\omega = \operatorname{atan2}(R_{21}, R_{11}), \qquad \rho = V(\omega)^{-1} t,
+$$
+
+defined and smooth for $|\omega| < \pi$ — and *only* there, because at $\omega = \pi$ the rotation
+by $+\pi$ and by $-\pi$ are the same group element and $\log$ has to pick one.
+
+**Step 6 — the numerical guard.** Both $V$ and $V^{-1}$ are $0/0$ at $\omega = 0$, so code needs a
+branch. Below $|\omega| \approx 10^{-8}$ use the series
+$\frac{\sin\omega}{\omega} = 1 - \frac{\omega^2}{6} + \cdots$,
+$\frac{1-\cos\omega}{\omega} = \frac{\omega}{2} - \frac{\omega^3}{24} + \cdots$, and
+$c = 1 - \frac{\omega^2}{12} - \cdots$. Above it, write $1-\cos\omega$ as $2\sin^2\frac{\omega}{2}$
+rather than literally. At the $\omega \approx 10^{-3}$ a 60 Hz control loop produces,
+$1 - \cos\omega \approx 5\times10^{-7}$, so subtracting two numbers that agree to six places
+throws away six of the sixteen digits a `f64` had — and it gets worse as $\omega$ shrinks, right
+in the regime where a robot spends most of its life. The half-angle form never subtracts anything.
+</Derivation>
+
+The geometric content of $V(\omega)$ is worth saying in words, because it is the payoff. A
+constant twist does not drive a body along a straight line; it sweeps the body around a fixed
+point — the **instantaneous center of rotation**, at $(-v_y/\omega,\ v_x/\omega)$ in body
+coordinates — at constant angular rate. This is the planar case of the Chasles–Mozzi theorem, the
+one Lynch and Park state as a screw: every rigid displacement is a rotation about some axis
+combined with a translation along it, and in the plane the translation vanishes, leaving a
+rotation about a point or a pure translation. $V$ is the bookkeeping that converts "how far I
+drove along the arc" into "where I ended up".
+
+<Deferred>
+  <ExpLogLens />
+</Deferred>
+
+<KeyIdea title="Why this matters four chapters early">
+$\exp\!\big((\Delta s, 0, \Delta\theta)\T\big)$ *is* the constant-curvature arc a differential
+drive traces when its wheel speeds are held fixed. [Chapter 4](/chapters/ch04-rusty-and-sensors)
+does not need a separate odometry integrator: exact diff-drive integration is this exponential,
+and the classical "$x \mathrel{+}= v\cos\theta\,\Delta t$" update is its first-order truncation.
+</KeyIdea>
+
+### The adjoint
+
+Twists, like points, are frame-dependent. The object that moves them between frames is the
+adjoint.
+
+<Derivation title="The SE(2) adjoint by block computation" result="Ad_T = [R, −S t; 0, 1]">
+**Step 1 — conjugate a one-parameter motion.** For fixed $T$, the curve
+$s \mapsto T\exp(s\tau^{\wedge})T^{-1}$ passes through the identity at $s=0$ and is a
+one-parameter subgroup, so it equals $\exp(s\,\sigma^{\wedge})$ for some tangent vector $\sigma$.
+Define $\Ad_T$ by $\sigma = \Ad_T\,\tau$.
+
+**Step 2 — differentiate at $s = 0$.** This gives the equivalent linear statement
+$(\Ad_T\tau)^{\wedge} = T\,\tau^{\wedge}\,T^{-1}$. Expand with $T = (R, t)$:
+
+$$
+\begin{bmatrix} R & t \\ 0 & 1\end{bmatrix}
+\begin{bmatrix} \omega S & \rho \\ 0 & 0\end{bmatrix}
+\begin{bmatrix} R\T & -R\T t \\ 0 & 1\end{bmatrix}
+=
+\begin{bmatrix} \omega RSR\T & -\omega R S R\T t + R\rho \\ 0 & 0 \end{bmatrix}.
+$$
+
+**Step 3 — use the two-dimensional accident.** $S = R(\pi/2)$, and planar rotations commute, so
+$RSR\T = S$. The rotation part of the twist is therefore unchanged — in the plane, angular
+velocity is frame-independent — and the linear part becomes $\rho' = R\rho - \omega\,S\,t$.
+Collecting blocks with the translation-first ordering,
+
+$$
+\Ad_T = \begin{bmatrix} R & -S\,t \\ 0 & 1 \end{bmatrix}
+= \begin{bmatrix} \cos\theta & -\sin\theta & t_y \\ \sin\theta & \cos\theta & -t_x \\ 0 & 0 & 1\end{bmatrix}.
+\;\blacksquare
+$$
+
+**A note on authority.** Sign and ordering conventions for adjoints are notorious; published
+papers disagree with each other and with themselves. This book's authority is not anyone's memory
+but the property test `adjoint_conjugation` in the Practical section, which asserts
+$T\exp(\tau^{\wedge})T^{-1} = \exp\big((\Ad_T\tau)^{\wedge}\big)$ on every random input `proptest`
+can throw at it. If you change the tangent ordering, that test — not your memory — tells you what
+the adjoint became.
+</Derivation>
+
+The adjoint is how a covariance changes frames. If a body-frame uncertainty is
+$\Sigma_{\text{body}}$, the same uncertainty in the world frame is
+$\Ad_T\,\Sigma_{\text{body}}\,\Ad_T\T$ — the manifold version of the familiar $A\Sigma A\T$, and
+the reason [Chapter 9](/chapters/ch09-motion-models) can compose odometry uncertainty at all.
+
+### ⊞ and ⊟: a legitimate local vector space
+
+Every estimator in this book wants to write $x + \delta$: the Kalman update adds a correction to a
+mean, Gauss–Newton adds a step to an iterate, a particle filter adds noise to a sample. On
+$\SEtwo$ that expression is undefined. The fix is to *define* it, once, with the two operators
+already used informally above:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{x \bplus \delta} = x \cdot \exp(\delta^{\wedge}),
+\qquad
+\htmlClass{term-measurement}{y \bminus x} = \log\!\big(x^{-1}y\big)^{\vee}.
+$$
+</LinkedMath>
+
+<Derivation title="⊞ and ⊟ satisfy the Hertzberg axioms" result="x ⊞ 0 = x;  x ⊞ (y ⊟ x) = y;  (x ⊞ δ) ⊟ x = δ">
+**Axiom 1 — the zero increment does nothing.**
+$x \bplus 0 = x\cdot\exp(0) = x\cdot I = x$.
+
+**Axiom 2 — ⊟ finds the increment that ⊞ needs.**
+
+$$
+x \bplus (y \bminus x) = x\cdot\exp\!\big(\log(x^{-1}y)\big) = x\cdot x^{-1} y = y,
+$$
+
+valid wherever $\exp$ and $\log$ are mutual inverses, which by Step 5 of the $\SEtwo$ derivation
+means $|\omega| < \pi$ for the relative rotation between $x$ and $y$.
+
+**Axiom 3 — ⊟ recovers the increment.**
+
+$$
+(x \bplus \delta)\bminus x = \log\!\big(x^{-1}\,x\exp(\delta^{\wedge})\big)^{\vee} = \delta,
+$$
+
+again for $|\delta_\omega| < \pi$. Together with smoothness of $\exp$ and $\log$, these are exactly
+Hertzberg et al.'s axioms for a *manifold encapsulation*: they say that near any $x$, the map
+$\delta \mapsto x \bplus \delta$ is a well-behaved chart, so an algorithm written in $\delta$ is
+doing honest calculus.
+
+**Which side?** $x\exp(\delta^{\wedge})$ is the *right* (local) convention: the increment is
+applied in the body frame. $\exp(\delta^{\wedge})x$ is the *left* (global) convention, applied in
+the world frame. They differ by the adjoint, $\delta_{\text{left}} = \Ad_x\,\delta_{\text{right}}$
+— which is what the two ghost frames in the Frame Composer are showing. This book fixes the right
+convention everywhere, for a physical reason: a robot's odometry, its wheel encoders, and its IMU
+all report body-frame quantities, so right increments are the ones the hardware actually produces.
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds) turns the choice into an error-state EKF; the
+invariant-EKF literature makes the opposite choice deliberately and gets different, sometimes
+better, convergence guarantees.
+</Derivation>
+
+Vectors are manifolds too, with $\bplus = +$ and $\bminus = -$. That is not a technicality: it
+means one generic filter implementation covers a Euclidean state, a pose, and a pose-plus-bias
+state, with the compiler picking the right operators.
+
+## The algorithms
+
+Geometry has no Thrun table names, so these are the book's Rust API, stated once and never
+re-derived.
+
+<Algorithm
+  name="se2_exp(τ) → T"
+  inputs="τ = (v_x, v_y, ω)ᵀ ∈ ℝ³, tangent coordinates"
+  outputs="T ∈ SE(2)"
+  complexity="O(1) — two transcendental calls"
+>
+1. if $|\omega| < \varepsilon$ then $a \leftarrow 1 - \omega^2/6$, &nbsp; $b \leftarrow \omega/2 - \omega^3/24$
+2. else $a \leftarrow \sin\omega / \omega$, &nbsp; $b \leftarrow 2\sin^2(\omega/2)\,/\,\omega$
+3. endif
+4. $R \leftarrow \operatorname{Rot}(\omega)$
+5. $t \leftarrow (a v_x - b v_y,\; b v_x + a v_y)\T$ &nbsp;&nbsp;// this is $V(\omega)\rho$
+6. return $(R, t)$
+</Algorithm>
+
+<Algorithm
+  name="se2_log(T) → τ"
+  inputs="T = (R, t) ∈ SE(2)"
+  outputs="τ ∈ ℝ³, with |ω| < π"
+  complexity="O(1); exact inverse of se2_exp on |ω| < π"
+>
+1. $\omega \leftarrow \operatorname{atan2}(R_{21}, R_{11})$ &nbsp;&nbsp;// already wrapped to $(-\pi, \pi]$
+2. $h \leftarrow \omega/2$
+3. if $|\omega| < \varepsilon$ then $c \leftarrow 1 - \omega^2/12$ else $c \leftarrow h\,\cot h$ endif
+4. $\rho \leftarrow (c\,t_x + h\,t_y,\; -h\,t_x + c\,t_y)\T$ &nbsp;&nbsp;// this is $V(\omega)^{-1}t$
+5. return $(\rho, \omega)$
+</Algorithm>
+
+Everything else is one line on top of these: $\text{compose}(a,b) = ab$,
+$\text{inverse}(T) = (R\T, -R\T t)$, $x \bplus \delta = x\cdot\texttt{se2\_exp}(\delta)$, and
+$y \bminus x = \texttt{se2\_log}(x^{-1}y)$.
+
+## Uncertainty on a manifold
+
+A short section now, because it is the bridge to Parts II and III; the full treatment is
+[Chapter 9](/chapters/ch09-motion-models).
+
+If a pose is not a vector, a *distribution over poses* is not the Gaussian on $\R^3$ that
+[Chapter 2](/chapters/ch02-probability) built. Writing $\Normal\big((x,y,\theta); \mu, \Sigma\big)$
+is already wrong: it assigns different densities to the same rotation depending on which branch of
+$\theta$ you wrote down. The standard repair is a **concentrated Gaussian**: put an ordinary
+Gaussian in the tangent space, where it *is* at home, and push it onto the group through the
+retraction,
+
+<LinkedMath>
+$$
+x = \htmlClass{term-truth}{\bar{x}} \bplus \boldsymbol\delta,
+\qquad
+\boldsymbol\delta \sim \Normal(0, \Sigma), \quad \Sigma \in \R^{3\times3} .
+$$
+</LinkedMath>
+
+The mean $\bar x$ lives on the manifold, the covariance lives in the tangent space at $\bar x$,
+and every operation a filter performs happens in that tangent space. What the construction
+produces in $(x, y)$ coordinates is not an ellipse.
+
+<Deferred>
+  <BananaPreview />
+</Deferred>
+
+Two consequences, both of which get proper treatment later. First, $\E[\exp(\tau)] \ne
+\exp(\E[\tau])$: the sample mean of the cloud is not the commanded endpoint, and the gap grows
+with $\sigma_\omega$ and with distance travelled. Second, an ellipse fitted to the cloud claims
+mass in places the robot cannot be. A Gaussian filter tracking a pose is making a bet that the
+banana is thin enough to pass for an ellipse over one time step — which is usually true at 60 Hz
+and disastrously false over a ten-metre dead-reckoned stretch.
+[Chapter 7](/chapters/ch07-ekf-ukf-manifolds) names that bet and prices it.
+
+## Implementation in Rust
+
+The type is small enough to read in one sitting and central enough that it is worth reading
+carefully. Two design decisions are load-bearing. The rotation is stored as a `UnitComplex`, not
+as an `f64` angle, so no arithmetic can ever produce an unwrapped heading. And the tangent type is
+a fixed-size `SVector<f64, 3>`, so a dimension mismatch is a compile error rather than a panic.
+
+```rust title="crates/pr-core/src/geom/se2.rs" {30-46,55-64}
+use nalgebra::{Point2, SMatrix, SVector, UnitComplex, Vector2};
+
+/// Tangent coordinates τ = (vₓ, v_y, ω)ᵀ — **translation first** (Solà order).
+///
+/// Lynch & Park write (ω, v). We do not, because the reader already holds the
+/// pose tuple (x, y, θ) and because `factrs` and `sophus` order it this way.
+pub type Tangent2 = SVector<f64, 3>;
+
+/// Below this |ω| the closed forms are 0/0 and we switch to Taylor series.
+const SMALL_ANGLE: f64 = 1e-8;
+
+/// A planar rigid-body transform: the book's most-used type.
+///
+/// Storing the rotation as a `UnitComplex` rather than an angle is not a
+/// micro-optimization — it makes an unwrapped heading *unrepresentable*.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SE2 {
+    pub rot: UnitComplex<f64>,
+    pub trans: Vector2<f64>,
+}
+
+impl SE2 {
+    pub fn identity() -> Self {
+        Self { rot: UnitComplex::identity(), trans: Vector2::zeros() }
+    }
+
+    pub fn new(x: f64, y: f64, theta: f64) -> Self {
+        Self { rot: UnitComplex::new(theta), trans: Vector2::new(x, y) }
+    }
+
+    /// exp: 𝔰𝔢(2) → SE(2). Derivation 4, with the guard from its Step 6.
+    pub fn exp(tau: &Tangent2) -> Self {
+        let (vx, vy, w) = (tau[0], tau[1], tau[2]);
+        let (a, b) = if w.abs() < SMALL_ANGLE {
+            (1.0 - w * w / 6.0, w / 2.0 - w * w * w / 24.0)
+        } else {
+            // (1 − cos ω) written as 2 sin²(ω/2): the literal form loses about
+            // eight digits to cancellation at the ω a 60 Hz loop produces.
+            let sh = (0.5 * w).sin();
+            (w.sin() / w, 2.0 * sh * sh / w)
+        };
+        Self {
+            rot: UnitComplex::new(w),
+            trans: Vector2::new(a * vx - b * vy, b * vx + a * vy),
+        }
+    }
+
+    /// log: SE(2) → 𝔰𝔢(2). Exact inverse of `exp` for |ω| < π.
+    pub fn log(&self) -> Tangent2 {
+        let w = self.rot.angle(); // UnitComplex::angle is already in (−π, π]
+        let h = 0.5 * w;
+        // c = (ω/2)·cot(ω/2), the cancellation-free form of ω sin ω / 2(1−cos ω).
+        let c = if w.abs() < SMALL_ANGLE { 1.0 - w * w / 12.0 } else { h / h.tan() };
+        let (x, y) = (self.trans.x, self.trans.y);
+        Tangent2::new(c * x + h * y, -h * x + c * y, w)
+    }
+
+    /// (Rᵀ, −Rᵀt). Note that the translation is rotated *before* it is negated.
+    pub fn inverse(&self) -> Self {
+        let r_inv = self.rot.inverse();
+        Self { rot: r_inv, trans: -(r_inv * self.trans) }
+    }
+
+    /// Ad_T, satisfying T·exp(τ)·T⁻¹ = exp(Ad_T τ). Derivation 6.
+    pub fn adjoint(&self) -> SMatrix<f64, 3, 3> {
+        let r = self.rot.to_rotation_matrix();
+        let m = r.matrix();
+        SMatrix::<f64, 3, 3>::new(
+            m[(0, 0)], m[(0, 1)],  self.trans.y,
+            m[(1, 0)], m[(1, 1)], -self.trans.x,
+            0.0,       0.0,        1.0,
+        )
+    }
+
+    /// Map a point from this frame's coordinates into the parent frame.
+    pub fn act(&self, p: &Point2<f64>) -> Point2<f64> {
+        self.rot.transform_point(p) + self.trans
+    }
+
+    /// Display only. Never do arithmetic on the tuple — that is what ⊞ is for.
+    pub fn xytheta(&self) -> (f64, f64, f64) {
+        (self.trans.x, self.trans.y, self.rot.angle())
+    }
+}
+
+impl std::ops::Mul for SE2 {
+    type Output = SE2;
+    fn mul(self, rhs: SE2) -> SE2 {
+        SE2 { rot: self.rot * rhs.rot, trans: self.trans + self.rot * rhs.trans }
+    }
+}
+```
+
+The retraction goes in its own trait, because that is the interface every later estimator is
+generic over. `D` is the tangent dimension, and it is a const generic so that the compiler knows
+the size of every Jacobian in [Chapter 7](/chapters/ch07-ekf-ukf-manifolds).
+
+```rust title="crates/pr-core/src/geom/manifold.rs"
+use nalgebra::SVector;
+use crate::geom::se2::{Tangent2, SE2};
+
+/// The interface the book's filters are written against.
+///
+/// `x ⊞ δ` moves `x` by a tangent-space increment; `y ⊟ x` recovers the
+/// increment that would do it. Implementations must satisfy the Hertzberg
+/// axioms, which `tests/geom.rs` checks by property test rather than by trust.
+pub trait Manifold<const D: usize>: Copy {
+    fn boxplus(&self, delta: &SVector<f64, D>) -> Self;
+    fn boxminus(&self, other: &Self) -> SVector<f64, D>;
+}
+
+impl Manifold<3> for SE2 {
+    /// Right (local) convention: the increment is applied in the body frame.
+    fn boxplus(&self, delta: &Tangent2) -> Self {
+        *self * SE2::exp(delta)
+    }
+    fn boxminus(&self, other: &Self) -> Tangent2 {
+        (other.inverse() * *self).log()
+    }
+}
+
+/// Vectors are manifolds too — flat ones. This impl is why one generic EKF
+/// serves both a Euclidean state and a pose without a line of special-casing.
+impl<const N: usize> Manifold<N> for SVector<f64, N> {
+    fn boxplus(&self, delta: &SVector<f64, N>) -> Self { self + delta }
+    fn boxminus(&self, other: &Self) -> SVector<f64, N> { self - other }
+}
+```
+
+### Craig's notation, enforced by rustc
+
+Craig invented a type system in 1986 and wrote it in superscripts. Rust can check it. The markers
+are zero-sized, `PhantomData` occupies nothing, and the whole thing compiles down to the same
+machine code as bare `SE2`.
+
+```rust title="crates/pr-core/src/geom/frames.rs" {21-27}
+use core::marker::PhantomData;
+use core::ops::Mul;
+use crate::geom::se2::SE2;
+
+pub trait Frame: 'static {}
+
+pub struct World;
+pub struct Body;
+pub struct LidarF;
+impl Frame for World {}
+impl Frame for Body {}
+impl Frame for LidarF {}
+
+/// `Pose<A, B>` is Craig's ᴬ_BT: "A from B". Zero runtime cost, and the index
+/// bookkeeping becomes the compiler's problem instead of yours.
+#[derive(Clone, Copy, Debug)]
+pub struct Pose<A: Frame, B: Frame>(pub SE2, PhantomData<fn() -> (A, B)>);
+
+impl<A: Frame, B: Frame> Pose<A, B> {
+    pub fn new(t: SE2) -> Self { Self(t, PhantomData) }
+    pub fn inverse(self) -> Pose<B, A> { Pose::new(self.0.inverse()) }
+}
+
+/// The cancellation rule, as a trait impl: the inner frames must agree, and
+/// they vanish from the output type.
+impl<A: Frame, B: Frame, C: Frame> Mul<Pose<B, C>> for Pose<A, B> {
+    type Output = Pose<A, C>;
+    fn mul(self, rhs: Pose<B, C>) -> Pose<A, C> { Pose::new(self.0 * rhs.0) }
+}
+```
+
+Now the payoff. This is a deliberate compile error, and it is a feature of the chapter:
+
+```rust title="demos/ch03-geometry/examples/frame_safety.rs"
+let world_from_body: Pose<World, Body> = Pose::new(SE2::new(2.0, 1.0, FRAC_PI_2));
+let world_from_lidar: Pose<World, LidarF> = Pose::new(SE2::new(2.0, 1.3, FRAC_PI_2));
+
+// Wrong: the inner indices are W and W. They do not cancel.
+let oops = world_from_body * world_from_lidar;
+```
+
+```text title="cargo build"
+error[E0308]: mismatched types
+  --> demos/ch03-geometry/examples/frame_safety.rs:6:31
+   |
+ 6 |     let oops = world_from_body * world_from_lidar;
+   |                                  ^^^^^^^^^^^^^^^^ expected `Pose<Body, _>`,
+   |                                                   found `Pose<World, LidarF>`
+```
+
+What you meant was `world_from_body.inverse() * world_from_lidar`, whose type is
+`Pose<Body, LidarF>` — the sensor extrinsics. The convention for the rest of the book: bare `SE2`
+for state inside an estimator, where everything is in one frame by construction, and
+`Pose<_, _>` at subsystem boundaries — extrinsics, map anchoring, anything crossing a module line.
+
+## Putting it together: the square dance
+
+Here is the numeric example to check by hand. It is the smallest computation that exercises the
+whole chapter, and a test pins it.
+
+**Drive a quarter circle.** Command $\boldsymbol\tau = (1, 0, \tfrac{\pi}{2})\T$: one metre of arc
+while turning ninety degrees. From Derivation 4,
+
+$$
+V\!\left(\tfrac{\pi}{2}\right) = \frac{2}{\pi}\begin{bmatrix} 1 & -1 \\ 1 & 1 \end{bmatrix},
+\qquad
+V\!\left(\tfrac{\pi}{2}\right)\begin{pmatrix}1\\0\end{pmatrix} = \frac{2}{\pi}\begin{pmatrix}1\\1\end{pmatrix},
+$$
+
+because $\sin\frac{\pi}{2} = 1$ and $1 - \cos\frac{\pi}{2} = 1$, and $1/\omega = 2/\pi$. So
+
+$$
+\exp\!\big(\tau^{\wedge}\big) = \left(\tfrac{2}{\pi},\ \tfrac{2}{\pi},\ \tfrac{\pi}{2}\right)
+\approx (0.636620,\; 0.636620,\; 1.570796).
+$$
+
+Sanity check the geometry: the turn radius is $|v|/\omega = 2/\pi$, the center of the arc is at
+$(0, 2/\pi)$, and rotating the start point $90°$ about that center lands exactly on
+$(2/\pi, 2/\pi)$.
+
+**Go back.** $\log$ of that pose returns $\omega = \pi/2$, so $h = \pi/4$ and
+$c = \frac{\pi}{4}\cot\frac{\pi}{4} = \frac{\pi}{4}$ — the two entries of $V^{-1}$ are equal, and
+
+$$
+\rho = \frac{\pi}{4}\begin{bmatrix}1 & 1\\ -1 & 1\end{bmatrix}\frac{2}{\pi}\begin{pmatrix}1\\1\end{pmatrix}
+= \frac{1}{2}\begin{pmatrix}2\\0\end{pmatrix} = \begin{pmatrix}1\\0\end{pmatrix}. \checkmark
+$$
+
+**Compare with Euler integration.** The classical update
+$x \mathrel{+}= \Delta s\cos\theta$, $y \mathrel{+}= \Delta s\sin\theta$,
+$\theta \mathrel{+}= \Delta\theta$ applied in $K$ equal substeps gives
+
+| $K$ | endpoint | error vs. $\exp$ |
+|---|---|---|
+| 1 | $(1.000000,\ 0.000000)$ | 0.7330 m |
+| 4 | $(0.753417,\ 0.503417)$ | 0.1772 m |
+| 16 | — | ≈ 0.044 m |
+
+The error falls like $1/K$, which is first-order convergence, which is what "Euler" means. The
+exponential is exact at $K = 1$, because it is not an approximation of the arc — it *is* the arc.
+
+**Close a square.** Alternate `exp((1,0,0))` and `exp((0,0,π/2))` four times. Rusty returns to the
+origin, and the closure error measured on the manifold,
+$\norm{\,\text{final} \bminus \mathrm{SE2::identity()}\,}$, is at the level of floating-point
+round-off — around $10^{-16}$, not $10^{-3}$. That is the difference between arithmetic that
+respects the group and arithmetic that approximates it.
+
+```rust title="crates/pr-core/tests/geom.rs"
+use approx::assert_relative_eq;
+use nalgebra::Vector3;
+use proptest::prelude::*;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
+use std::f64::consts::{FRAC_PI_2, PI};
+
+use pr_core::geom::{manifold::Manifold, se2::{Tangent2, SE2}};
+
+/// The chapter's worked example, pinned to 1e-12.
+#[test]
+fn worked_example_ch03_quarter_arc() {
+    let tau = Tangent2::new(1.0, 0.0, FRAC_PI_2);
+    let t = SE2::exp(&tau);
+    let (x, y, theta) = t.xytheta();
+
+    assert_relative_eq!(x, 2.0 / PI, epsilon = 1e-12); // 0.636619772...
+    assert_relative_eq!(y, 2.0 / PI, epsilon = 1e-12);
+    assert_relative_eq!(theta, FRAC_PI_2, epsilon = 1e-12);
+
+    // …and log takes us straight back.
+    assert_relative_eq!(t.log(), tau, epsilon = 1e-12);
+
+    // One Euler step is off by 73 centimetres on a one-metre arc.
+    let euler = (1.0 - x).hypot(0.0 - y);
+    assert_relative_eq!(euler, 0.733028, epsilon = 1e-6);
+}
+
+/// Four sides and four right-angle turns must return exactly to the start.
+#[test]
+fn square_dance_closes() {
+    let forward = SE2::exp(&Tangent2::new(1.0, 0.0, 0.0));
+    let turn = SE2::exp(&Tangent2::new(0.0, 0.0, FRAC_PI_2));
+
+    let mut pose = SE2::identity();
+    for _ in 0..4 {
+        pose = pose * forward * turn;
+    }
+
+    // Measured on the manifold, not on the tuple: ‖final ⊟ identity‖.
+    let closure = pose.boxminus(&SE2::identity()).norm();
+    assert!(closure < 1e-14, "closure error {closure:e} — the group is not closing");
+}
+
+fn twist() -> impl Strategy<Value = Tangent2> {
+    // |ω| < π keeps us inside log's injectivity radius, per Derivation 4 Step 5.
+    (-5.0f64..5.0, -5.0f64..5.0, -3.14f64..3.14)
+        .prop_map(|(a, b, c)| Tangent2::new(a, b, c))
+}
+
+proptest! {
+    #[test]
+    fn exp_log_roundtrip(tau in twist()) {
+        prop_assert!((SE2::exp(&tau).log() - tau).norm() < 1e-12);
+    }
+
+    #[test]
+    fn group_axioms(a in twist(), b in twist(), c in twist()) {
+        let (ta, tb, tc) = (SE2::exp(&a), SE2::exp(&b), SE2::exp(&c));
+        let lhs = (ta * tb) * tc;
+        let rhs = ta * (tb * tc);
+        prop_assert!(lhs.boxminus(&rhs).norm() < 1e-12);          // associativity
+        prop_assert!((ta * ta.inverse()).log().norm() < 1e-12);   // inverse
+    }
+
+    /// The authority on the adjoint's sign convention. Not memory — this.
+    #[test]
+    fn adjoint_conjugation(t in twist(), tau in twist()) {
+        let big_t = SE2::exp(&t);
+        let lhs = big_t * SE2::exp(&tau) * big_t.inverse();
+        let rhs = SE2::exp(&(big_t.adjoint() * tau));
+        prop_assert!(lhs.boxminus(&rhs).norm() < 1e-10);
+    }
+
+    #[test]
+    fn boxplus_axioms(x in twist(), d in twist()) {
+        let big_x = SE2::exp(&x);
+        prop_assert!(big_x.boxplus(&Tangent2::zeros()).boxminus(&big_x).norm() < 1e-14);
+        let y = big_x.boxplus(&d);
+        prop_assert!((y.boxminus(&big_x) - d).norm() < 1e-12);
+        prop_assert!(big_x.boxplus(&y.boxminus(&big_x)).boxminus(&y).norm() < 1e-12);
+    }
+}
+
+/// log stays accurate right up to the injectivity boundary — the place where
+/// a naive implementation quietly returns the wrong branch.
+#[test]
+fn log_is_stable_near_pi() {
+    let mut rng = SmallRng::seed_from_u64(0xC0FFEE); // never thread_rng() in this book
+    for _ in 0..1000 {
+        let theta = PI - rng.random_range(1e-9..1e-6);
+        let ours = SE2::new(0.3, -0.2, theta).log();
+        assert_relative_eq!(ours[2], theta, epsilon = 1e-12);
+        assert_relative_eq!(SE2::exp(&ours).log(), ours, epsilon = 1e-9);
+    }
+}
+```
+
+<Callout type="info">
+Every widget on this page runs the TypeScript port of the code above — `web/lib/geom/se2.ts` and
+`web/lib/geom/screw.ts` — and both implementations are checked against this same quarter-arc
+example. If the prose and the code ever disagree, the test settles it.
+</Callout>
+
+The three-dimensional case is delegated, not skipped. `sophus` provides $\SOthree$ and $\SEthree$
+with the same `exp`/`log`/`adjoint` surface, `nalgebra`'s `UnitQuaternion` handles the
+parameterization, and [Chapter 18](/chapters/ch18-visual-slam) uses both. The reason to hand-roll
+$\SEtwo$ and only $\SEtwo$ is that every structure in the general case is visible here, in two
+dimensions, where you can check the answer with a protractor.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Derive V and its inverse">
+    Evaluate $V(\omega) = \int_0^1 R(s\omega)\,ds$ entrywise to reproduce Derivation 4's closed
+    form, then derive $V(\omega)^{-1}$ by inverting the $2\times2$ matrix directly. Show that both
+    tend to $I$ as $\omega \to 0$, and compute the first two nonzero terms of the Taylor series of
+    each entry — these are the coefficients the code branches to.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The adjoint is a homomorphism">
+    Prove the $\SEtwo$ adjoint formula of Derivation 6 by block computation, then show that
+    $\Ad_{T_1T_2} = \Ad_{T_1}\Ad_{T_2}$ and $\Ad_{T^{-1}} = (\Ad_T)^{-1}$. Explain why the first
+    identity says "changing frames twice is one change of frame", and why that is exactly what
+    makes covariance propagation across a kinematic chain composable.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Right increments are body-frame quantities">
+    Let $x' = x \bplus \delta$ with $\delta = (\rho, \omega_\delta)$. Show that the world-frame
+    displacement of the origin is $R_x V(\omega_\delta)\rho$, and hence $R_x\rho$ to first order.
+    Conclude why wheel odometry naturally produces right increments, and derive the conversion
+    $\delta_{\text{left}} = \Ad_x \delta_{\text{right}}$ to the left convention.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify with the Exp/Log Lens">
+    Two poses differ by a pure $180°$ rotation with no translation. Predict, before touching the
+    widget: where does the geodesic interpolation put the robot at $s = 0.5$, and why does $\log$
+    fail to pick a unique answer for this pair? Now drag the arrowhead in w3.2 to the origin so
+    $v \approx 0$, and slide $\omega$ toward $\pm 3.1$. The slider deliberately stops short of
+    $\pi$ — say why, in terms of Derivation 4, Step 5, and describe what happens to the arc and to
+    the ICR as you approach the limit from either side.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Squeeze the banana">
+    In w3.4, predict what happens to the cloud as $\sigma_\omega \to 0$ with $\sigma_v$ fixed, and
+    what happens to the 2σ coverage readout. Verify. Then state, in one sentence, the condition
+    under which the fitted ellipse is *approximately* honest — you have just described the bet the
+    EKF makes in [Chapter 7](/chapters/ch07-ekf-ukf-manifolds).
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Implement SE2 and pass the suite">
+    Implement `SE2` with `exp`, `log`, `inverse`, `adjoint`, and `Mul`, plus the `Manifold<3>` impl,
+    so that every test in `crates/pr-core/tests/geom.rs` above passes. Then deliberately break the
+    small-angle guard by deleting the Taylor branch, and find the value of $|\omega|$ *below* which
+    `exp_log_roundtrip` starts failing. Report it, and name the subtraction that lost the digits.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="SO3 under the same trait">
+    Implement `SO3` as a newtype over `nalgebra::UnitQuaternion<f64>` with `exp`, `log`, and
+    `Manifold<3>`. Handle $\theta \approx \pi$ with the numerically stable branch (the naive
+    $\log$ divides by $\sin(\theta/2)$, which vanishes at $\theta = 0$, and loses precision as
+    $\theta \to \pi$ from the other side). Property-test the round trip against `sophus` at a
+    thousand random rotations including the near-$\pi$ band, and plot the round-trip error against
+    $\theta$.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Make the frame bug uncompilable">
+    Take a working piece of code that composes transforms with bare `SE2` — the widget's lidar
+    chain is a fine target — and port it to `Pose<A, B>`. Introduce a realistic frame bug (compose
+    the extrinsics in the wrong order) and show the compiler catching it. Then measure: does the
+    newtype cost anything? Compare the generated assembly for `Pose<World, Body> * Pose<Body, LidarF>`
+    with plain `SE2 * SE2`.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Lynch, K. M. and Park, F. C."
+    year={2017}
+    title="Modern Robotics: Mechanics, Planning, and Control"
+    venue="Cambridge University Press. ISBN 978-1107156302"
+    url="https://modernrobotics.org"
+    note="Chapter 3 is this chapter's computational spine: planar rigid motions, angular velocity, exponential coordinates, twists, and screws. The epigraph is from its opening pages. Note the tangent ordering differs from ours — they write (ω, v)."
+  />
+  <Reference
+    authors="Craig, J. J."
+    year={2005}
+    title="Introduction to Robotics: Mechanics and Control"
+    venue="Pearson, 3rd edition. ISBN 978-0201543612"
+    url="https://search.worldcat.org/search?q=isbn:9780201543612"
+    note="The source of the leading super/subscript notation and the cancellation rule. Sections 2.2–2.7 are the clearest treatment of frames as a discipline anywhere; the Rust newtypes in this chapter are that discipline, mechanized."
+  />
+  <Reference
+    authors="Spong, M. W., Hutchinson, S., and Vidyasagar, M."
+    year={2020}
+    title="Robot Modeling and Control"
+    venue="Wiley, 2nd edition. ISBN 978-1119523994"
+    url="https://www.wiley-vch.de/en/areas-interest/engineering/robot-modeling-and-control-978-1-119-52399-4"
+    note="Section 2.4 states the fixed-frame versus current-frame composition rule — pre- versus post-multiplication — which is exactly the two ghost frames in the Frame Composer, and the reason this book fixes the right convention."
+  />
+  <Reference
+    authors="Hertzberg, C., Wagner, R., Frese, U., and Schröder, L."
+    year={2013}
+    title="Integrating generic sensor fusion algorithms with sound state representations through encapsulation of manifolds"
+    venue="Information Fusion 14(1), 57–77"
+    doi="10.1016/j.inffus.2011.08.003"
+    note="Where ⊞ and ⊟ come from, with the axioms proved in Derivation 7. The paper's thesis is this chapter's thesis: encapsulate the manifold and every estimator downstream can be written as if the state were a vector."
+  />
+  <Reference
+    authors="Solà, J., Deray, J., and Atchuthan, D."
+    year={2018}
+    title="A micro Lie theory for state estimation in robotics"
+    venue="arXiv:1812.01537"
+    url="https://arxiv.org/abs/1812.01537"
+    note="The modernization spine of this chapter: the ⊞/⊟ interface, the adjoint, and the Jacobian bookkeeping that Part II needs. This book follows its translation-first tangent ordering and its right-⊞ convention."
+  />
+  <Reference
+    authors="Mangelson, J. G., Ghaffari, M., Vasudevan, R., and Eustice, R. M."
+    year={2020}
+    title="Characterizing the Uncertainty of Jointly Distributed Poses in the Lie Algebra"
+    venue="IEEE Transactions on Robotics 36(5), 1371–1388"
+    doi="10.1109/TRO.2020.2994457"
+    note="The banana, taken seriously: what a concentrated Gaussian on SE(2)/SE(3) actually looks like, and why the independence assumption between poses in a graph is usually false. Chapter 9 builds on its compounding operations."
+  />
+  <Reference
+    authors="Potokar, E. R., Beard, R. W., and Mangelson, J. G."
+    year={2024}
+    title="An Introduction to the Invariant Extended Kalman Filter [Lecture Notes]"
+    venue="IEEE Control Systems 44(6)"
+    doi="10.1109/MCS.2024.3466488"
+    note="The most readable recent account of why the choice between left and right ⊞ has consequences for convergence, not just for bookkeeping. Read it after Chapter 7."
+  />
+  <Reference
+    authors="Ge, Y., van Goor, P., and Mahony, R."
+    year={2025}
+    title="The Geometry of Extended Kalman Filters on Manifolds with Affine Connection"
+    venue="arXiv:2506.05728"
+    url="https://arxiv.org/abs/2506.05728"
+    note="Where the field is now: the retraction of this chapter is one choice among many, and connection, parallel transport, and curvature all show up in the filter equations once you look. The frontier version of Chapter 7."
+  />
+</References>

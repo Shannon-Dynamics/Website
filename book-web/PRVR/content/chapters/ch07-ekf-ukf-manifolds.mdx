@@ -1,0 +1,1281 @@
+---
+title: 'Beyond Linearity: EKF, UKF, and Manifolds'
+description: Where linearization lies and by exactly how much, what sigma points fix, and why a modern filter puts its mean on a Lie group and its covariance in the tangent space.
+chapter: 7
+part: PART II
+partTitle: The Bayes Filter Family
+difficulty: Advanced
+readingTime: 65 min
+quote: The goodness of the linearization also depends on the degree of uncertainty. The less certain the robot, the wider its Gaussian belief, and the more it is affected by nonlinearities in the state transition and measurement functions.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 3
+---
+
+import { LinearizationLens } from '@/components/ch/ch07/linearization-lens';
+import { ManifoldVsVector } from '@/components/ch/ch07/manifold-vs-vector';
+import { ErrorStateLedger } from '@/components/ch/ch07/error-state-ledger';
+import { FilterChooser } from '@/components/ch/ch07/filter-chooser';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Derive the EKF as the Kalman filter with two Taylor expansions, and say precisely what those expansions throw away',
+    'Quantify linearization error as curvature times spread, and measure it in a live widget',
+    'Derive the unscented transform and show it matches the true mean to third order with no Jacobians at all',
+    'State the retraction axioms for boxplus and boxminus, and rewrite every Kalman equation in terms of them',
+    'Build an error-state EKF on SE(2) that never linearizes the trajectory, only the error',
+    'Explain, with one worked fact, why an invariant error definition removes the estimate from the Jacobians',
+  ]}
+  prerequisites={[
+    'SE(2), exp and log, the adjoint (Chapter 3)',
+    'Every Kalman filter equation, Joseph form, NEES and NIS (Chapter 6)',
+    'Transformations of Gaussians and the Cholesky factor (Chapter 2)',
+    'Rust traits, const generics, and nalgebra fixed-size types',
+  ]}
+>
+[Chapter 6](/chapters/ch06-kalman-filters) gave us a filter that is exact, optimal, and closed
+under its own recursion — provided the world is linear. Rusty's world is not. He turns, and a turn
+enters the motion model through a cosine; he ranges to a beacon, and range enters the measurement
+model through a square root. From the first turn onward, the true posterior is not a Gaussian and
+never will be again.
+
+Everything in this chapter is a strategy for pretending anyway, and the strategies differ in how
+honest their pretence is. The EKF replaces the curve with its tangent line and inherits an error it
+does not report. The unscented transform sends a handful of scouts through the real function and
+refits, which is both cheaper to derive and more accurate. And then there is the failure that
+neither of those addresses at all: a heading is not a real number, so a filter that adds a Kalman
+correction to one is not approximating badly — it is computing something meaningless. The repair
+for that is not a better approximation but a better *state space*, and it is where this book leaves
+2005 behind for good.
+</Overview>
+
+## Two different ways to be wrong about a turn
+
+Take the Kalman filter of [Chapter 6](/chapters/ch06-kalman-filters), point it at Rusty's pose
+$(x, y, \theta)$, and hand it a compass. Drive Rusty in a circle. Two things go wrong, and they are
+not the same thing.
+
+The first is quantitative. The motion model $x_t = g(u_t, x_{t-1})$ moves the robot along an arc,
+and arcs are curved: propagating a covariance through the *tangent* to that arc systematically
+misplaces the mean and misreports the spread. The error is small when the robot is confident and
+grows without limit as it becomes uncertain. It is an approximation with a size, and the size can
+be computed.
+
+The second is categorical. Halfway round the circle Rusty's heading passes $\pi$ and the compass —
+like every real compass — starts reporting $-\pi$. The filter computes an innovation $z_t - \mu_t$
+of nearly $-2\pi$, applies a gain of about a half, and swings its estimate a hundred and eighty
+degrees the wrong way round the world. No amount of better linearization touches this. It is not an
+approximation error at all; it is the arithmetic being wrong.
+
+The chapter deals with them in that order.
+
+<Deferred>
+  <LinearizationLens />
+</Deferred>
+
+Watch the sweep for a few passes before reading on. Three things are worth noticing.
+
+**The tangent moves.** The EKF does not linearize once, globally; it re-fits its tangent at the
+current mean at every single step. That is its great strength — a fresh, locally-valid model each
+update — and the source of its most dangerous failure, because the quality of that model depends on
+where the mean happens to be, and the mean is the thing you are unsure about.
+
+**The scouts bend with the curve.** The three green points are not samples. They are chosen
+deterministically so that their weighted mean and covariance reproduce the blue input exactly, and
+they are pushed through the *true* function. Nothing is ever differentiated.
+
+**The error has two factors, not one.** Slide the operating point into a flat region and the orange
+and gray curves merge no matter how wide the input is. Park it in the bend and widen the input, and
+the gap opens as $\sigma^2$. Neither curvature nor spread alone predicts anything; their product
+does.
+
+<KeyIdea title="The one sentence version">
+The EKF's error is the second-order Taylor term it discards, whose size is curvature times spread;
+the unscented transform removes the first factor by never differentiating, and the manifold
+formulation removes an entirely different error that neither of them ever addressed.
+</KeyIdea>
+
+## The mathematics
+
+### The nonlinear Gaussian system
+
+Everything below concerns a system of the form
+
+<LinkedMath>
+$$
+x_t = \htmlClass{term-prediction}{g(u_t, x_{t-1})} + \varepsilon_t,
+\qquad
+z_t = \htmlClass{term-measurement}{h(x_t)} + \delta_t
+$$
+</LinkedMath>
+
+with $\varepsilon_t \sim \Normal(0, R_t)$ and $\delta_t \sim \Normal(0, Q_t)$ independent across
+time, exactly as in [Chapter 6](/chapters/ch06-kalman-filters) except that $g$ and $h$ are now
+arbitrary smooth functions instead of matrices.
+
+That single change destroys the property the Kalman filter was built on. A Gaussian pushed through
+a linear map is Gaussian; pushed through anything else it is not. So $\bel(x_t)$ is non-Gaussian
+from the first prediction step, and every filter in this chapter is a decision about *which*
+Gaussian to pretend with.
+
+<NotationTable
+  rows={[
+    { sym: 'g(u_t, x_{t-1}),\\; h(x_t)', meaning: 'Nonlinear motion and measurement functions, replacing Chapter 6\'s A_t, B_t, C_t.' },
+    { sym: 'G_t = \\partial g / \\partial x_{t-1}', meaning: 'Motion Jacobian, evaluated at the previous mean. Thrun writes g\'.' },
+    { sym: 'H_t = \\partial h / \\partial x_t', meaning: 'Measurement Jacobian, evaluated at the predicted mean.' },
+    { sym: '\\mathcal{X}^{[i]},\\; w_m^{[i]},\\; w_c^{[i]}', meaning: 'Sigma points and their mean / covariance weights.' },
+    { sym: '\\alpha_{\\mathrm{UT}},\\, \\beta,\\, \\kappa,\\, \\lambda', meaning: 'Unscented parameters; λ = α²(n+κ) − n. Subscripted UT throughout the book so it never collides with the motion-noise α₁…α₆ of Chapter 9.' },
+    { sym: '\\mathcal{M},\\; d', meaning: 'The manifold the state lives on, and its tangent dimension.' },
+    { sym: 'x \\boxplus \\delta,\\; y \\boxminus x', meaning: 'Retraction and its inverse: move along the manifold by a tangent vector, and the tangent vector between two points.' },
+    { sym: '\\varepsilon_t = x_t \\boxminus \\mu_t', meaning: 'The error state — the quantity an error-state filter actually estimates.' },
+  ]}
+/>
+
+### The extended Kalman filter
+
+The move is the smallest one that could possibly work: replace $g$ and $h$ by their first-order
+Taylor expansions about the best point available, then run [Chapter
+6](/chapters/ch06-kalman-filters) unchanged.
+
+<LinkedMath>
+$$
+g(u_t, x_{t-1}) \;\approx\; g(u_t, \mu_{t-1}) + \htmlClass{term-prediction}{G_t}\,(x_{t-1} - \mu_{t-1}),
+\qquad
+G_t = \left.\frac{\partial g(u_t, x)}{\partial x}\right|_{x = \mu_{t-1}}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+h(x_t) \;\approx\; h(\bar\mu_t) + \htmlClass{term-measurement}{H_t}\,(x_t - \bar\mu_t),
+\qquad
+H_t = \left.\frac{\partial h(x)}{\partial x}\right|_{x = \bar\mu_t}
+$$
+</LinkedMath>
+
+The choice of expansion point matters and is not arbitrary: for a Gaussian, the most likely state
+is the mean, so the linearization is at least correct where the belief says the state most probably
+is. Thrun et al. make exactly this argument in §3.3.1, and the widget above is its refutation
+whenever the belief is wide.
+
+<Derivation title="The EKF is Chapter 6 with two substitutions" result="\bar\Sigma_t = G_t \Sigma_{t-1} G_t^\mathsf{T} + R_t">
+**Step 1 — the prediction integral.** Chapter 6 evaluated
+
+$$
+\belbar(x_t) = \int p(x_t \mid u_t, x_{t-1})\, \bel(x_{t-1})\, dx_{t-1}
+$$
+
+by observing that the integrand is a Gaussian in the joint variable $(x_t, x_{t-1})$, and that
+marginalizing a joint Gaussian is a linear-algebra identity. Substituting the linearized $g$ makes
+$p(x_t \mid u_t, x_{t-1})$ Gaussian in that joint variable again:
+
+$$
+p(x_t \mid u_t, x_{t-1}) \approx \Normal\big(x_t;\; g(u_t, \mu_{t-1}) + G_t(x_{t-1} - \mu_{t-1}),\; R_t\big)
+$$
+
+**Step 2 — read off the prediction.** Every step of Chapter 6's derivation now goes through with
+$A_t \mapsto G_t$, and completing the square gives
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\mu_t} = g(u_t, \mu_{t-1}),
+\qquad
+\htmlClass{term-prediction}{\bar\Sigma_t} = G_t \htmlClass{term-prior}{\Sigma_{t-1}} G_t\T + R_t
+$$
+</LinkedMath>
+
+Notice the asymmetry, because it is the single most important line in this chapter: **the mean
+propagates through the true $g$; only the covariance goes through the linearization.** The EKF is
+not "the Kalman filter on a linearized system" — that would put $g(u_t,\mu_{t-1}) + G_t \cdot 0$ in
+the mean, which is the same thing here, but the distinction becomes real the moment you iterate.
+
+**Step 3 — the correction.** The measurement update is a product of Gaussians. With the linearized
+$h$ the second factor is Gaussian in $x_t$, and the same completing-the-square algebra returns
+
+<LinkedMath>
+$$
+S_t = H_t \bar\Sigma_t H_t\T + Q_t,
+\qquad
+\htmlClass{term-measurement}{K_t} = \bar\Sigma_t H_t\T S_t^{-1}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\mu_t} = \bar\mu_t + K_t\big(z_t - h(\bar\mu_t)\big),
+\qquad
+\htmlClass{term-posterior}{\Sigma_t} = (I - K_t H_t)\,\bar\Sigma_t
+$$
+</LinkedMath>
+
+Again the innovation uses the true $h(\bar\mu_t)$, not $H_t \bar\mu_t$.
+
+**Step 4 — what was consumed.** Nothing in Steps 1–3 is an approximation *given* the linearized
+models; all the approximation was spent in the two Taylor expansions. That is why the EKF has no
+optimality property whatsoever. The Kalman filter is the exact posterior of a linear-Gaussian
+system; the EKF is a heuristic that happens to be an extremely good one when the neglected terms
+are small, and gives no warning when they are not. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="Extended_Kalman_filter(µ_{t−1}, Σ_{t−1}, u_t, z_t)"
+  inputs="previous mean and covariance, control, measurement"
+  outputs="µ_t, Σ_t"
+  complexity="O(d³) per step in the state dimension d, plus two Jacobian evaluations"
+>
+1. $\bar\mu_t = g(u_t, \mu_{t-1})$
+2. $G_t = \partial g(u_t, x)/\partial x \big|_{\mu_{t-1}}$
+3. $\bar\Sigma_t = G_t\, \Sigma_{t-1}\, G_t^\mathsf{T} + R_t$
+4. $H_t = \partial h(x)/\partial x \big|_{\bar\mu_t}$
+5. $S_t = H_t\, \bar\Sigma_t\, H_t^\mathsf{T} + Q_t$
+6. $K_t = \bar\Sigma_t\, H_t^\mathsf{T}\, S_t^{-1}$
+7. $\mu_t = \bar\mu_t + K_t\,(z_t - h(\bar\mu_t))$
+8. $\Sigma_t = (I - K_t H_t)\, \bar\Sigma_t$
+9. return $\mu_t, \Sigma_t$
+</Algorithm>
+
+That is Thrun et al.'s Table 3.3 verbatim. Lines 1 and 7 are the only places the true nonlinear
+functions appear; lines 3, 5, 6 and 8 are Chapter 6 with different letters.
+
+### The size of the lie
+
+The widget's error readout is not a heuristic. It implements the following.
+
+<Derivation title="Linearization bias is curvature times spread" result="\mathbb{E}[g(x)] - g(\mu) \approx \tfrac12 \sum_i e_i \operatorname{tr}(\nabla^2 g_i\, \Sigma)">
+Let $x \sim \Normal(\mu, \Sigma)$ and expand a scalar component $g_i$ to second order about $\mu$,
+writing $\Delta = x - \mu$:
+
+$$
+g_i(x) = g_i(\mu) + \nabla g_i(\mu)\T \Delta + \tfrac12 \Delta\T \nabla^2 g_i(\mu)\, \Delta + O(\norm{\Delta}^3)
+$$
+
+**Step 1 — take expectations.** $\E[\Delta] = 0$ kills the linear term outright. The EKF keeps
+exactly the terms that survive at first order, so its predicted mean is $g_i(\mu)$.
+
+**Step 2 — the quadratic term does not vanish.** Using $\E[\Delta\T M \Delta] = \tr(M\Sigma)$ for
+symmetric $M$,
+
+$$
+\E[g_i(x)] = g_i(\mu) + \tfrac12 \tr\!\big(\nabla^2 g_i(\mu)\,\Sigma\big) + O(\norm{\Sigma}^2)
+$$
+
+**Step 3 — read it.** The bias the EKF commits is $-\tfrac12 \tr(\nabla^2 g_i \Sigma)$ per output
+component: the Hessian of the model contracted against the covariance of the belief. Curvature
+times spread, and *linear in the covariance* — so doubling $\sigma$ quadruples the bias. The third
+and higher terms vanish for symmetric noise or contribute at $O(\sigma^4)$.
+
+In one dimension this collapses to the readout the widget prints beside the measured error:
+
+$$
+\E[g(x)] - g(\mu) \approx \tfrac12\, g''(\mu)\, \sigma^2
+$$
+
+**A second, quieter failure.** The same expansion applied to the covariance gives
+$\Var[g(x)] = g'(\mu)^2\sigma^2 + O(\sigma^4)$, so the EKF's reported spread is right to leading
+order — *unless* $g'(\mu) = 0$, in which case the leading term is zero and the EKF reports almost no
+uncertainty at all while the truth is entirely second order. Select the range-to-beacon curve in the
+widget and park the operating point at closest approach to see a filter confidently claim a
+precision it does not have. That combination, a small reported covariance around a biased mean, is
+the classic recipe for EKF divergence. $\blacksquare$
+</Derivation>
+
+### The unscented transform
+
+The EKF's problem is that it approximates the *function*. The unscented transform approximates the
+*distribution* instead, and then uses the function exactly.
+
+The idea, due to Julier and Uhlmann: choose a small set of points whose weighted sample mean and
+covariance reproduce $(\mu, \Sigma)$ exactly, push each one through $g$, and refit. Nothing is
+differentiated; $g$ is a black box that may be a lookup table, a ray-caster, or a physics engine.
+
+<Derivation title="The 2n+1 point set and why it works" result="\mathcal{X}^{[\pm i]} = \mu \pm \big(\sqrt{(n+\lambda)\Sigma}\big)_i">
+**Step 1 — demand exact moment matching.** We want points $\mathcal{X}^{[i]}$ and weights
+$w_m^{[i]}$, $w_c^{[i]}$ with $\sum_i w_m^{[i]} = 1$ and
+
+$$
+\sum_i w_m^{[i]} \mathcal{X}^{[i]} = \mu,
+\qquad
+\sum_i w_c^{[i]} \big(\mathcal{X}^{[i]} - \mu\big)\big(\mathcal{X}^{[i]} - \mu\big)\T = \Sigma
+$$
+
+**Step 2 — exploit symmetry.** Take the points in $\pm$ pairs about $\mu$ with equal weights. Every
+odd central moment of the point set is then exactly zero, matching a Gaussian's, which is what buys
+the third-order accuracy in Step 5.
+
+**Step 3 — place them.** Let $L$ be a matrix square root, $LL\T = \Sigma$ (in practice the Cholesky
+factor, which is what the Rust below computes). Put
+
+$$
+\mathcal{X}^{[0]} = \mu,
+\qquad
+\mathcal{X}^{[\pm i]} = \mu \pm \sqrt{n + \lambda}\; L_{:,i},
+\qquad i = 1 \dots n
+$$
+
+with $\lambda = \alpha_{\mathrm{UT}}^2 (n + \kappa) - n$. Then
+
+$$
+\sum_i w_c^{[i]} (\mathcal{X}^{[i]} - \mu)(\mathcal{X}^{[i]} - \mu)\T
+= 2 \cdot \frac{1}{2(n+\lambda)} (n+\lambda) \sum_i L_{:,i} L_{:,i}\T = LL\T = \Sigma
+$$
+
+using $w^{[i]} = 1/\big(2(n+\lambda)\big)$ for $i \neq 0$, which forces $w_m^{[0]} = \lambda/(n+\lambda)$
+so the weights sum to one. The covariance weight of the center point is corrected by
+$w_c^{[0]} = w_m^{[0]} + (1 - \alpha_{\mathrm{UT}}^2 + \beta)$, where $\beta$ folds in prior
+knowledge of the input's fourth moment; $\beta = 2$ is exact for a Gaussian.
+
+**Step 4 — propagate and recombine.**
+
+$$
+\mathcal{Y}^{[i]} = g\big(\mathcal{X}^{[i]}\big),
+\qquad
+\mu' = \sum_i w_m^{[i]} \mathcal{Y}^{[i]},
+\qquad
+\Sigma' = \sum_i w_c^{[i]} \big(\mathcal{Y}^{[i]} - \mu'\big)\big(\mathcal{Y}^{[i]} - \mu'\big)\T
+$$
+
+**Step 5 — the accuracy claim.** Expand $g$ about $\mu$ inside both the true expectation and the
+weighted sum. The constant and linear terms agree trivially. The quadratic terms agree because the
+point set reproduces $\Sigma$ exactly — this is precisely the term the EKF drops. The cubic terms
+agree because both the Gaussian and the symmetric point set have zero third central moments. The
+first disagreement is at fourth order, and $\beta$ exists to reduce it. So the UT captures the true
+mean through third order, and the covariance through second, against the EKF's first for both.
+$\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="Unscented_transform(µ, Σ, f)"
+  inputs="a Gaussian and an arbitrary function"
+  outputs="µ′, Σ′ — the moment-matched Gaussian image"
+  complexity="one Cholesky, O(n³), plus 2n+1 evaluations of f. No derivatives."
+>
+1. $\lambda = \alpha_{\mathrm{UT}}^2 (n + \kappa) - n$
+2. $L = \operatorname{chol}(\Sigma)$
+3. $\mathcal{X}^{[0]} = \mu$; &nbsp; for $i = 1 \dots n$: $\;\mathcal{X}^{[\pm i]} = \mu \pm \sqrt{n+\lambda}\, L_{:,i}$
+4. $w_m^{[0]} = \lambda/(n+\lambda)$; &nbsp; $w_c^{[0]} = w_m^{[0]} + 1 - \alpha_{\mathrm{UT}}^2 + \beta$; &nbsp; $w_m^{[i]} = w_c^{[i]} = 1/(2(n+\lambda))$
+5. $\mathcal{Y}^{[i]} = f(\mathcal{X}^{[i]})$ for all $i$
+6. $\mu' = \sum_i w_m^{[i]} \mathcal{Y}^{[i]}$
+7. $\Sigma' = \sum_i w_c^{[i]} (\mathcal{Y}^{[i]} - \mu')(\mathcal{Y}^{[i]} - \mu')^\mathsf{T}$
+8. return $\mu', \Sigma'$
+</Algorithm>
+
+The unscented Kalman filter is then nothing more than the Bayes filter with the UT used as the
+Gaussian pushforward engine in both steps.
+
+<Algorithm
+  name="Unscented_Kalman_filter(µ_{t−1}, Σ_{t−1}, u_t, z_t)"
+  inputs="previous belief, control, measurement"
+  outputs="µ_t, Σ_t"
+  complexity="O(d³); constant factor ≈ 2d+1 model evaluations per step"
+>
+1. $(\bar\mu_t, \bar\Sigma_t) = \texttt{Unscented\_transform}(\mu_{t-1}, \Sigma_{t-1},\; x \mapsto g(u_t, x))$; &nbsp; $\bar\Sigma_t \mathrel{+}= R_t$
+2. regenerate $\mathcal{X}^{[i]}$ from $(\bar\mu_t, \bar\Sigma_t)$
+3. $\mathcal{Z}^{[i]} = h(\mathcal{X}^{[i]})$; &nbsp; $\hat z_t = \sum_i w_m^{[i]} \mathcal{Z}^{[i]}$
+4. $S_t = \sum_i w_c^{[i]} (\mathcal{Z}^{[i]} - \hat z_t)(\mathcal{Z}^{[i]} - \hat z_t)^\mathsf{T} + Q_t$
+5. $\bar\Sigma^{xz}_t = \sum_i w_c^{[i]} (\mathcal{X}^{[i]} - \bar\mu_t)(\mathcal{Z}^{[i]} - \hat z_t)^\mathsf{T}$
+6. $K_t = \bar\Sigma^{xz}_t\, S_t^{-1}$
+7. $\mu_t = \bar\mu_t + K_t (z_t - \hat z_t)$
+8. $\Sigma_t = \bar\Sigma_t - K_t S_t K_t^\mathsf{T}$
+9. return $\mu_t, \Sigma_t$
+</Algorithm>
+
+Line 6 is worth a pause. In the EKF the gain is $\bar\Sigma_t H_t\T S_t^{-1}$, and $\bar\Sigma_t H_t\T$
+is the linearized approximation of the state–measurement cross-covariance. The UKF computes that
+cross-covariance directly, from samples. It is the cleanest available statement of what a Kalman
+gain *is*: how much the state co-varies with the measurement, divided by how much the measurement
+varies with itself.
+
+<Callout type="warn">
+The UKF is not free and it is not universally better. On a linear model it returns exactly the
+Kalman filter's answer, having spent $2d+1$ model evaluations and a Cholesky factorization to do so.
+Its parameters need care too: $\alpha_{\mathrm{UT}}$ small (down to $10^{-3}$) keeps the scouts near
+the mean, which is right for a sharply curved model and wrong for a nearly flat one, and $\beta = 2$
+deliberately inflates the output covariance. The chapter's closing widget maps out where each choice
+pays.
+</Callout>
+
+### A worked example you can check by hand
+
+A range–bearing sensor reports polar coordinates and the filter wants Cartesian. Take
+
+$$
+r \sim \Normal(1,\, 0.02^2), \qquad \theta \sim \Normal(\pi/2,\, (15°)^2), \qquad
+f(r,\theta) = (r\cos\theta,\; r\sin\theta)
+$$
+
+independent. Because $r$ and $\theta$ are independent and
+$\E[\sin\theta] = \sin(\pi/2)\, e^{-\sigma_\theta^2/2}$ for a Gaussian $\theta$, the true mean of
+the $y$-component is available in closed form:
+
+$$
+\E[y] = \E[r]\,\E[\sin\theta] = e^{-\sigma_\theta^2/2} = e^{-0.0342695} = 0.966311
+$$
+
+The EKF answers $f(\mu_r, \mu_\theta) = 1.000000$ — off by 3.4 cm at one metre of range, from a
+sensor whose bearing noise is a perfectly ordinary 15°.
+
+Now the unscented transform with $n = 2$, $\alpha_{\mathrm{UT}} = 1$, $\beta = 0$, $\kappa = 1$, so
+$\lambda = 1$ and $\sqrt{n+\lambda} = \sqrt3$. The covariance is diagonal, so its Cholesky factor is
+$\diag(0.02,\, 0.261799)$ and the five points are:
+
+| $i$ | $\mathcal{X}^{[i]} = (r, \theta)$ | $y = r\sin\theta$ | $w_m^{[i]}$ |
+|---|---|---|---|
+| 0 | $(1.000000,\; 1.570796)$ | $1.000000$ | $1/3$ |
+| 1 | $(1.034641,\; 1.570796)$ | $1.034641$ | $1/6$ |
+| 2 | $(0.965359,\; 1.570796)$ | $0.965359$ | $1/6$ |
+| 3 | $(1.000000,\; 2.024246)$ | $0.898941$ | $1/6$ |
+| 4 | $(1.000000,\; 1.117346)$ | $0.898941$ | $1/6$ |
+
+$$
+\tfrac13 (1) + \tfrac16 (1.034641 + 0.965359) + \tfrac16 (0.898941 + 0.898941) = 0.966314
+$$
+
+which agrees with the analytic $0.966311$ to five decimals, from five evaluations of a sine.
+
+The variances tell the same story from the other side. The true standard deviation of $y$ is
+$0.050680$ and the UT gives $0.051667$, a 2% overestimate. The EKF's is
+$\big((\partial y/\partial r)^2\sigma_r^2 + (\partial y/\partial\theta)^2\sigma_\theta^2\big)^{1/2}$,
+and at $\theta = \pi/2$ the second derivative is exactly zero, so the whole bearing contribution
+disappears and it reports $0.020000$ — two centimetres of uncertainty where there are five. In the
+$x$-component, where the bearing derivative is large, the same first-order formula over-states the
+spread instead: $0.261799$ against a true $0.253129$. Getting the variance wrong in both directions
+at once, from one linearization, is not an unusual outcome.
+
+```rust title="crates/ch07_nonlinear/tests/polar.rs"
+use approx::assert_relative_eq;
+use ch07_nonlinear::ukf::{unscented_transform, UtParams};
+use nalgebra::{SMatrix, SVector, Vector2};
+use pr_core::geom::OnManifoldGaussian;
+
+/// The chapter's worked example, pinned to five decimals.
+///
+/// Note the parameters: β = 0 here, not the usual 2. β deliberately inflates
+/// the output covariance and would spoil a comparison against a closed form,
+/// which is exactly why the book states it rather than leaving it at a default.
+#[test]
+fn polar_to_cartesian_matches_the_closed_form() {
+    let sigma_theta: f64 = 15.0_f64.to_radians();
+    let mean = Vector2::new(1.0, std::f64::consts::FRAC_PI_2);
+    let cov = SMatrix::<f64, 2, 2>::from_diagonal(&Vector2::new(
+        0.02 * 0.02,
+        sigma_theta * sigma_theta,
+    ));
+
+    let polar_to_cartesian =
+        |x: &SVector<f64, 2>| Vector2::new(x[0] * x[1].cos(), x[0] * x[1].sin());
+
+    let prior = OnManifoldGaussian { mean, cov };
+    let params = UtParams { alpha_ut: 1.0, beta: 0.0, kappa: 1.0 };
+    let ut = unscented_transform(&prior, polar_to_cartesian, params);
+
+    // E[r sin θ] = E[r] · sin(π/2) · exp(−σ²/2) for independent r, θ.
+    let truth = (-0.5 * sigma_theta * sigma_theta).exp();
+    assert_relative_eq!(truth, 0.966_311, epsilon = 1e-6);
+    assert_relative_eq!(ut.mean[1], truth, epsilon = 1e-5);
+
+    // The EKF's answer, for contrast: the mean pushed straight through f.
+    let ekf_mean = polar_to_cartesian(&mean);
+    assert_relative_eq!(ekf_mean[1], 1.0, epsilon = 1e-12);
+    assert!((ekf_mean[1] - truth).abs() > 0.033); // 3.4 cm at 1 m
+
+    // And the spread the EKF cannot see, because ∂y/∂θ = 0 at θ = π/2.
+    assert_relative_eq!(ut.cov[(1, 1)].sqrt(), 0.051_667, epsilon = 1e-5);
+    assert_relative_eq!(ut.cov[(0, 0)].sqrt(), 0.252_919, epsilon = 1e-5);
+}
+```
+
+<Callout type="info">
+The purple output density in the widget at the top of this chapter is computed by
+`unscentedTransform` in `lib/filters/ukf.ts` — the line-for-line TypeScript port of the Rust above.
+Run it on this example and it returns $0.966314$ and $0.051667$, the numbers in the table.
+</Callout>
+
+## Where 2005 stops
+
+Everything so far has been about approximating a function well. The rest of this chapter is about a
+mistake that survives any amount of good approximation.
+
+<Deferred>
+  <ManifoldVsVector />
+</Deferred>
+
+Run it until Rusty crosses the seam. The orange filter is not badly approximating anything — its
+Jacobian is exactly $1$, its linearization is exact, and it is still catastrophically wrong. It
+computed $z_t - \mu_t \approx -2\pi$ and took a fraction of that step, and *both of those
+operations are meaningless* for an angle. Subtraction is not the metric on a circle, and a weighted
+average of two points on a circle is not a point on the circle.
+
+<KeyIdea title="The pivot of this chapter">
+Wrap-around is not an edge case to be patched with `mod 2π`. It is a type error. Fixing the
+innovation is a local repair to one symptom; the disease is that the state was declared to be
+$\R^3$ when it is $\SEtwo$.
+</KeyIdea>
+
+### On-manifold Gaussians
+
+**Definition.** An *on-manifold Gaussian* on a $d$-dimensional manifold $\mathcal{M}$ is a pair
+$(\mu, \Sigma)$ with $\mu \in \mathcal{M}$ and $\Sigma \in \R^{d \times d}$, representing the
+distribution of the random element
+
+$$
+x = \mu \bplus \varepsilon, \qquad \varepsilon \sim \Normal(0, \Sigma)
+$$
+
+The mean lives on the manifold; the covariance lives in the tangent space *at that mean*. This is
+sometimes called a concentrated Gaussian, and the name carries the caveat: the construction is only
+a good model of a distribution when $\Sigma$ is small enough that the tangent space is a fair
+picture of the neighbourhood. A heading with a standard deviation of $60°$ is not well described by
+any such object, and a filter is the wrong tool for it — that is [Chapter
+8](/chapters/ch08-nonparametric-filters)'s territory.
+
+**Definition (retraction).** $\bplus : \mathcal{M} \times \R^d \to \mathcal{M}$ and
+$\bminus : \mathcal{M} \times \mathcal{M} \to \R^d$ satisfy, for all $x, y \in \mathcal{M}$ and
+small $\delta \in \R^d$:
+
+$$
+x \bplus 0 = x,
+\qquad
+x \bplus (y \bminus x) = y,
+\qquad
+(x \bplus \delta) \bminus x = \delta,
+$$
+
+with both maps smooth. The first says doing nothing does nothing; the second says $\bminus$ really
+does recover the displacement between two points; the third says the pair is locally inverse. That
+is all a Kalman filter ever needed from `+` and `−`, which is why the substitution works.
+
+For $\SEtwo$ this book fixes the **right** (local, body-frame) convention throughout:
+
+$$
+x \bplus \delta = x \cdot \exp(\delta),
+\qquad
+y \bminus x = \log\!\big(x^{-1} y\big)
+$$
+
+with $\exp$ and $\log$ as derived in [Chapter 3](/chapters/ch03-geometry-of-motion), and the tangent
+ordered translation-first, $\delta = (\delta_x, \delta_y, \delta_\theta)$. A perturbation is
+something you do *in the robot's own frame*: drive forward $\delta_x$, slide left $\delta_y$, turn
+$\delta_\theta$. The left convention is equally valid and gives different Jacobians; Appendix C
+tabulates the correspondence.
+
+Vector spaces are the special case $x \bplus \delta = x + \delta$, $y \bminus x = y - x$, which
+satisfies the axioms trivially. Everything that follows therefore contains [Chapter
+6](/chapters/ch06-kalman-filters) as an instance rather than replacing it.
+
+### The on-manifold EKF
+
+Take the EKF algorithm and replace every state-space `+` with $\bplus$ and every state-space `−`
+with $\bminus$. Two lines change; nothing else does.
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\bar\mu_t} = g(u_t, \mu_{t-1}),
+\qquad
+\htmlClass{term-posterior}{\mu_t} = \bar\mu_t \bplus K_t\big(z_t \bminus h(\bar\mu_t)\big)
+$$
+</LinkedMath>
+
+The covariance equations are untouched, because covariances were always tangent-space objects; we
+simply never said so. What *does* change is the meaning of the Jacobians, which are now derivatives
+in tangent coordinates:
+
+$$
+G_t = \left.\frac{\partial\, \big(g(u_t,\, \mu_{t-1} \bplus \varepsilon) \bminus g(u_t, \mu_{t-1})\big)}{\partial \varepsilon}\right|_{\varepsilon = 0}
+$$
+
+Both the input and the output perturbation are tangent vectors, so $G_t$ is an honest $d \times d$
+matrix even though $\mathcal{M}$ is not a vector space.
+
+For Rusty's odometry step $g(u, x) = x \bplus u$ with $u = (v\,\Delta t,\, 0,\, \omega\,\Delta t)$,
+that derivative has a closed form and it is a small gem:
+
+$$
+G_t = \Ad_{\exp(u)^{-1}}
+$$
+
+<Derivation title="The odometry Jacobian is an adjoint, and does not contain the state" result="G_t = \operatorname{Ad}_{\exp(u)^{-1}}">
+By definition of the adjoint, for any group element $T$ and tangent vector $\varepsilon$,
+
+$$
+T^{-1} \exp(\varepsilon)\, T = \exp\!\big(\Ad_{T^{-1}} \varepsilon\big)
+$$
+
+**Step 1 — perturb the input.** The perturbed prediction is
+
+$$
+(\mu \bplus \varepsilon) \bplus u = \mu \exp(\varepsilon) \exp(u)
+$$
+
+**Step 2 — commute the perturbation past the step.** Insert $\exp(u)\exp(u)^{-1}$ and apply the
+adjoint identity with $T = \exp(u)$:
+
+$$
+\mu \exp(\varepsilon) \exp(u) = \mu \exp(u) \big[\exp(u)^{-1} \exp(\varepsilon) \exp(u)\big]
+= \big(\mu \bplus u\big) \bplus \Ad_{\exp(u)^{-1}} \varepsilon
+$$
+
+**Step 3 — read off the Jacobian.** The right-hand side is the unperturbed prediction $\bplus$ a
+tangent vector that is *exactly linear* in $\varepsilon$ — no truncation was needed. Therefore
+
+$$
+\big(g(u, \mu \bplus \varepsilon)\big) \bminus \big(g(u,\mu)\big) = \Ad_{\exp(u)^{-1}}\varepsilon
+\quad\Longrightarrow\quad
+G_t = \Ad_{\exp(u)^{-1}}
+$$
+
+**Step 4 — notice the absence.** $\mu$ does not appear. Compare the same Jacobian in global
+coordinates, where the standard textbook EKF puts
+
+$$
+G_t^{\text{global}} = I_3 + c(\theta)\, e_3\T,
+\qquad
+c(\theta) = \big(-\Delta_x \sin\theta - \Delta_y\cos\theta,\;\;\; \Delta_x\cos\theta - \Delta_y\sin\theta,\;\;\; 0\big)\T
+$$
+
+with $(\Delta_x, \Delta_y)$ the body-frame translation of the step and $e_3$ the third basis
+vector — so the whole state dependence sits in one column, and that column is a function of the
+*estimated* heading. The vector EKF's error propagation therefore depends on the very quantity it
+is uncertain about; the body-frame version does not. Hold on to that — it is the whole of the invariant-filtering idea, and
+it comes back below. $\blacksquare$
+</Derivation>
+
+The UKF becomes UKF-M by the same substitution: draw the sigma points in the tangent space and
+retract them, $\mathcal{X}^{[\pm i]} = \mu \bplus \big(\pm\sqrt{(n{+}\lambda)\Sigma}\big)_i$. The
+one genuinely new ingredient is the recombination, because a weighted sum of manifold points is not
+defined. Instead the mean is characterised implicitly, as the point from which the weighted tangent
+displacements cancel, and found by iteration:
+
+$$
+\mu' \leftarrow \mu' \bplus \sum_i w_m^{[i]} \big(\mathcal{Y}^{[i]} \bminus \mu'\big)
+$$
+
+started at $\mathcal{Y}^{[0]}$ and repeated to convergence — three or four passes at filter scale.
+Everything downstream, including the cross-covariance, uses $\bminus$ in place of subtraction.
+
+### Error-state: linearize the small thing
+
+There is a second, more practical way to arrive in the same place, and it is the one production
+systems actually use.
+
+Split the state into a **nominal** part $\mu_t \in \mathcal{M}$, which carries the full trajectory
+and is propagated through the exact nonlinear model with no covariance attached, and an **error
+state** $\varepsilon_t = x_t \bminus \mu_t \in \R^d$, which is the only thing the Kalman machinery
+ever sees. The error is zero-mean by construction and stays small by construction, because every
+correction is immediately *injected* into the nominal state and the error *reset* to zero.
+
+<Deferred>
+  <ErrorStateLedger />
+</Deferred>
+
+The two panels are the argument in one picture. On the left, seven metres of travel and a heading that
+sweeps the whole circle; on the right, an error that never leaves a hand-sized box. A first-order expansion of the
+dynamics of the left-hand quantity is a fiction. A first-order expansion of the dynamics of the
+right-hand quantity is very nearly exact, because the neglected term is again curvature times
+spread, and the spread here is the *error's*, not the state's.
+
+<Algorithm
+  name="error_state_ekf(µ_{t−1}, Σ_{t−1}, u_t, z_t)"
+  inputs="nominal pose on M, tangent covariance, control, measurement"
+  outputs="µ_t, Σ_t — error state never stored between steps"
+  complexity="O(d³); identical to the EKF, plus one exp/log pair"
+>
+1. $\bar\mu_t = g(u_t, \mu_{t-1})$ &nbsp;&nbsp; *(the nominal absorbs the whole nonlinearity)*
+2. $\bar\Sigma_t = G_t\, \Sigma_{t-1}\, G_t^\mathsf{T} + R_t$ &nbsp;&nbsp; with $G_t$ in tangent coordinates
+3. $y_t = z_t \boxminus h(\bar\mu_t)$, &nbsp; $S_t = H_t \bar\Sigma_t H_t^\mathsf{T} + Q_t$, &nbsp; $K_t = \bar\Sigma_t H_t^\mathsf{T} S_t^{-1}$
+4. $\hat\varepsilon_t = K_t\, y_t$ &nbsp;&nbsp; *(the ledger entry — a tangent vector)*
+5. $\mu_t = \bar\mu_t \boxplus \hat\varepsilon_t$ &nbsp;&nbsp; *(inject)*
+6. $\Sigma_t = (I - K_t H_t)\bar\Sigma_t (I - K_t H_t)^\mathsf{T} + K_t Q_t K_t^\mathsf{T}$ &nbsp;&nbsp; *(Joseph form)*
+7. $\Sigma_t \leftarrow J\, \Sigma_t\, J^\mathsf{T}$ with $J = \operatorname{Ad}_{\exp(\hat\varepsilon_t)^{-1}}$ &nbsp;&nbsp; *(reset)*
+8. $\hat\varepsilon_t \leftarrow 0$; return $\mu_t, \Sigma_t$
+</Algorithm>
+
+Line 7 is the piece most implementations quietly skip. After injecting $\hat\varepsilon_t$ the
+remaining error is measured from a *different* nominal state, and the two tangent spaces differ by
+the adjoint of the injection. For a centimetre-scale correction $J$ is the identity to within
+rounding, which is why skipping it is usually harmless — and why it stops being harmless in
+[Chapter 14](/chapters/ch14-ekf-slam), where a loop closure injects a correction big enough to
+matter.
+
+### Invariant errors, in one fact
+
+Step 4 of the adjoint derivation above deserves to be finished.
+
+Define the error not as a tangent-space difference but as a *group* element,
+
+$$
+\eta_t = \mu_t^{-1} x_t \in \SEtwo
+$$
+
+(the left-invariant form; the right-invariant analogue is $x_t \mu_t^{-1}$). Under noiseless
+body-frame odometry, both the truth and the nominal receive the same increment,
+$x_t = x_{t-1}\exp(u)$ and $\mu_t = \mu_{t-1}\exp(u)$, so
+
+$$
+\eta_t = \exp(u)^{-1}\, \mu_{t-1}^{-1}\, x_{t-1}\, \exp(u) = \exp(u)^{-1}\, \eta_{t-1}\, \exp(u)
+$$
+
+The error evolves **autonomously**: its update law involves only the control, never the estimate
+$\mu_{t-1}$. That is the group-affine property, and the invariant EKF is what you get by building a
+filter around it. Its Jacobians are constant along a trajectory, so the linearization point cannot
+drift away from the truth in the way that poisons a standard EKF, and Barrau and Bonnabel prove
+that the resulting filter is a locally stable observer with a domain of attraction independent of
+the trajectory — a guarantee no ordinary EKF has ever had.
+
+We are not deriving the general machinery here; it needs left- and right-Jacobian bookkeeping that
+would swamp this chapter. But keep the fact, because [Chapter 14](/chapters/ch14-ekf-slam) reads
+the EKF-SLAM consistency disaster back through exactly this lens, and
+[Chapter 18](/chapters/ch18-visual-slam) uses invariant filters as production VIO front-ends.
+
+## Implementation in Rust
+
+The design goal is that one filter implementation serve the vector case and the manifold case, with
+the compiler enforcing the difference. That is a trait.
+
+```rust title="crates/pr-core/src/geom/manifold.rs"
+use nalgebra::SVector;
+
+/// A manifold you can do estimation on. `D` is the tangent dimension.
+///
+/// Introduced in Chapter 3 and reused unchanged from here to the end of the
+/// book: Chapter 9 samples motion noise through it, Chapter 15 retracts
+/// Gauss-Newton steps with it, Chapter 18 instantiates it at SE(3) × ℝ⁹.
+///
+/// The three retraction axioms are not expressible in the type system, so
+/// they live in a generic test harness (`manifold_axioms::<X, D>()`) that
+/// every impl in the workspace is required to pass.
+pub trait Manifold<const D: usize>: Clone {
+    /// x ⊞ δ — move along the manifold by a tangent vector.
+    fn boxplus(&self, delta: &SVector<f64, D>) -> Self;
+
+    /// y ⊟ x — the tangent vector taking `rhs` to `self`.
+    fn boxminus(&self, rhs: &Self) -> SVector<f64, D>;
+}
+
+/// A vector space is the manifold where ⊞ is +. This impl is what makes the
+/// generic Ekf below reduce *exactly* to Chapter 6's Kf on a linear model —
+/// a claim pinned by a test, not by assertion.
+impl<const D: usize> Manifold<D> for SVector<f64, D> {
+    fn boxplus(&self, delta: &SVector<f64, D>) -> Self {
+        self + delta
+    }
+    fn boxminus(&self, rhs: &Self) -> SVector<f64, D> {
+        self - rhs
+    }
+}
+
+/// SE(2) with the book's right/local convention. `SE2`, `exp`, `log` and
+/// `adjoint` are Chapter 3's hand-rolled types, not a dependency.
+impl Manifold<3> for SE2 {
+    fn boxplus(&self, delta: &SVector<f64, 3>) -> Self {
+        self * SE2::exp(delta)
+    }
+    fn boxminus(&self, rhs: &Self) -> SVector<f64, 3> {
+        (rhs.inverse() * self).log()
+    }
+}
+
+/// Mean on the manifold, covariance in the tangent space at that mean.
+#[derive(Clone, Debug)]
+pub struct OnManifoldGaussian<X: Manifold<D>, const D: usize> {
+    pub mean: X,
+    pub cov: SMatrix<f64, D, D>,
+}
+```
+
+With that in place the EKF is written once. Note that the models are traits too, so a measurement
+of the wrong dimension is a compile error rather than a runtime surprise.
+
+```rust title="crates/ch07_nonlinear/src/ekf.rs" {35-38,48-52}
+use nalgebra::{SMatrix, SVector};
+use pr_core::geom::{Manifold, OnManifoldGaussian};
+
+pub trait MotionModel<X: Manifold<D>, const D: usize> {
+    type Control;
+    /// The true nonlinear map. The *mean* goes through this, never through G.
+    fn g(&self, x: &X, u: &Self::Control) -> X;
+    /// G_t = ∂( g(x ⊞ ε, u) ⊟ g(x, u) ) / ∂ε |₀ — in tangent coordinates.
+    fn jacobian(&self, x: &X, u: &Self::Control) -> SMatrix<f64, D, D>;
+    fn noise(&self, u: &Self::Control) -> SMatrix<f64, D, D>;
+}
+
+pub trait MeasurementModel<X: Manifold<D>, const D: usize, const M: usize> {
+    fn h(&self, x: &X) -> SVector<f64, M>;
+    fn jacobian(&self, x: &X) -> SMatrix<f64, M, D>;
+    fn noise(&self) -> SMatrix<f64, M, M>;
+    /// Measurement-space residual. Override for bearings — the measurement
+    /// space can be a manifold too, and usually is when the state is.
+    fn residual(&self, z: &SVector<f64, M>, z_hat: &SVector<f64, M>) -> SVector<f64, M> {
+        z - z_hat
+    }
+}
+
+pub struct Ekf<X: Manifold<D>, G, H, const D: usize, const M: usize> {
+    pub belief: OnManifoldGaussian<X, D>,
+    pub motion: G,
+    pub meas: H,
+}
+
+impl<X, G, H, const D: usize, const M: usize> Ekf<X, G, H, D, M>
+where
+    X: Manifold<D>,
+    G: MotionModel<X, D>,
+    H: MeasurementModel<X, D, M>,
+{
+    pub fn predict(&mut self, u: &G::Control) {
+        let g_t = self.motion.jacobian(&self.belief.mean, u);
+        // The mean goes through the true model; only the covariance is linearized.
+        self.belief.mean = self.motion.g(&self.belief.mean, u);
+        self.belief.cov = g_t * self.belief.cov * g_t.transpose() + self.motion.noise(u);
+    }
+
+    /// Returns the normalized innovation squared — the NIS gate of Chapter 6.
+    pub fn correct(&mut self, z: &SVector<f64, M>) -> f64 {
+        let h_t = self.meas.jacobian(&self.belief.mean);
+        let y = self.meas.residual(z, &self.meas.h(&self.belief.mean));
+        let s = h_t * self.belief.cov * h_t.transpose() + self.meas.noise();
+        let s_inv = s.try_inverse().expect("innovation covariance must be invertible");
+        let k = self.belief.cov * h_t.transpose() * s_inv;
+
+        // The gain produces a *tangent vector*. On SE(2) adding it to a pose
+        // would not even type-check as geometry; ⊞ is the only way back.
+        self.belief.mean = self.belief.mean.boxplus(&(k * y));
+
+        let i_kh = SMatrix::<f64, D, D>::identity() - k * h_t;
+        self.belief.cov = i_kh * self.belief.cov * i_kh.transpose()
+            + k * self.meas.noise() * k.transpose();
+
+        (y.transpose() * s_inv * y)[(0, 0)]
+    }
+}
+```
+
+The unscented filter needs no Jacobians and therefore no `jacobian` methods — only `g`, `h`, the
+noises, and a Cholesky. On a manifold the sigma points are retracted and the mean is found by the
+iteration derived above.
+
+```rust title="crates/ch07_nonlinear/src/ukf.rs"
+use nalgebra::{SMatrix, SVector};
+use pr_core::geom::{Manifold, OnManifoldGaussian};
+
+#[derive(Clone, Copy, Debug)]
+pub struct UtParams {
+    /// Spread of the scouts. Subscripted `_ut` book-wide so it never reads as
+    /// one of the motion-noise α's of Chapter 9.
+    pub alpha_ut: f64,
+    pub beta: f64,
+    pub kappa: f64,
+}
+
+impl UtParams {
+    /// Julier's defaults: κ = 3 − n, β = 2 (exact 4th moment for a Gaussian).
+    pub fn julier(d: usize) -> Self {
+        Self { alpha_ut: 1.0, beta: 2.0, kappa: 3.0 - d as f64 }
+    }
+}
+
+/// 2D+1 sigma points, drawn in the tangent space and retracted onto `M`.
+///
+/// The weights are `Vec`s rather than `[f64; 2 * D + 1]`: arithmetic in array
+/// lengths needs `generic_const_exprs`, which is still unstable. One
+/// allocation per call, hoisted out of the loop by the caller in practice.
+pub fn sigma_points<X: Manifold<D>, const D: usize>(
+    belief: &OnManifoldGaussian<X, D>,
+    p: UtParams,
+) -> (Vec<X>, Vec<f64>, Vec<f64>) {
+    let n = D as f64;
+    let lambda = p.alpha_ut * p.alpha_ut * (n + p.kappa) - n;
+    let scaled = belief.cov * (n + lambda);
+    let l = scaled.cholesky().expect("covariance must be positive definite").l();
+
+    let mut points = Vec::with_capacity(2 * D + 1);
+    points.push(belief.mean.clone());
+    for i in 0..D {
+        let col: SVector<f64, D> = l.column(i).into_owned();
+        points.push(belief.mean.boxplus(&col));
+        points.push(belief.mean.boxplus(&(-col)));
+    }
+
+    let w = 1.0 / (2.0 * (n + lambda));
+    let mut wm = vec![w; 2 * D + 1];
+    let mut wc = wm.clone();
+    wm[0] = lambda / (n + lambda);
+    wc[0] = wm[0] + 1.0 - p.alpha_ut * p.alpha_ut + p.beta;
+    (points, wm, wc)
+}
+
+/// The weighted mean of manifold points: the fixed point of ⊟-then-⊞.
+///
+/// A vector-space UKF gets this from a single weighted sum. On a curved space
+/// there is no closed form, so we iterate — four passes is convergence to
+/// machine precision for filter-scale covariances.
+pub fn manifold_mean<X: Manifold<D>, const D: usize>(points: &[X], w: &[f64]) -> X {
+    let mut mean = points[0].clone();
+    for _ in 0..8 {
+        let mut delta = SVector::<f64, D>::zeros();
+        for (p, wi) in points.iter().zip(w) {
+            delta += *wi * p.boxminus(&mean);
+        }
+        mean = mean.boxplus(&delta);
+        if delta.norm() < 1e-12 {
+            break;
+        }
+    }
+    mean
+}
+
+/// The unscented transform on a manifold: Algorithm `Unscented_transform`,
+/// with ⊞ for the points and `manifold_mean` for the recombination.
+pub fn unscented_transform<X, Y, F, const D: usize, const E: usize>(
+    belief: &OnManifoldGaussian<X, D>,
+    f: F,
+    p: UtParams,
+) -> OnManifoldGaussian<Y, E>
+where
+    X: Manifold<D>,
+    Y: Manifold<E>,
+    F: Fn(&X) -> Y,
+{
+    let (points, wm, wc) = sigma_points(belief, p);
+    let images: Vec<Y> = points.iter().map(&f).collect();
+    let mean = manifold_mean(&images, &wm);
+
+    let mut cov = SMatrix::<f64, E, E>::zeros();
+    for (y, wi) in images.iter().zip(&wc) {
+        let e = y.boxminus(&mean);
+        cov += *wi * e * e.transpose();
+    }
+    OnManifoldGaussian { mean, cov }
+}
+```
+
+### A compile error worth printing
+
+The book promised that the type system would do the bookkeeping Thrun does by hand. Here is it
+doing it. A compass on a planar robot is a one-dimensional measurement of a three-dimensional state,
+so its model is `MeasurementModel<SE2, 3, 1>`. Hand `correct` a two-vector:
+
+```rust title="demos/ch07-demo/src/bin/typecheck_demo.rs"
+let mut filter: Ekf<SE2, Unicycle, Compass, 3, 1> = Ekf::new(prior, Unicycle::default(), Compass::new(6f64.to_radians()));
+
+// The reading came from a range–bearing sensor by mistake.
+filter.correct(&SVector::<f64, 2>::new(4.10, 0.62));
+```
+
+```text title="cargo build"
+error[E0308]: mismatched types
+  --> demos/ch07-demo/src/bin/typecheck_demo.rs:14:20
+   |
+14 |     filter.correct(&SVector::<f64, 2>::new(4.10, 0.62));
+   |            ------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&Matrix<f64, Const<1>, Const<1>, ArrayStorage<f64, 1, 1>>`,
+   |            |                                            found `&Matrix<f64, Const<2>, Const<1>, ArrayStorage<f64, 2, 1>>`
+   |            arguments to this method are incorrect
+   |
+   = note: expected reference `&SVector<f64, 1>`
+              found reference `&SVector<f64, 2>`
+```
+
+The same discipline catches the subtler mistake, a Jacobian of the wrong shape:
+
+```text title="cargo build"
+error[E0308]: mismatched types
+  --> crates/ch07_nonlinear/src/models.rs:88:9
+   |
+87 |     fn jacobian(&self, _x: &SE2) -> SMatrix<f64, 1, 3> {
+   |                                     ------------------ expected `Matrix<f64, Const<1>, Const<3>, _>` because of return type
+88 |         SMatrix::<f64, 1, 2>::new(0.0, 0.0)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `1×3` matrix, found `1×2` matrix
+```
+
+A dimension mismatch between a state, its Jacobian, and a measurement is the single most common
+source of silent filter failure in the wild — it produces a filter that runs, converges to
+something, and is wrong. Here it does not compile.
+
+### The error-state filter, and the test that pins it
+
+```rust title="crates/ch07_nonlinear/src/eskf.rs" {22-31}
+use nalgebra::{SMatrix, SVector};
+use pr_core::geom::{Manifold, SE2};
+
+/// Error-state EKF: a nominal state on the manifold plus a tangent-space
+/// error that is filtered, injected, and reset every update.
+pub struct Eskf<X: Manifold<D>, const D: usize> {
+    pub nominal: X,
+    pub cov: SMatrix<f64, D, D>,
+    /// Keep the exact reset Jacobian. Off by default in most codebases;
+    /// on by default here, because Chapter 14 needs to be able to turn it off
+    /// and show the difference.
+    pub exact_reset: bool,
+}
+
+impl Eskf<SE2, 3> {
+    /// µ̄ = µ ⊞ u,  Σ̄ = G Σ Gᵀ + R  with G = Ad_exp(u)⁻¹ — no state in sight.
+    pub fn predict(&mut self, u: &SVector<f64, 3>, r: &SMatrix<f64, 3, 3>) {
+        let g = SE2::exp(u).inverse().adjoint();
+        self.nominal = self.nominal.boxplus(u);
+        self.cov = g * self.cov * g.transpose() + r;
+    }
+
+    /// The inject-and-reset cycle. `epsilon` is returned, not stored: an
+    /// error state that survives its own update is a bug, and making the
+    /// caller receive it rather than read it is how the API says so.
+    pub fn inject_and_reset(&mut self, epsilon: SVector<f64, 3>) -> SVector<f64, 3> {
+        self.nominal = self.nominal.boxplus(&epsilon);
+        if self.exact_reset {
+            let j = SE2::exp(&epsilon).inverse().adjoint();
+            self.cov = j * self.cov * j.transpose();
+        }
+        epsilon
+    }
+}
+```
+
+```rust title="crates/ch07_nonlinear/tests/reduction.rs"
+/// The generic filter must contain Chapter 6 exactly, not approximately.
+///
+/// On a linear-Gaussian model, `Ekf<SVector<f64, 4>>` and `ch06::Kf` are the
+/// same algorithm with different type parameters, so they must agree to
+/// floating-point noise. If this ever fails, the trait abstraction has
+/// silently changed the mathematics.
+#[test]
+fn ekf_reduces_to_kf_on_a_linear_model() {
+    let (mut ekf, mut kf) = constant_velocity_pair();
+    let mut rng = Pcg64::seed_from_u64(0xC0FFEE);
+
+    for _ in 0..200 {
+        let u = SVector::<f64, 2>::new(0.1, -0.05);
+        let z = simulate_measurement(&mut rng);
+        ekf.predict(&u);
+        kf.predict(&u);
+        ekf.correct(&z);
+        kf.correct(&z);
+
+        assert_relative_eq!(ekf.belief.mean, kf.mean(), epsilon = 1e-12);
+        assert_relative_eq!(ekf.belief.cov, kf.cov(), epsilon = 1e-12);
+    }
+}
+
+/// And the manifold impl must obey the retraction axioms, checked on random
+/// poses rather than argued about in prose.
+#[test]
+fn se2_satisfies_the_retraction_axioms() {
+    let mut rng = Pcg64::seed_from_u64(7);
+    for _ in 0..10_000 {
+        let (x, y) = (random_pose(&mut rng), random_pose(&mut rng));
+        let d = random_twist(&mut rng, 0.3);
+
+        assert_relative_eq!(x.boxplus(&SVector::zeros()), x, epsilon = 1e-12);
+        assert_relative_eq!(x.boxplus(&y.boxminus(&x)), y, epsilon = 1e-10);
+        assert_relative_eq!(x.boxplus(&d).boxminus(&x), d, epsilon = 1e-10);
+    }
+}
+```
+
+## Putting it together: the figure-eight lab
+
+`cargo run --example figure_eight -p ch07_nonlinear` drives Rusty three times around a lemniscate —
+seven metres wide, sixteen seconds a lap, heading sweeping the whole circle and crossing the
+$\pm\pi$ seam six times — and runs four filters on the *identical seeded log*: a compass at 10 Hz
+with $\sigma = 6°$, a beacon fix every second with $\sigma = 25$ cm, and body-frame odometry noise.
+
+All four use the same exact motion function, $\mu \bplus u$; they differ only in how they represent
+the state and compute residuals.
+
+| filter | RMSE position | RMSE heading | worst heading error | mean NEES |
+|---|---|---|---|---|
+| vector EKF, plain `−` | 0.448 m | 26.36° | **180.0°** | **43.0** |
+| vector EKF, wrapped residual | 0.381 m | 4.27° | 13.9° | 3.25 |
+| error-state EKF on $\SEtwo$ | 0.382 m | 4.27° | 13.9° | 3.29 |
+| UKF-M on $\SEtwo$ | 0.385 m | 4.27° | 13.9° | 3.33 |
+
+Read the last column first. A consistent three-degree-of-freedom filter has a mean NEES of 3; the
+naive vector EKF reports 43, which is not a filter that is slightly wrong but a filter whose stated
+uncertainty is a work of fiction. Its worst heading error is a full 180°: the seam crossing, exactly
+as w7.2 stages it.
+
+Now read the other three rows, because they say something the chapter would be dishonest to omit:
+**once the residual is wrapped, all three are the same filter.** In three degrees of freedom, on a
+well-observed problem, you can hand-patch a vector EKF into agreement with the on-manifold
+formulation, and plenty of shipped code does. What you cannot do is hand-patch it *reliably* — the
+wrapped EKF is one forgotten `angleDiff` away from row one, and there is no type, test, or review
+that catches the omission, whereas the $\bplus$ formulation cannot express the bug at all.
+
+The manifold filters do start to separate when the belief widens. Re-run with every noise tripled,
+the beacon fixes six times rarer and the compass down to once every six seconds, and the last three
+RMSEs stay within 2% of each other while their *consistency* pulls apart: mean NEES 6.90 for the
+naive filter, 4.65 for the wrapped vector EKF, 3.46 for the error-state SE(2) filter and 4.07 for
+UKF-M. The on-manifold filters are not more *accurate* here. They are more *honest*, which is the
+property you actually need when a planner is about to consume the covariance and decide how close
+to drive to a wall.
+
+<Callout type="info">
+Both SE(2) filters in that table are `EskfSe2` and `UkfmSe2` from `lib/filters/on-manifold-se2.ts`,
+the TypeScript port of the Rust above; the numbers come from seed 7 of the run, and the widget in
+the previous section drives the same `EskfSe2`.
+</Callout>
+
+## Choosing a filter
+
+<Deferred>
+  <FilterChooser />
+</Deferred>
+
+The plane has two axes because the bias has two factors. The strip above it has neither, because
+the question it asks — *is the state even a vector space?* — is not a matter of degree. Answer that
+one first; then, and only then, argue about sigma points.
+
+Three destinations follow from here. [Chapter 11](/chapters/ch11-localization-gaussian) runs this
+chapter's error-state EKF as a localizer against a known map and meets the other great EKF killer,
+data association. [Chapter 14](/chapters/ch14-ekf-slam) puts the map into the state and watches
+linearization error compound into a formal inconsistency that ended the filtering era of SLAM.
+And [Chapter 15](/chapters/ch15-factor-graphs) takes the "iterate" region of the chart seriously:
+re-linearize at the posterior, repeat until it stops moving, and you have stopped writing a filter
+and started writing Gauss–Newton.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The bias, by hand">
+    For $h(x) = x^2/20$ with $x \sim \Normal(\mu, \sigma^2)$, compute $\E[h(x)]$ exactly and show
+    that the EKF's answer $h(\mu)$ is short by exactly $\sigma^2/20$ — independent of $\mu$, because
+    the curvature is constant. Then set the Linearization Lens to the quadratic and check the
+    predicted-bias readout at $\sigma = 0.5$, $1.0$ and $2.0$. Does it scale the way you derived?
+    <details>
+    <summary>Check your setup</summary>
+    $\E[x^2] = \mu^2 + \sigma^2$, so $\E[h(x)] = h(\mu) + \sigma^2/20$ with no higher-order terms
+    at all — a quadratic is one of the rare functions where the second-order Taylor expansion is
+    not an approximation.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The UT is exact for affine maps">
+    Show that for $f(x) = Ax + b$ the unscented transform returns exactly $(A\mu + b,\, A\Sigma A\T)$
+    for *any* $\alpha_{\mathrm{UT}}$ and $\kappa$ with $n + \lambda \neq 0$. Then explain why the
+    $\beta$ term cannot affect the mean, and construct a scalar example where $\beta = 2$ makes the
+    UKF's reported variance worse than $\beta = 0$ does. (The chapter's polar example is one; say
+    why.)
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Where the estimate hides in the Jacobian">
+    Take the unicycle step on $\SEtwo$. (a) Verify by direct computation that
+    $G_t = \Ad_{\exp(u)^{-1}}$ is exactly, not approximately, the tangent-coordinate Jacobian.
+    (b) Write out the global-coordinate Jacobian for the same step and identify every entry that
+    depends on $\mu_{t-1}$. (c) Show that the invariant error $\eta_t = \mu_t^{-1} x_t$ satisfies
+    $\eta_t = \exp(u)^{-1}\eta_{t-1}\exp(u)$ under noiseless odometry, and state in one sentence why
+    a filter built on $\eta$ cannot suffer from linearization-point drift.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then check: the worst seam">
+    On paper first: a prior of $170°$ with $\sigma = 20°$ meets a compass reading of $-170°$ with
+    $\sigma = 20°$. What heading does the vector update report, and what does the manifold update
+    report? Then pause Manifold vs. Vector with the blue prior arrow near $+170°$, drag the green
+    compass arrow round to about $-170°$, and read both means off the canvas — the gain tile tells
+    you how far the widget's $K$ is from the idealized one half you assumed.
+
+    Now the interesting part. Show that a seam crossing costs the vector filter an instantaneous
+    error of $2\pi \min(K,\, 1-K)$, so the single worst step happens at $K = 1/2$ and *not* at the
+    extremes — then find the compass-$\sigma$ that puts the widget's steady-state gain there. Last,
+    explain why the long-run RMS readout keeps climbing as you raise $\sigma$ past that point, even
+    though each individual seam crossing is doing less damage.
+    <details>
+    <summary>Hint</summary>
+    Equal variances give $K = 1/2$, so the vector update lands at the arithmetic mean of $170$ and
+    $-170$. For the second part: with the prior just under $+\pi$ and the reading just over $-\pi$
+    the raw innovation is $\approx -2\pi$, so the update lands at $\pi(1 - 2K)$; wrap that against
+    the truth. For the third: what sets how many steps it takes to climb back out?
+    </details>
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Make the ledger lie">
+    The Error-State Ledger claims a mean NEES near 3. Find a noise-scale setting where it is
+    persistently above 5, and diagnose which of the filter's assumptions you broke to get there.
+    Then predict what happens to the *left* panel before you look — does the estimate visibly
+    degrade, or does only the honesty degrade?
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Add S¹ and reproduce the failure numerically">
+    Implement `Manifold<1>` for a circle newtype `S1(f64)` with $x \bplus \delta$ wrapping to
+    $(-\pi, \pi]$ and $y \bminus x$ returning the shortest signed difference. Then write the test
+    the widget is a picture of: 1000 seeded seam crossings, fusing a prior and a measurement of
+    equal variance, comparing `Ekf<SVector<f64,1>>` against `Ekf<S1>`. Assert that the manifold
+    version's RMS error is bounded by the measurement noise while the vector version's is not.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="The iterated EKF, and a first look at Gauss–Newton">
+    Implement `iterated_correct` on the same traits: re-linearize $h$ at the current posterior mean
+    and repeat until the update falls below a tolerance, with the innovation always measured against
+    the *original* prior (this is the detail everyone gets wrong — write down why). Show on the
+    range-to-beacon model with a wide prior that it beats the single-step EKF, and that its fixed
+    point is the maximum-a-posteriori estimate, i.e. one Gauss–Newton solve of the two-factor
+    problem. Then read the opening of [Chapter 15](/chapters/ch15-factor-graphs) with that in mind.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 3 §3.3 is the source of this chapter's EKF derivation, Table 3.3, and the epigraph. Its §3.3.4 practical considerations are what the Linearization Lens turns from prose warnings into measurable claims."
+  />
+  <Reference
+    authors="Julier, S. J. and Uhlmann, J. K."
+    year={2004}
+    title="Unscented Filtering and Nonlinear Estimation"
+    venue="Proceedings of the IEEE 92(3), 401–422"
+    doi="10.1109/JPROC.2003.823141"
+    note="The definitive statement of the unscented transform, including the scaled point set and the accuracy-order argument this chapter's third derivation follows."
+  />
+  <Reference
+    authors="Hertzberg, C., Wagner, R., Frese, U., and Schröder, L."
+    year={2013}
+    title="Integrating generic sensor fusion algorithms with sound state representations through encapsulation of manifolds"
+    venue="Information Fusion 14(1), 57–77"
+    doi="10.1016/j.inffus.2011.08.003"
+    note="Where ⊞ and ⊟ come from, with the retraction axioms stated exactly as used here. The paper that made on-manifold estimation a matter of interface design rather than special-casing."
+  />
+  <Reference
+    authors="Solà, J., Deray, J., and Atchuthan, D."
+    year={2018}
+    title="A micro Lie theory for state estimation in robotics"
+    venue="arXiv:1812.01537"
+    url="https://arxiv.org/abs/1812.01537"
+    note="The best short reference for the Jacobian bookkeeping this chapter deliberately keeps light, including the left/right convention tables that Appendix C follows."
+  />
+  <Reference
+    authors="Barrau, A. and Bonnabel, S."
+    year={2017}
+    title="The Invariant Extended Kalman Filter as a Stable Observer"
+    venue="IEEE Transactions on Automatic Control 62(4), 1797–1812"
+    doi="10.1109/TAC.2016.2594085"
+    note="The convergence result cited but not proved in this chapter: for group-affine systems the invariant error is autonomous, and the filter is a locally stable observer with a trajectory-independent domain of attraction."
+  />
+  <Reference
+    authors="Brossard, M., Barrau, A., and Bonnabel, S."
+    year={2020}
+    title="A Code for Unscented Kalman Filtering on Manifolds (UKF-M)"
+    venue="IEEE International Conference on Robotics and Automation (ICRA), 5701–5708"
+    doi="10.1109/ICRA40945.2020.9197489"
+    note="UKF-M: the sigma-point filter with ⊞ retraction and the ⊟-mean iteration, exactly as implemented in this chapter's UkfmSe2 and its Rust counterpart."
+  />
+  <Reference
+    authors="Barrau, A. and Bonnabel, S."
+    year={2023}
+    title="The Geometry of Navigation Problems"
+    venue="IEEE Transactions on Automatic Control 68(2), 689–704"
+    doi="10.1109/TAC.2022.3144328"
+    note="The modern synthesis of which state spaces admit an autonomous error, extending the group-affine condition to the two-frames systems that describe most real navigation problems."
+  />
+  <Reference
+    authors="Xu, W., Cai, Y., He, D., Lin, J., and Zhang, F."
+    year={2022}
+    title="FAST-LIO2: Fast Direct LiDAR-Inertial Odometry"
+    venue="IEEE Transactions on Robotics 38(4), 2053–2073"
+    doi="10.1109/TRO.2022.3141876"
+    note="Proof that this chapter's material is production practice, not theory: an iterated error-state Kalman filter on a manifold, running at 100 Hz on a real vehicle. Chapter 16 builds a small version of it."
+  />
+</References>

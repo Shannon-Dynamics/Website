@@ -1,0 +1,1015 @@
+---
+title: The Robot That Doubts
+description: Why a single best guess is not enough — the five sources of uncertainty, the argmax fallacy priced in real numbers, and a corridor you can localize in by hand.
+chapter: 1
+part: PART I
+partTitle: Foundations
+difficulty: Foundational
+readingTime: 40 min
+quote: A robot that carries a notion of its own uncertainty and that acts accordingly is superior to one that does not.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 1
+---
+
+import { DeadReckoner } from '@/components/ch/ch01/dead-reckoner';
+import { FiveUncertainties } from '@/components/ch/ch01/five-uncertainties';
+import { HallwayBeliefPreview } from '@/components/ch/ch01/hallway-belief-preview';
+import { HowToReadThisBook } from '@/components/ch/ch01/how-to-read-this-book';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Name the five sources of uncertainty and point at each one in a real environment',
+    'State the difference between a point estimate and a belief, precisely',
+    'Show by construction that the action optimal against a belief can beat the action optimal against the best guess',
+    'Localize a robot in a ten-cell corridor by hand, and check every number against running code',
+    'Say what the probabilistic paradigm costs, not just what it buys',
+  ]}
+  prerequisites={[
+    'Programming fluency in some language — Rust is not assumed yet',
+    'High-school probability: what a distribution is, what it means to normalize one',
+    'Comfort with vectors at the "seen them before" level',
+  ]}
+>
+Every robot you have ever seen is lying to itself about where it is. Not through a bug, and not
+through poor engineering — through arithmetic. A robot that integrates its own commands produces a
+number that is internally perfect and externally wrong, and it has no way to notice, because
+nothing in that computation carries a record of how wrong it might be.
+
+This chapter is the book's argument for the alternative. The claim is not the soft one that robots
+should be humble. It is the sharp one, made by Thrun, Burgard, and Fox in the sentence at the top of
+this page and defended for the next twenty-five chapters: a robot that represents its own
+uncertainty and acts on it is *measurably* better than one that does not, in ways you can put a
+number on. We will price that claim in the third section, using a decision so small you can check it
+in your head.
+
+What we will not do is treat uncertainty as a nuisance to be engineered away. Uncertainty is state.
+It is estimated, it is propagated, it is acted upon — and, as the third section shows with a loss
+table you can add up by hand, it changes what the robot should do next.
+</Overview>
+
+## Every robot is lying to itself
+
+Meet **Rusty**, a differential-drive rover with two wheels, two encoders, and a scanning laser.
+Rusty is going to be with us for the whole book: [Chapter 4](/chapters/ch04-rusty-and-sensors)
+builds it properly, and by [Chapter 26](/chapters/ch26-capstone) it explores and maps an apartment
+it has never seen.
+
+Right now Rusty has one job: drive a 2.4 m square and come back to where it started.
+
+<Deferred>
+  <DeadReckoner />
+</Deferred>
+
+Watch a full lap before reading on. Three things are happening, and only one of them is a surprise.
+
+**The orange path is not an error.** It is the pose Rusty computes by integrating its own commands —
+*dead reckoning*, the oldest navigation algorithm there is. Drive 0.6 m/s for four seconds, turn
+ninety degrees, repeat. The arithmetic is exact, the square closes to within a billionth of a metre
+— there is a test at the end of this chapter that says so — and if you asked Rusty where it was, it
+would answer with total confidence.
+
+**The gray path is where Rusty actually went.** One wheel had a fraction more traction than the
+other. The turn was 89.4 degrees instead of 90. The floor was a millimetre out of level. Each of
+those errors is small, unbiased, and entirely ordinary — and each one enters the pose and stays
+there.
+
+**The error never comes back down.** That is the surprise, and it is worth being precise about why.
+The individual errors are zero-mean: they are as likely to be positive as negative, so they do not
+push Rusty in any particular direction. But integration accumulates them, and a sum of zero-mean
+errors is a random walk, whose spread grows without bound. Worse, an error in *heading* multiplies
+the distance travelled after it, so a third of a degree at the first corner is centimetres by the
+fourth. Re-roll the seed: the drift is a different size and a different direction every time, and no
+amount of staring at the commands will tell you which.
+
+<KeyIdea title="The problem, in one line">
+Dead reckoning is never internally inconsistent. It is only ever wrong, silently, and by an amount
+that grows. Everything in this book is a way of getting that amount back — as a number the robot
+itself can compute.
+</KeyIdea>
+
+## Five places doubt comes from
+
+Uncertainty is not one phenomenon. Thrun, Burgard, and Fox open *Probabilistic Robotics* by
+splitting it into five sources, and the taxonomy has aged perfectly: every failure mode in the
+following chapters is one of these five wearing a costume.
+
+<Deferred>
+  <FiveUncertainties />
+</Deferred>
+
+Two observations before we move on, because they set up the entire structure of the book.
+
+**Four of the five are properties of the world, and one is a property of your computer.** Sensor
+noise, actuator slip, unpredictable environments, and imperfect models exist whether or not anyone
+is looking. Computation is different: it is a budget you choose. It is also the source that decides
+which of the algorithms in this book you are actually allowed to run — the exact posterior over
+Rusty's pose is a function over a continuum, and no robot has ever computed one. Every filter in
+Part II is an answer to the question *what do I do instead, and what does that approximation cost
+me?*
+
+**None of the five gets smaller when you buy better hardware.** They get smaller in proportion. A
+LiDAR with one-centimetre noise instead of three still has noise; a warehouse AMR with hard rubber
+wheels on sealed concrete still slips when it takes a corner loaded; a sidewalk delivery robot with
+a perfect map still meets a dog. Doubling the sensor budget buys you a constant factor. Representing
+the uncertainty buys you an algorithm that keeps working when the constant factor runs out.
+
+## A best guess is not a belief
+
+Here is the distinction the rest of the book is built on.
+
+A **point estimate** is a single value $\hat{x}_t$ — the robot's best guess about where it is. It is
+what dead reckoning produces, what a GPS receiver reports, and what almost every non-probabilistic
+system passes downstream.
+
+A **belief** is a distribution over *every* value the state could take, weighted by how plausible it
+is given everything that has happened. It is not a location. It is a function over locations.
+
+The temptation is to treat those as the same object with different amounts of decoration: surely the
+belief is just the point estimate plus some error bars, and if you only ever act on the peak, the
+decoration does not matter? That intuition is wrong, and it is wrong in a way that costs money. Here
+is the smallest example that shows it.
+
+Rusty is at a T-junction. The charger is at the end of the left corridor or the right one, and
+Rusty's belief after a long drive is $p(\text{left}) = 0.55$, $p(\text{right}) = 0.45$ — genuinely
+uncertain, but leaning left. Three actions are available: commit left, commit right, or spend one
+unit of time taking another measurement, after which the ambiguity is resolved and Rusty drives
+straight to the charger. Committing to the wrong corridor costs ten units: the long walk back, plus
+the risk of running flat.
+
+<Derivation title="The argmax fallacy — why the best guess loses money" result="sense while  p < 1 − c/L" defaultOpen>
+**Step 1 — write down the loss.** A loss function $L(a, x)$ says what it costs to take action $a$
+when the world is in state $x$. Here:
+
+| $L(a,x)$ | $x = \text{left}$ | $x = \text{right}$ |
+|---|---|---|
+| go left | 0 | 10 |
+| go right | 10 | 0 |
+| sense again | 1 | 1 |
+
+**Step 2 — the belief-follower averages the loss over the belief.** It chooses the action minimizing
+expected loss under the full distribution:
+
+<LinkedMath>
+$$
+a^\star \;=\; \arg\min_a\; \mathbb{E}_{\htmlClass{term-posterior}{\bel(x)}}\big[L(a, x)\big]
+\;=\; \arg\min_a\; \sum_x \htmlClass{term-posterior}{\bel(x)}\, L(a, x)
+$$
+</LinkedMath>
+
+Substituting the numbers:
+
+$$
+\begin{aligned}
+\mathbb{E}[\text{go left}] &= 0.55 \cdot 0 + 0.45 \cdot 10 = 4.5 \\
+\mathbb{E}[\text{go right}] &= 0.55 \cdot 10 + 0.45 \cdot 0 = 5.5 \\
+\mathbb{E}[\text{sense again}] &= 1
+\end{aligned}
+$$
+
+The belief-follower senses. Expected cost: **1**.
+
+**Step 3 — the mode-follower collapses first, then evaluates.** It replaces the belief with its
+most probable state and asks what is best *there*:
+
+<LinkedMath>
+$$
+\hat{a} \;=\; \arg\min_a\; L\big(a,\; \arg\max_x \htmlClass{term-posterior}{\bel(x)}\big)
+$$
+</LinkedMath>
+
+At the mode, $x = \text{left}$, going left costs 0 and sensing costs 1. So the mode-follower goes
+left, and pays $0.45 \cdot 10 = 4.5$ in expectation. It is not being reckless; from inside its own
+world model, sensing is *pure overhead*. A point estimate has nothing left to learn, because it has
+already thrown away the only thing that made learning valuable — the doubt.
+
+**Step 4 — the general threshold.** Let $p \ge \tfrac12$ be the probability of the more likely
+corridor, $L$ the cost of committing wrongly, and $c$ the cost of sensing. The best commitment costs
+$(1-p)L$; sensing costs $c$. So sensing is optimal exactly when
+
+$$
+c < (1 - p)\,L
+\qquad\Longleftrightarrow\qquad
+p < 1 - \frac{c}{L}
+$$
+
+With $L = 10$ and $c = 1$ the threshold is $p^\star = 0.9$: below nine-tenths certainty, look again;
+above it, commit. The quantity $(1-p)L$ is the **value of perfect information** — literally what the
+doubt is worth. A mode-follower computes it as zero, always, which is why it never gathers
+information deliberately.
+
+The general statement is just as short. $\hat a$ minimizes a loss evaluated at *one point* of the
+belief; $a^\star$ minimizes its *average* over the belief. Those two agree only when the loss is an
+affine function of the state — and they can never agree when one of the available actions is
+"gather more information", because the value of that action is a property of the belief's spread,
+and a point estimate has no spread. Nothing bounds the gap: rescale the ten and it grows with it.
+This example is the tiger problem in disguise;
+[Chapter 22](/chapters/ch22-pomdps) grows it into belief-space planning, where "sense again" stops
+being one of three options and becomes a policy over a continuous belief space, and
+[Chapter 24](/chapters/ch24-exploration) turns the same quantity into a reason to drive somewhere.
+</Derivation>
+
+Three and a half units of cost, in a decision with two states and three actions. Scale that to a
+delivery robot choosing between an elevator and a stairwell, or a warehouse AMR deciding whether it
+is confident enough to enter a narrow aisle, and the argument stops being cute.
+
+<KeyIdea title="Why beliefs exist">
+Beliefs are not for looking at. They are for *acting on*. The moment you collapse a distribution to
+its mode, you lose the ability to choose actions whose entire value is that they reduce uncertainty
+— and information gathering is most of what a good robot does.
+</KeyIdea>
+
+## The vocabulary you need for one chapter
+
+Four symbols carry the whole book. They are introduced here informally, formalized in
+[Chapter 2](/chapters/ch02-probability), and made into an algorithm in
+[Chapter 5](/chapters/ch05-bayes-filter).
+
+<NotationTable
+  rows={[
+    { sym: 'x_t', meaning: 'State at time t — everything about the world that matters for predicting the future. For Rusty it starts as a pose (x, y, θ) and grows to include the map in Chapter 14.' },
+    { sym: 'u_t', meaning: 'Control asserted between t−1 and t: a wheel command, an odometry reading. Acting always costs information — the world changes and the robot is not sure how.' },
+    { sym: 'z_t', meaning: 'Measurement at time t: a laser scan, a door detection, a landmark bearing. Sensing always gains information.' },
+    { sym: '\\bel(x_t) = p(x_t \\mid z_{1:t}, u_{1:t})', meaning: 'The belief: the posterior over the state given every measurement and every control so far. The central object of this book.' },
+    { sym: '\\belbar(x_t)', meaning: 'The predicted belief — after folding in the control, before folding in the measurement. Orange, everywhere in this book.' },
+    { sym: '\\eta', meaning: 'A generic normalizer. Whenever a distribution is multiplied by something and must sum to one again, η is the number it gets divided by.' },
+  ]}
+/>
+
+Two things are worth noticing in that table before anything is derived from it.
+
+The belief is conditioned on $z_{1:t}$ and $u_{1:t}$ — *all* the data, from the beginning of time.
+That is what makes it a summary of the robot's entire history, and what makes maintaining it
+recursively, without storing the history, the central trick of
+[Chapter 5](/chapters/ch05-bayes-filter).
+
+And $u$ and $z$ enter with opposite signs, informationally. Motion smears the belief out; sensing
+sharpens it. That asymmetry is not an accident of any particular algorithm — it is the shape of the
+problem, and it is what the next section shows you in a picture.
+
+## The hallway, worked by hand
+
+Here is the oldest thought experiment in probabilistic robotics, and it is still the best one.
+
+A corridor is divided into ten cells, numbered 0 to 9, and it loops: walking right from cell 9
+brings you to cell 0. Three of the cells have doors — cells 1, 4, and 5 — and they are
+*indistinguishable*. Rusty has one sensor, a door detector, and it is imperfect: it reports "door"
+correctly 60% of the time when facing one, and cries "door" 20% of the time when there is none.
+
+Rusty is switched on somewhere in this corridor, with no idea where. It senses. It drives one cell
+to the right. It senses again. Where is it?
+
+<Deferred>
+  <HallwayBeliefPreview />
+</Deferred>
+
+Play the loop once, and then look at what happened at each step.
+
+**The uniform prior is the honest starting point.** Ten cells, no information: $\bel(x) = 0.1$
+everywhere. This is not the robot being pessimistic. It is the robot being *calibrated* — any peak
+in that histogram would be a claim it has no evidence for.
+
+**One door sighting gives three peaks, not one.** The sensor did exactly its job and Rusty still
+does not know where it is. Any representation that insists on one number for the answer must pick
+one of those three peaks and be wrong two times in three — and it will be wrong *confidently*, with
+nothing downstream to record that a guess was ever made. This is exactly the failure the Kalman
+filter of [Chapter 6](/chapters/ch06-kalman-filters) cannot survive, and the reason
+[Chapter 8](/chapters/ch08-nonparametric-filters) exists.
+
+**The non-door cells do not go to zero.** They drop to 0.0625 and stay there, because the detector
+cries "door" at a blank wall one time in five, so a blank wall never becomes impossible. That
+matters more than it looks: a belief that assigns probability zero to a hypothesis can never recover
+it, whatever evidence arrives later. Refusing to write down a zero is the cheapest robustness in all
+of robotics.
+
+**Ambiguity dies from the sequence, not from any single reading.** After the move and the second
+sighting, cell 5 holds exactly three times the belief of its nearest rival — not because the second
+reading was better than the first, but because only cell 5 is a door *that is also one step to the
+right of a door*. The pattern did the work.
+
+<Derivation title="Sense, move, sense — every number" result="bel(5) = 9/26 ≈ 0.3462">
+Write $\bel$ as a ten-vector. The measurement likelihood for the reading $z = \text{door}$ is
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{p(z = \text{door} \mid x)} =
+\begin{cases}
+0.6 & x \in \{1, 4, 5\} \\
+0.2 & \text{otherwise}
+\end{cases}
+$$
+</LinkedMath>
+
+**Step 1 — the prior.** Maximum ignorance over ten cells:
+$\htmlClass{term-prior}{\bel(x) = 0.1}$ for every $x$.
+
+**Step 2 — sense "door": multiply, then normalize.** Pointwise product with the likelihood:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x)} \;=\; \eta\;
+\htmlClass{term-measurement}{p(z \mid x)}\;
+\htmlClass{term-prior}{\bel(x)}
+$$
+</LinkedMath>
+
+Unnormalized, door cells hold $0.1 \times 0.6 = 0.06$ and the rest $0.1 \times 0.2 = 0.02$. The sum
+is $3(0.06) + 7(0.02) = 0.32$, so $\eta = 1/0.32$ and
+
+$$
+\bel = (0.0625,\ \mathbf{0.1875},\ 0.0625,\ 0.0625,\ \mathbf{0.1875},\ \mathbf{0.1875},\ 0.0625,\ 0.0625,\ 0.0625,\ 0.0625)
+$$
+
+That $0.32$ is not junk: it is $p(z)$, the probability of getting the reading you got, averaged over
+the belief. Nearly a third of the corridor looks like a door to this sensor, so a door reading is
+not very surprising and not very informative. [Chapter 5](/chapters/ch05-bayes-filter) turns this
+number into an outlier detector, and [Chapter 12](/chapters/ch12-localization-global) into a
+kidnapping alarm.
+
+**Step 3 — move one cell right.** Motion is perfect for exactly one chapter, so the belief shifts
+cyclically: $\htmlClass{term-prediction}{\belbar(x)} = \bel\big((x - 1) \bmod 10\big)$. The three
+peaks move from cells 1, 4, 5 to cells 2, 5, 6:
+
+$$
+\belbar = (0.0625,\ 0.0625,\ \mathbf{0.1875},\ 0.0625,\ 0.0625,\ \mathbf{0.1875},\ \mathbf{0.1875},\ 0.0625,\ 0.0625,\ 0.0625)
+$$
+
+Nothing was created or destroyed — the mass was permuted. (Real motion also *spreads* the belief,
+which is what makes prediction a convolution rather than a shift. That is the single change
+[Chapter 5](/chapters/ch05-bayes-filter) makes to this line, and it is why the operation is called
+prediction rather than translation.)
+
+**Step 4 — sense "door" again.** Multiply by the same likelihood. Now the door cells and the shifted
+peaks interact:
+
+| cell | 0 | 1* | 2 | 3 | 4* | 5* | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| $\belbar$ | .0625 | .0625 | **.1875** | .0625 | .0625 | **.1875** | **.1875** | .0625 | .0625 | .0625 |
+| $\times\,p(z \mid x)$ | .2 | .6 | .2 | .2 | .6 | .6 | .2 | .2 | .2 | .2 |
+| unnormalized | .0125 | .0375 | .0375 | .0125 | .0375 | **.1125** | .0375 | .0125 | .0125 | .0125 |
+
+The sum is $4(0.0375) + 0.1125 + 5(0.0125) = 0.325$, so $\eta = 1/0.325$ and every entry lands on a
+clean twenty-sixth:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel} = \tfrac{1}{26}\,(1,\ 3,\ 3,\ 1,\ 3,\ \mathbf{9},\ 3,\ 1,\ 1,\ 1)
+$$
+</LinkedMath>
+
+**Step 5 — read it out.** $\bel(5) = 9/26 \approx 0.3462$, against $3/26 \approx 0.1154$ at cells 1,
+2, 4 and 6, and $1/26 \approx 0.0385$ everywhere else. One hypothesis is now three times as
+plausible as its nearest rival — from two readings that were individually worth almost nothing.
+
+Sensing multiplied. Moving shifted. Those two operations, and nothing else, did all of this.
+</Derivation>
+
+The two operations even have shapes, and they are the shapes of every estimator in this book.
+
+<Algorithm
+  name="sense_and_move(bel, u, z)"
+  inputs="a belief over N cells, a control, a measurement"
+  outputs="the updated belief"
+  complexity="O(N) per operation here — O(N²) as soon as motion is uncertain (Chapter 5)"
+>
+1. for all cells $x$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\bel(x) \leftarrow \htmlClass{term-measurement}{p(z \mid x)} \cdot \bel(x)$ &nbsp;&nbsp; // sensing multiplies
+3. endfor
+4. $\eta \leftarrow \sum_x \bel(x)$; &nbsp; $\bel \leftarrow \bel / \eta$
+5. for all cells $x$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;$\belbar(x) \leftarrow \bel(x - u)$ &nbsp;&nbsp; // moving shifts
+7. endfor
+8. return $\belbar$
+</Algorithm>
+
+<Callout type="info">
+Those two loops are the two lines of `Bayes_filter` (Thrun et al., Table 2.1) — written here in the
+order this chapter used them, sense before move, and with the honest version of the shift on line 6
+(a convolution against the motion model rather than a permutation) postponed to
+[Chapter 5](/chapters/ch05-bayes-filter), where the whole recursion is *derived* from Bayes rule
+rather than asserted. Everything after that chapter is a decision about how to represent $\bel$ so
+those two lines can be computed at all.
+</Callout>
+
+## What the paradigm buys, and what it costs
+
+The honest version of the sales pitch has two columns.
+
+**What it buys.** Ambiguity becomes representable, so a robot can hold three hypotheses without
+picking one prematurely. Weak models become usable: probabilistic algorithms make far weaker demands
+on model accuracy than classical planners do, because they were built expecting the model to be
+wrong. Failure becomes graceful rather than catastrophic — a filter degrades toward ignorance, which
+is recoverable, instead of toward confident error, which is not. And, as the T-junction showed,
+information gathering becomes a first-class action rather than an afterthought.
+
+**What it costs.** Computation, first: carrying a whole distribution is strictly more expensive than
+carrying a number, and in high dimensions it is exponentially so. Approximation, second: real state
+spaces are continuous, exact posteriors have infinitely many degrees of freedom, and every algorithm
+in this book replaces the true belief with something finite — a Gaussian, a grid, a set of samples.
+The approximation is where the failures live, which is why every chapter here names the one it is
+making.
+
+That trade is why the book is structured as a sequence of representations rather than a single
+algorithm, and why no chapter is allowed to claim a method is "better" without saying what it is
+better *at*.
+
+<Callout type="warn">
+This chapter asserts robustness and graceful degradation; it does not demonstrate them. That is
+deliberate. [Chapter 12](/chapters/ch12-localization-global) demonstrates recovery by kidnapping the
+robot mid-run, [Chapter 14](/chapters/ch14-ekf-slam) demonstrates the opposite by watching a filter
+become confidently wrong, and [Chapter 26](/chapters/ch26-capstone) runs the whole stack through a
+failure-mode tour. Claims in this book get cashed.
+</Callout>
+
+## Implementation in Rust
+
+Your first build should take seconds and cannot be allowed to fail on a native dependency, so
+`ch01-hello` has no dependencies at all — no `nalgebra`, no `rand`, nothing. It is the corridor from
+the last section, in sixty lines of standard library Rust.
+
+```rust title="demos/ch01-hello/src/main.rs"
+//! The whole chapter, minus the prose. `cargo run -p ch01_hello`.
+//!
+//! Ten cells, three identical doors, one imperfect sensor. Everything this
+//! program prints is checked by the test at the bottom of the file, and drawn
+//! by the widget in the chapter — because they are the same computation.
+
+/// A ten-cell cyclic corridor. Cell `i` spans [i, i+1) metres.
+const N: usize = 10;
+/// Cells with a door. Rusty cannot tell them apart; that is the whole problem.
+const DOORS: [usize; 3] = [1, 4, 5];
+/// p(z = door | the robot is at a door) — the sensor is right 3 times in 5.
+const P_HIT: f64 = 0.6;
+/// p(z = door | the robot is not at a door) — and it hallucinates 1 time in 5.
+const P_FALSE: f64 = 0.2;
+
+/// A belief is a probability per cell. Fixed size, on the stack, no allocation:
+/// this array *is* the distribution, not a summary of one.
+type Belief = [f64; N];
+
+/// Divide by η so the belief sums to one again, and hand back the number we
+/// divided by. That number is p(z), the evidence — Chapter 5 shows it is a
+/// genuine diagnostic rather than bookkeeping.
+fn normalize(bel: &mut Belief) -> f64 {
+    let evidence: f64 = bel.iter().sum();
+    for p in bel.iter_mut() {
+        *p /= evidence;
+    }
+    evidence
+}
+
+/// Measurement update. Multiply pointwise by the likelihood, then normalize.
+/// This is the operation that *sharpens* a belief.
+fn sense_door(bel: &mut Belief) -> f64 {
+    for (i, p) in bel.iter_mut().enumerate() {
+        *p *= if DOORS.contains(&i) { P_HIT } else { P_FALSE };
+    }
+    normalize(bel)
+}
+
+/// Motion update. Shift every cell one to the right, wrapping at the end.
+/// Perfect motion, for exactly one chapter: Chapter 5 replaces this shift with
+/// a convolution, and the belief starts spreading as well as moving.
+fn move_right(bel: &Belief) -> Belief {
+    std::array::from_fn(|i| bel[(i + N - 1) % N])
+}
+
+fn bar(p: f64) -> String {
+    "\u{2588}".repeat((p * 60.0).round() as usize)
+}
+
+fn main() {
+    // Maximum ignorance: every cell equally plausible. Note what this is *not*
+    // — it is not "the robot is at cell 0 until told otherwise".
+    let mut bel: Belief = [1.0 / N as f64; N];
+
+    let e1 = sense_door(&mut bel); // z₁ = door
+    bel = move_right(&bel);        // u₁ = one cell right
+    let e2 = sense_door(&mut bel); // z₂ = door
+
+    println!("evidence  p(z1) = {e1:.4}   p(z2 | z1, u1) = {e2:.4}\n");
+    for (i, p) in bel.iter().enumerate() {
+        let door = if DOORS.contains(&i) { '*' } else { ' ' };
+        println!("cell {i}{door} {p:.4} {}", bar(*p));
+    }
+}
+```
+
+### A worked example you can check by hand
+
+Run it, and the corridor from the previous section falls out:
+
+```text title="cargo run -p ch01_hello"
+evidence  p(z1) = 0.3200   p(z2 | z1, u1) = 0.3250
+
+cell 0  0.0385 ██
+cell 1* 0.1154 ███████
+cell 2  0.1154 ███████
+cell 3  0.0385 ██
+cell 4* 0.1154 ███████
+cell 5* 0.3462 █████████████████████
+cell 6  0.1154 ███████
+cell 7  0.0385 ██
+cell 8  0.0385 ██
+cell 9  0.0385 ██
+```
+
+Every number is checkable with a pencil. Cell 5 after the second sighting: it held $0.1875$ after
+the move, the likelihood there is $0.6$, so unnormalized it is $0.1125$; the whole vector sums to
+$0.325$; and $0.1125 / 0.325 = 9/26 = 0.3462$. Cell 0 held $0.0625$, times $0.2$ is $0.0125$, over
+$0.325$ is $1/26 = 0.0385$. The evidence values $0.32$ and $0.325$ are the normalizers themselves.
+
+And every number is locked by a test. This is the book's first instance of a convention it never
+breaks: where the prose states a number, a test asserts it, and if the two ever disagree, the test
+is right.
+
+```rust title="demos/ch01-hello/src/main.rs (tests)"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chapter's worked example, to the last decimal.
+    #[test]
+    fn worked_example_ch01() {
+        let mut bel: Belief = [1.0 / N as f64; N];
+
+        let e1 = sense_door(&mut bel);
+        assert!((e1 - 0.32).abs() < 1e-12, "evidence of the first reading");
+        assert!((bel[1] - 0.1875).abs() < 1e-12); // 0.06 / 0.32, at a door
+        assert!((bel[0] - 0.0625).abs() < 1e-12); // 0.02 / 0.32, not at a door
+
+        bel = move_right(&bel);
+        assert!((bel[2] - 0.1875).abs() < 1e-12); // the peak that was at cell 1
+
+        let e2 = sense_door(&mut bel);
+        assert!((e2 - 0.325).abs() < 1e-12);
+        assert!((bel[5] - 9.0 / 26.0).abs() < 1e-12); // the winner
+        assert!((bel[1] - 3.0 / 26.0).abs() < 1e-12);
+        assert!((bel[9] - 1.0 / 26.0).abs() < 1e-12);
+
+        // A belief is a distribution at every step, forever. If this ever fails,
+        // some update forgot its η.
+        let total: f64 = bel.iter().sum();
+        assert!((total - 1.0).abs() < 1e-12);
+    }
+
+    /// Zero is a promise you cannot take back: no evidence can resurrect a
+    /// hypothesis you have already ruled out. Ten more door sightings do not
+    /// push any cell to exactly zero.
+    #[test]
+    fn nothing_is_ever_impossible() {
+        let mut bel: Belief = [1.0 / N as f64; N];
+        for _ in 0..10 {
+            sense_door(&mut bel);
+        }
+        assert!(bel.iter().all(|&p| p > 0.0));
+    }
+}
+```
+
+### The dead reckoner, honestly
+
+The hook at the top of this chapter is the same idea in two dimensions, and it needs two crates from
+the book's stack: `nalgebra` for the pose and `rand` for the noise. Note what is *shared* between
+the two paths — the integrator is called once for the truth and once for the estimate, with the same
+arithmetic. Only the input differs.
+
+```rust title="demos/ch01-doubt/src/bin/dead_reckoner.rs"
+use nalgebra::{Isometry2, Vector2};
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
+
+/// A pose is not three loose floats — it is an element of SE(2), and
+/// `Isometry2` already knows that. Chapter 3 makes the claim precise.
+type Pose = Isometry2<f64>;
+
+/// Noise-free differential-drive integration over Δt at constant (v, ω):
+/// the exact arc of radius r = v/ω (Thrun et al., eq. 5.9). As ω → 0 the
+/// radius blows up while the arc flattens, so we take the straight-line limit
+/// rather than trusting the cancellation.
+fn integrate(x: &Pose, v: f64, omega: f64, dt: f64) -> Pose {
+    let theta = x.rotation.angle();
+    let step = if omega.abs() < 1e-9 {
+        Vector2::new(v * theta.cos() * dt, v * theta.sin() * dt)
+    } else {
+        let r = v / omega;
+        let next = theta + omega * dt;
+        Vector2::new(
+            -r * theta.sin() + r * next.sin(),
+            r * theta.cos() - r * next.cos(),
+        )
+    };
+    Isometry2::new(x.translation.vector + step, theta + omega * dt)
+}
+
+/// `sample_motion_model_velocity` — Thrun et al., Table 5.3, in miniature.
+/// Perturb the command, then integrate the *perturbed* command exactly. The
+/// third noise term γ̂ is a final rotation the (v, ω) parameterisation cannot
+/// otherwise produce; Chapter 9 explains why leaving it out cripples a
+/// particle filter.
+fn sample_motion(
+    x: &Pose,
+    v: f64,
+    omega: f64,
+    dt: f64,
+    alpha: [f64; 6],
+    rng: &mut SmallRng,
+) -> Pose {
+    let (v2, w2) = (v * v, omega * omega);
+    let draw = |var: f64, rng: &mut SmallRng| match Normal::new(0.0, var.sqrt()) {
+        Ok(d) if var > 0.0 => d.sample(rng),
+        _ => 0.0, // a noiseless robot is allowed, if only in a widget
+    };
+
+    let v_hat = v + draw(alpha[0] * v2 + alpha[1] * w2, rng);
+    let w_hat = omega + draw(alpha[2] * v2 + alpha[3] * w2, rng);
+    let gamma = draw(alpha[4] * v2 + alpha[5] * w2, rng);
+
+    let next = integrate(x, v_hat, w_hat, dt);
+    Isometry2::new(next.translation.vector, next.rotation.angle() + gamma * dt)
+}
+
+/// The commanded square: four 2.4 m sides, four 90° corners, at Δt = 0.1 s.
+fn square_commands() -> Vec<(f64, f64)> {
+    let turn = std::f64::consts::FRAC_PI_2 / 1.5; // 90° in 1.5 s
+    let mut u = Vec::new();
+    for _ in 0..4 {
+        u.extend(std::iter::repeat_n((0.6, 0.0), 40)); // 40 × 0.1 s × 0.6 m/s = 2.4 m
+        u.extend(std::iter::repeat_n((0.0, turn), 15));
+    }
+    u
+}
+
+fn drive(seed: u64, alpha: [f64; 6]) -> (Pose, Pose) {
+    // Seeded, always. `rand::rng()` would make this demo an anecdote instead of
+    // an experiment — the entire book uses SmallRng with an explicit seed.
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let start = Isometry2::new(Vector2::new(8.75, 0.65), 0.0);
+    let (mut truth, mut reckoned) = (start, start);
+
+    for (v, omega) in square_commands() {
+        truth = sample_motion(&truth, v, omega, 0.1, alpha, &mut rng);
+        reckoned = integrate(&reckoned, v, omega, 0.1); // the same maths, minus the noise
+    }
+    (truth, reckoned)
+}
+
+fn main() {
+    let alpha = [0.05, 0.05, 0.05, 0.05, 0.01, 0.01];
+    println!("seed   drift (m)   heading error (deg)");
+    for seed in 0..8 {
+        let (truth, reckoned) = drive(seed, alpha);
+        let drift = (truth.translation.vector - reckoned.translation.vector).norm();
+        let dtheta = (truth.rotation.angle() - reckoned.rotation.angle()).to_degrees();
+        println!("{seed:>4}   {drift:>9.3}   {dtheta:>18.2}");
+    }
+}
+```
+
+There is no expected-output block for this one, and that is the lesson. The drift is different for
+every seed, in size *and* direction, so the only claims worth testing are the ones that hold across
+all of them:
+
+```rust title="demos/ch01-doubt/src/bin/dead_reckoner.rs (tests)"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Dead reckoning is never internally inconsistent: the commanded square
+    /// closes to machine precision, every time, on every machine.
+    #[test]
+    fn the_commanded_square_always_closes() {
+        let (_, reckoned) = drive(7, [0.05, 0.05, 0.05, 0.05, 0.01, 0.01]);
+        let start = Vector2::new(8.75, 0.65);
+        assert!((reckoned.translation.vector - start).norm() < 1e-9);
+    }
+
+    /// …and the robot is never actually there. Not "usually": for all ten seeds,
+    /// with a margin far larger than any floating-point slop.
+    #[test]
+    fn the_robot_never_is() {
+        let alpha = [0.05, 0.05, 0.05, 0.05, 0.01, 0.01];
+        for seed in 0..10 {
+            let (truth, reckoned) = drive(seed, alpha);
+            let drift = (truth.translation.vector - reckoned.translation.vector).norm();
+            assert!(drift > 0.02, "seed {seed} drifted only {drift} m");
+        }
+    }
+
+    /// Turn the noise off and the two computations are the same computation.
+    #[test]
+    fn zero_noise_is_zero_drift() {
+        let (truth, reckoned) = drive(7, [0.0; 6]);
+        assert!((truth.translation.vector - reckoned.translation.vector).norm() < 1e-12);
+    }
+}
+```
+
+### Doubt, priced
+
+Finally, the T-junction, because a claim about decisions deserves code as much as a claim about
+positions does. This is the smallest possible instance of what
+[Chapter 22](/chapters/ch22-pomdps) does properly.
+
+```rust title="demos/ch01-doubt/src/decision.rs"
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Charger {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    GoLeft,
+    GoRight,
+    SenseAgain,
+}
+
+const ACTIONS: [Action; 3] = [Action::GoLeft, Action::GoRight, Action::SenseAgain];
+
+/// L(a, x): what it costs to take action `a` when the world is in state `x`.
+/// Sensing costs one unit and then acts perfectly, so it never pays the ten.
+fn loss(a: Action, x: Charger) -> f64 {
+    match (a, x) {
+        (Action::GoLeft, Charger::Left) | (Action::GoRight, Charger::Right) => 0.0,
+        (Action::GoLeft, Charger::Right) | (Action::GoRight, Charger::Left) => 10.0,
+        (Action::SenseAgain, _) => 1.0,
+    }
+}
+
+/// A belief over a two-element state space. In this book a belief is always a
+/// distribution over states — here it just happens to fit in one f64.
+#[derive(Clone, Copy)]
+struct Belief {
+    p_left: f64,
+}
+
+impl Belief {
+    /// E_bel[L(a, x)] — the loss averaged over everything that might be true.
+    fn expected_loss(&self, a: Action) -> f64 {
+        self.p_left * loss(a, Charger::Left) + (1.0 - self.p_left) * loss(a, Charger::Right)
+    }
+
+    /// The best guess. Note how much it throws away: after this call, no caller
+    /// can tell 0.55 from 0.999.
+    fn mode(&self) -> Charger {
+        if self.p_left >= 0.5 { Charger::Left } else { Charger::Right }
+    }
+}
+
+/// Act on the belief: minimise expected loss under the whole distribution.
+fn bayes_action(b: &Belief) -> Action {
+    *ACTIONS
+        .iter()
+        .min_by(|a, c| b.expected_loss(**a).total_cmp(&b.expected_loss(**c)))
+        .expect("ACTIONS is non-empty")
+}
+
+/// Act on the best guess: minimise loss at the mode. Sensing can now only ever
+/// look like overhead, because at a point estimate there is nothing to learn.
+fn mode_action(b: &Belief) -> Action {
+    let x = b.mode();
+    *ACTIONS
+        .iter()
+        .min_by(|a, c| loss(**a, x).total_cmp(&loss(**c, x)))
+        .expect("ACTIONS is non-empty")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_argmax_fallacy_costs_three_and_a_half() {
+        let b = Belief { p_left: 0.55 };
+
+        assert_eq!(mode_action(&b), Action::GoLeft);
+        assert_eq!(bayes_action(&b), Action::SenseAgain);
+
+        assert!((b.expected_loss(Action::GoLeft) - 4.5).abs() < 1e-12);
+        assert!((b.expected_loss(Action::GoRight) - 5.5).abs() < 1e-12);
+        assert!((b.expected_loss(Action::SenseAgain) - 1.0).abs() < 1e-12);
+
+        let regret = b.expected_loss(mode_action(&b)) - b.expected_loss(bayes_action(&b));
+        assert!((regret - 3.5).abs() < 1e-12);
+    }
+
+    /// The threshold from the derivation: commit once p ≥ 1 − c/L = 0.9.
+    #[test]
+    fn sense_until_the_belief_is_sharp_enough() {
+        assert_eq!(bayes_action(&Belief { p_left: 0.89 }), Action::SenseAgain);
+        assert_eq!(bayes_action(&Belief { p_left: 0.91 }), Action::GoLeft);
+        // The mode-follower never senses, at any level of certainty at all.
+        for p in [0.51, 0.7, 0.89, 0.99] {
+            assert_eq!(mode_action(&Belief { p_left: p }), Action::GoLeft);
+        }
+    }
+}
+```
+
+### Running it yourself
+
+Five minutes, and you have the lab the rest of the book is built in.
+
+```bash title="one-time setup"
+# 1. stable Rust, 1.85 or newer — the workspace is on edition 2024
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustc --version
+
+# 2. clone the book workspace and enter it
+cd prob-robotics-rust
+
+# 3. the two commands this chapter is really about
+cargo run -p ch01_hello     # prints the histogram above
+cargo test -p ch01_hello    # locks every number in it
+```
+
+If `cargo test` passes, your toolchain agrees with this book to twelve decimal places, and you are
+ready for [Chapter 2](/chapters/ch02-probability). If you want to hack on the widgets rather than
+only read them, [Chapter 4](/chapters/ch04-rusty-and-sensors) adds the WASM target and the simulator
+crate; nothing before then needs it.
+
+## How to read this book
+
+<Deferred>
+  <HowToReadThisBook />
+</Deferred>
+
+Three promises are worth stating explicitly, because the rest of the book is built on them.
+
+**The code in the text is the code that runs.** The Rust listings in this chapter are the canonical
+implementation. The widget above them runs a TypeScript port of the same algorithms, checked against
+the same worked examples — the hallway widget calls the library's histogram filter, and the value it
+prints for cell 5 is $9/26$ because the filter computed it, not because a designer typed it in. When
+a chapter shows you a number, you can reproduce it in three places: the page, the test suite, and
+your own terminal.
+
+**Two worlds, one robot.** The **Hallway** is the 1-D corridor you just localized in: beliefs are
+curves there, and everything is plottable. The **Apartment** is the 12 m by 9 m floorplan from the
+five-uncertainties figure, with ray-cast LiDAR and simulated wheel encoders — the realistic world
+where localization, mapping, SLAM, and planning happen. Rusty drives in both, and the same seeded
+random number generator means the run you see is the run everyone sees.
+
+**Nothing is asserted that is not eventually cashed.** Every "this is more robust" in this chapter
+becomes an experiment later, usually one where something breaks on purpose. The most useful pages in
+this book are the ones where a method fails and you can see exactly which assumption it violated.
+
+Chapter 2 gives the probability language a proper foundation, Chapter 3 the geometry, Chapter 4 the
+robot and simulator, and Chapter 5 turns `sense_and_move` into the Bayes filter — the recursion that
+every remaining chapter is a special case of.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={1} title="Where the threshold moves">
+    Redo the T-junction derivation with $p(\text{left}) = 0.9$ and the same losses. Which action does
+    the belief-follower choose, and by how much does it beat the mode-follower now? Then derive the
+    general threshold $p^\star$ as a function of the sensing cost $c$ and the commitment loss $L$,
+    and say in one sentence what happens to $p^\star$ as sensing gets cheaper. Finally: what does
+    the mode-follower do at $p = 0.51$, and why is that the same thing it does at $p = 0.99$?
+  </Exercise>
+
+  <Exercise
+    level="F"
+    difficulty={2}
+    title="A corridor that can never be solved"
+    hint="Show that both operations preserve the property of being unchanged when the belief is rotated by three cells, and that the uniform prior has it."
+  >
+    Suppose the corridor has nine cells with doors at 1, 4 and 7 — evenly spaced — and motion is the
+    perfect one-cell shift used in this chapter. Show that if the belief starts uniform, no sequence
+    of sense and move operations ever produces a belief with a unique maximum. What property of the
+    door layout does the argument turn on, and what would you have to change about the *robot*
+    (not the corridor) to break the symmetry?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The evidence is data too">
+    The program prints $p(z_1) = 0.32$ and $p(z_2 \mid z_1, u_1) = 0.325$. Compute by hand what
+    $p(z_2 \mid z_1, u_1)$ would have been if the second reading had been *no door* instead of
+    *door*, and explain what a very small evidence value would have told the robot. (You have just
+    invented the outlier test of [Chapter 11](/chapters/ch11-localization-gaussian) and the
+    kidnapping detector of [Chapter 12](/chapters/ch12-localization-global).)
+  </Exercise>
+
+  <Exercise
+    level="C"
+    difficulty={1}
+    title="Predict, then press play"
+    hint="A cell grows exactly when its likelihood exceeds the normalizer. For the second part: is any cell both a door and two cells to the right of a door?"
+  >
+    Scrub w1.1 to the row "after move right" and pause there. Before you step: which cells will grow
+    when the second door sighting lands, which will shrink, and what is the ratio between the factor
+    a growing cell gets and the factor a shrinking one gets? Step, and check your answer against the
+    table. Then run the alternative sequence sense, move, move, sense on paper — what happens to the
+    belief, and what does that tell you about how much of the localization was done by the *sensor*
+    versus by the *sequence*?
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Is drift predictable?">
+    In w1.2, set actuation noise to 1 and re-roll the seed five times, noting which way the true path
+    ends up relative to the commanded square. Is the direction of the final drift predictable? Write
+    down why not in one sentence that uses the word "distribution". Then set the noise slider to 0
+    and say what would have to be true of the wheels, the floor and the map for that to be an honest
+    model of any robot at all.
+  </Exercise>
+
+  <Exercise
+    level="P"
+    difficulty={2}
+    title="Your first convolution"
+    hint="The new belief at a cell collects mass from the two cells to its left and from the cell itself, weighted 0.1, 0.8 and 0.1. Normalizing afterwards should be unnecessary — check that it is, and you have proved the motion update conserves probability."
+  >
+    Extend `ch01-hello` with a sloppier motion model: `move_right_sloppy` moves two cells with
+    probability 0.1, one cell with probability 0.8, and none with probability 0.1. Re-run the
+    sense–move–sense sequence with it. Does cell 5 still win, and by how much? Keep the code —
+    [Chapter 5](/chapters/ch05-bayes-filter) will show you that what you just wrote is a discrete
+    convolution, and [Chapter 8](/chapters/ch08-nonparametric-filters) that it is the prediction step
+    of the histogram filter.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Break the test on purpose">
+    Change `P_HIT` to 0.9 and predict, before running anything, whether cell 5's posterior goes up or
+    down and roughly how far. Run `cargo test -p ch01_hello` and read the failure message: it names
+    the value it got. Then work out the new posterior analytically, confirm the two agree, and
+    rewrite the test to assert it. (Both the failure and the reason it failed are the exercise; a
+    test suite that never fails is not telling you anything.)
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="How bad does it get?">
+    Modify the dead reckoner to report the drift after ten laps rather than one, averaged over fifty
+    seeds. Plot mean drift against lap number. Does it grow like $\sqrt{n}$, like $n$, or faster —
+    and which of the three noise terms ($\hat v$, $\hat\omega$, $\hat\gamma$) dominates when you
+    zero the others out? Write down what this implies about how often a real robot must see something
+    it recognizes.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press, ISBN 9780262201629"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="The book this one modernizes. Chapter 1 is the source of the five-source uncertainty taxonomy and of the epigraph above, which appears there as the authors' central conjecture; the corridor example is its Figure 1.1."
+  />
+  <Reference
+    authors="Thrun, S."
+    year={2002}
+    title="Probabilistic robotics"
+    venue="Communications of the ACM 45(3), 52–57"
+    doi="10.1145/504729.504754"
+    note="The argument of this chapter in six pages, written for skeptics, three years before the book. Useful if you want the case for the paradigm without the machinery."
+  />
+  <Reference
+    authors="Kaelbling, L. P., Littman, M. L., and Cassandra, A. R."
+    year={1998}
+    title="Planning and acting in partially observable stochastic domains"
+    venue="Artificial Intelligence 101(1–2), 99–134"
+    doi="10.1016/S0004-3702(98)00023-X"
+    note="Where the T-junction example grows up. The formal treatment of acting on a belief rather than on a state, and the origin of the tiger problem that Chapter 22 plays."
+  />
+  <Reference
+    authors="Kochenderfer, M. J., Wheeler, T. A., and Wray, K. H."
+    year={2022}
+    title="Algorithms for Decision Making"
+    venue="MIT Press, ISBN 9780262047012"
+    url="https://algorithmsbook.com/decisionmaking/"
+    note="The modern companion volume on the acting side of the loop, freely readable online. Its treatment of the value of information is the general form of this chapter's threshold p* = 1 − c/L."
+  />
+  <Reference
+    authors="Barfoot, T. D."
+    year={2024}
+    title="State Estimation for Robotics"
+    venue="Cambridge University Press, 2nd edition, ISBN 9781009299893"
+    url="https://asrl.utias.utoronto.ca/~tdb/bib/barfoot_ser24.pdf"
+    note="The reference treatment of the estimation half of this book, and the one that generalizes cleanest to Lie groups — which is where Chapters 3 and 7 take it."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the desks of ROS maintainers: A survey of modern and capable mobile robotics algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="Evidence that this is not a historical exercise: the localizer shipping in today's most widely deployed navigation stack is adaptive Monte Carlo localization, which is the particle filter of Chapter 8 applied in Chapter 12."
+  />
+  <Reference
+    authors="Placed, J. A., Strader, J., Carrillo, H., Atanasov, N., Indelman, V., Carlone, L., and Castellanos, J. A."
+    year={2023}
+    title="A survey on active simultaneous localization and mapping: State of the art and new frontiers"
+    venue="IEEE Transactions on Robotics 39(3), 1686–1705"
+    doi="10.1109/TRO.2023.3248510"
+    note="What the T-junction becomes at full scale: choosing where to drive in order to learn. The map of the field that Chapter 24 follows."
+  />
+  <Reference
+    authors="Lindemann, L., Cleaveland, M., Shim, G., and Pappas, G. J."
+    year={2023}
+    title="Safe planning in dynamic environments using conformal prediction"
+    venue="IEEE Robotics and Automation Letters 8(8), 5116–5123"
+    doi="10.1109/LRA.2023.3292071"
+    note="A current answer to the question this chapter opens — how to act when your uncertainty estimate is itself learned and possibly miscalibrated. Read it alongside Chapter 25."
+  />
+</References>

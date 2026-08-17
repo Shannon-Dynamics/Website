@@ -1,0 +1,311 @@
+---
+title: Learning Manipulation
+chapter: 20
+quote:
+  text: RL is beginning to achieve real-world success in manipulation, but the diversity of objects and the difficulty of modelling contact keep general-purpose solutions below the maturity reached in locomotion.
+  author: Chen Tang and colleagues
+  affiliation: UT Austin · University of Virginia · Sony AI
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Manipulation is the competency that has resisted hardest, and understanding why is more instructive than any single result. Contact is where simulators are least trustworthy, object diversity defeats the generalization that made locomotion work, and failure is expensive. This chapter works through the subproblems in order of how well they have gone — grasping, then contact-rich assembly, then in-hand dexterity, then general pick-and-place — and shows where each technique from earlier chapters lands. It closes on evaluation, because manipulation is where success rates are most often reported in ways that will not survive scrutiny."
+  outcomes={[
+    'Explain force closure and compute grasp quality from contact geometry',
+    'Explain why contact-mode combinatorics make planning through contact intractable',
+    'Formulate impedance control as an action space and explain why it beats position control under uncertainty',
+    'Describe the in-hand dexterity recipe and what it cost',
+    'Say precisely why general pick-and-place remains below the real-world tiers',
+    'Report a manipulation success rate honestly, with an interval that reflects the sample size',
+  ]}
+  foundation="Grasp wrench space and force closure, the Ferrari–Canny metric, contact-mode combinatorics, impedance control as an action space, and Wilson intervals for small-sample success rates."
+  conceptual="Force closure you can break by dragging contacts — the analytic criterion that learned grasp scorers approximate from pixels."
+  practical="A parallel-jaw gripper in rapier3d, grasp-selection DQN paying off Chapter 9, SAC insertion with impedance actions, and demo-boosted training from browser teleoperation."
+/>
+
+## 20.1 Why manipulation is the hard one
+
+Chapter 18 listed four properties that made locomotion tractable. Manipulation fails on all four, and the symmetry is worth spelling out.
+
+**The dynamics do not simulate well.** Manipulation is *made of* the contact interactions that Chapter 15 identified as simulators' weakest point — sustained sliding, friction that decides outcomes, compliance, deformation. A locomotion policy needs contact to be roughly right; a manipulation policy needs it to be right in detail.
+
+**Rewards are sparse and hard to write.** "Did the assembly succeed?" is one bit, arriving after a long sequence. Dense shaping requires knowing what intermediate progress looks like, which for contact-rich tasks is often exactly what you do not know.
+
+**Failure is expensive.** A dropped object may break; a mis-inserted peg can damage the workpiece or the robot; a manipulator near a person is a safety case.
+
+**Objects are diverse.** A quadruped's world is terrain — endless variation over one type of thing. A manipulator's world contains objects it has never seen, whose mass, friction and compliance it cannot observe.
+
+<Callout variant="insight" title="Read the maturity ladder as a diagnosis">
+Chapter 1's ladder showed contact-rich assembly reaching L3 while general pick-and-place stalls at L2. That ordering looks backwards — surely inserting a connector is harder than picking things up?
+
+It is not, under the four criteria. Assembly is usually *structured*: known parts, fixtured, in a controlled cell. Dense rewards can be designed a priori because the goal geometry is known. General pick-and-place is *unstructured*: novel objects, arbitrary poses, cluttered scenes.
+
+The lesson generalizes. **Structure, not intrinsic task difficulty, predicts whether RL will transfer.**
+</Callout>
+
+## 20.2 Grasping: the analytic criterion and its learned approximation
+
+Grasping has the cleanest theory in manipulation, and it is worth knowing even though modern systems learn rather than compute it.
+
+A contact exerting force $f$ at position $p$ produces a **wrench** — force plus torque — of $w = (f, p \times f)$. With Coulomb friction, the forces a contact can exert lie in a cone of half-angle $\arctan\mu$ about the surface normal.
+
+A grasp has **force closure** when its contact wrenches positively span the wrench space: any disturbance can be opposed by some non-negative combination of contact forces. In the plane this reduces to a readable test — no half-plane may contain all the wrench generators.
+
+<GraspWrench />
+
+Force closure is binary; quality is continuous. The **Ferrari–Canny metric** takes the radius of the largest wrench ball the grasp can resist — the worst-case disturbance it survives. That is the difference between a grasp that technically holds and one that survives being carried across a room.
+
+**What modern systems actually do** is skip the geometry. A network takes a depth image, proposes candidate grasps, and scores each one — approximating the force-closure computation without ever reconstructing the object. This is the payoff for Chapter 9: **grasp selection is exactly the setting where value-based methods belong**, because the action space is a few hundred discrete candidates and the argmax is both tractable and correct.
+
+<Callout variant="note" title="Where the analytic theory still earns its place">
+Learned scorers generalize to novel objects; analytic metrics require geometry you rarely have. But the theory remains useful in three ways: as a **reward signal** for training in simulation where geometry *is* known; as a **sanity check** on what a learned scorer has discovered; and as an **explanation** when a grasp fails — "the contacts were on the same side" is a diagnosis, "the network scored it 0.3" is not.
+</Callout>
+
+## 20.3 Contact-rich manipulation and impedance actions
+
+Insertion is the canonical contact-rich task: a peg into a hole with clearance smaller than the robot's positioning error. Pure position control fails by construction — commanding a position the peg cannot reach produces enormous contact forces and a jammed or damaged part.
+
+The answer, from Chapter 13's operational-space material, is **impedance control**. Instead of commanding position, command a target position *and a stiffness*, making the robot behave like a programmable spring:
+
+$$F = K_p (x_d - x) + K_d (\dot x_d - \dot x).$$
+
+Low stiffness in the directions where contact is expected lets the environment guide the part; high stiffness along the insertion axis maintains the push.
+
+<Callout variant="insight" title="Why this is an action-space decision, not a control detail">
+This is Chapter 17's thesis in its sharpest form. A policy commanding *positions* must learn to avoid excessive contact forces — a hard, safety-critical thing to learn, where every training mistake is a collision. A policy commanding *impedance* has compliance built into the action space: it physically cannot generate large forces in the low-stiffness directions.
+
+The mechanical compliance performs the search. The classic "insertion funnel" — where contact geometry guides a compliant part into alignment — is doing work that a stiff controller would have to compute exactly. The policy's job shrinks from "solve the contact problem" to "choose stiffness and approach direction", which is a far smaller problem.
+
+Published comparisons repeatedly find impedance action spaces outperforming position control on contact-rich tasks by large margins, using the same algorithm. The algorithm was never the bottleneck.
+</Callout>
+
+**Why planning through contact is intractable** is worth stating precisely, because it explains why learning is attractive here. With $n$ contact points, each is separated, sticking, or sliding — $3^n$ discrete modes, each with different dynamics. A peg-in-hole with 8 potential contacts has $6561$ modes. Planning must search over mode sequences, and the search is combinatorial in a quantity that grows with the task's contact richness. Learned policies sidestep the enumeration entirely by never representing modes explicitly.
+
+## 20.4 In-hand manipulation: what dexterity cost
+
+Reorienting an object within the hand, using the fingers alone, is the hardest thing manipulators do — many contacts, all of them making and breaking, with the object's pose partially occluded by the hand doing the manipulating.
+
+The result that defined the area used no new algorithm. It used everything from Part III, at maximum intensity: **extreme domain randomization** (masses, frictions, object dimensions, gravity, actuator dynamics, visual appearance), a **recurrent policy** performing the implicit system identification of Chapter 15, distributed PPO from Chapter 10, and enormous compute.
+
+<Callout variant="warning" title="The honest reading">
+It worked, and it sits at L2 — validated in diverse lab conditions, not deployed. The compute was measured in thousands of CPU-years. The policy handled one object class in a controlled setting, with a motion-capture-instrumented environment.
+
+The right conclusion is not that dexterity is solved, nor that the approach failed. It is that **randomization and scale can substitute for simulation accuracy, at a price** — and the price is high enough that the interesting question is what cheaper substitute exists. Chapter 16's demonstrations and Chapter 12's learned models are the two leading candidates, and neither has settled it.
+</Callout>
+
+## 20.5 Where the techniques land
+
+Assembling Part IV's map for manipulation:
+
+| Subproblem | What works | Chapter |
+|---|---|---|
+| **Grasp selection** | Learned scoring over discrete candidates | 9 (value methods) |
+| **Contact-rich insertion** | SAC with impedance action space | 11, 13, 17 |
+| **In-hand reorientation** | Extreme randomization + recurrent policy | 15, 19 |
+| **Novel-object picking** | Demonstrations + offline RL, fine-tuned | 16 |
+| **Deformable objects** | Largely open; demonstrations most promising | 16, 21 |
+
+The pattern in Tang's tables is consistent: manipulation successes lean on **expert data** far more than locomotion successes, which lean on **simulation**. That is exactly what the four criteria of §20.1 predict — when simulation is untrustworthy and reward design is hard, human demonstrations supply both the data and the specification.
+
+<RustSnippet title="rl-envs/src/manipulation/impedance.rs" caption="An impedance action-space wrapper. The policy outputs a target and a stiffness; the wrapper turns that into joint torques through the Jacobian, so compliance is structural rather than learned.">
+
+```rust
+use nalgebra::{Vector3, Matrix3};
+
+/// The policy's action: where to go, and how hard to insist on getting there.
+pub struct ImpedanceAction {
+    pub target_pos: Vector3<f64>,
+    /// Per-axis stiffness in the TASK frame — low along expected contact
+    /// directions lets the environment guide the part.
+    pub stiffness: Vector3<f64>,
+}
+
+pub struct ImpedanceWrapper {
+    kp_range: (f64, f64),
+    damping_ratio: f64,   // ζ; 1.0 = critically damped
+}
+
+impl ImpedanceWrapper {
+    /// Map a normalized policy output in [−1, 1] to a physical command.
+    pub fn decode(&self, raw: &[f64], current_pos: &Vector3<f64>) -> ImpedanceAction {
+        let delta = Vector3::new(raw[0], raw[1], raw[2]) * 0.05;   // ±5 cm
+        let stiffness = Vector3::from_iterator((3..6).map(|i| {
+            let t = (raw[i] + 1.0) / 2.0;                          // → [0, 1]
+            self.kp_range.0 * (self.kp_range.1 / self.kp_range.0).powf(t)  // log-spaced
+        }));
+        ImpedanceAction { target_pos: current_pos + delta, stiffness }
+    }
+
+    /// Cartesian impedance law, mapped to joint torques by Jᵀ (Chapter 13).
+    /// Damping is derived from stiffness so the system stays critically damped
+    /// as the policy varies Kp — otherwise a stiffness change causes ringing.
+    pub fn to_joint_torques(
+        &self,
+        action: &ImpedanceAction,
+        x: &Vector3<f64>,
+        xdot: &Vector3<f64>,
+        jacobian: &nalgebra::Matrix3<f64>,
+        mass_est: f64,
+    ) -> Vector3<f64> {
+        let kp = Matrix3::from_diagonal(&action.stiffness);
+        let kd = Matrix3::from_diagonal(&action.stiffness.map(|k| {
+            2.0 * self.damping_ratio * (k * mass_est).sqrt()
+        }));
+
+        let force = kp * (action.target_pos - x) - kd * xdot;
+        jacobian.transpose() * force
+    }
+}
+```
+
+</RustSnippet>
+
+## 20.6 Reporting results honestly
+
+Manipulation is where evaluation goes wrong most often, so Chapter 14's methodology deserves restating with the specifics.
+
+**State the object set.** "90% success" over five known objects in fixed poses is a different claim from 90% over fifty novel objects in clutter. Both may be worth publishing; conflating them is not.
+
+**Give an interval.** With 20 trials and 18 successes, the point estimate is 90%. The Wilson score interval — appropriate near the boundary where the normal approximation fails — is roughly [70%, 97%]. Reporting 90% alone claims precision the experiment did not buy.
+
+**Report the failures.** Which two failed, and how? A grasp that slipped is a different problem from one that never closed.
+
+**Report the human cost.** How many resets, and did a person perform them? For manipulation this is usually the binding constraint on the entire experiment, and omitting it hides the real cost of the method.
+
+## 20.7 Chapter bridge
+
+Part IV is complete. Locomotion won because its dynamics simulate and its rewards shape. Navigation is unsettled between learned and classical because each fails differently. Manipulation lags because contact, diversity and cost all cut against it — and where it succeeds, it does so by leaning on human data rather than simulation.
+
+Three competencies remain in Tang's taxonomy, and they share a property: **the environment contains other agents.** Chapter 21 takes on human–robot interaction, where the unmodelable part of the world is a person; multi-robot systems, where coordination is a Dec-POMDP with unpleasant complexity; and the frontier that has moved fastest since the survey was written — foundation models supplying the priors, goals and even rewards that this book has so far asked engineers to write by hand.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Force closure by hand',
+    difficulty: 2,
+    body: 'For two point contacts with friction coefficient μ on a circular object, derive the condition on their angular separation for force closure. Verify your answer against the widget by finding the boundary experimentally.',
+  },
+  {
+    layer: 'F',
+    title: 'Ferrari–Canny',
+    difficulty: 3,
+    body: 'Define the Ferrari–Canny metric precisely as the radius of the largest wrench ball contained in the grasp wrench space. Then explain why a grasp can have force closure and near-zero quality, and what that looks like physically.',
+  },
+  {
+    layer: 'F',
+    title: 'Contact-mode explosion',
+    difficulty: 2,
+    body: 'Count contact modes for a square peg entering a square hole with 8 potential contact points. Then explain why sampling-based planners struggle here in a way they do not for free-space motion planning.',
+  },
+  {
+    layer: 'F',
+    title: 'Why compliance searches',
+    difficulty: 3,
+    body: 'Model the insertion funnel: show that with a chamfered hole and low lateral stiffness, contact forces produce a lateral correction proportional to misalignment. Derive the maximum initial misalignment that self-corrects.',
+  },
+  {
+    layer: 'C',
+    title: 'Break the grasp',
+    difficulty: 1,
+    body: 'In the grasp widget, find the smallest friction coefficient at which two opposed contacts still achieve force closure. Then move them to the same side and confirm no friction value rescues the grasp.',
+  },
+  {
+    layer: 'C',
+    title: 'Does a third contact help?',
+    difficulty: 2,
+    body: 'Add a third contact and find a placement that maximizes quality. Compare against the best two-contact grasp at the same friction. Quantify what the extra finger bought.',
+  },
+  {
+    layer: 'P',
+    title: 'Grasp-selection DQN',
+    difficulty: 3,
+    body: 'Build a parallel-jaw gripper in rapier3d, generate candidate grasps on procedurally-varied objects, and train a DQN scorer. Compare against the analytic Ferrari–Canny ranking on objects where geometry is known — the disagreements are the interesting part.',
+  },
+  {
+    layer: 'P',
+    title: 'Impedance versus position',
+    difficulty: 3,
+    body: 'Train SAC on peg insertion twice: once with position actions, once with impedance actions. Hold everything else fixed. Report success rate, peak contact force and sample count, then report success with a Wilson interval as §20.6 requires.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§4.3 in full — grasping, pick-and-place, contact-rich manipulation, articulated and deformable objects, in-hand and non-prehensile manipulation, with the trend analysis behind §20.1.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: 'The manipulation lineage, including the peg-in-hole results that motivated compliant action spaces.',
+  },
+  {
+    key: 'ferrari1992',
+    authors: 'Ferrari, C. & Canny, J.',
+    year: 1992,
+    title: 'Planning optimal grasps',
+    venue: 'ICRA 1992',
+    note: 'The grasp quality metric of §20.2.',
+  },
+  {
+    key: 'mason2001',
+    authors: 'Mason, M. T.',
+    year: 2001,
+    title: 'Mechanics of Robotic Manipulation',
+    venue: 'MIT Press',
+    note: 'Contact mechanics, friction cones and force closure, developed properly.',
+  },
+  {
+    key: 'mahler2017',
+    authors: 'Mahler, J., Liang, J., Niyaz, S., Laskey, M., Doan, R., Liu, X., Ojea, J. A. & Goldberg, K.',
+    year: 2017,
+    title: 'Dex-Net 2.0: Deep Learning to Plan Robust Grasps with Synthetic Point Clouds and Analytic Grasp Metrics',
+    venue: 'RSS 2017',
+    note: 'Learned grasp scoring trained against analytic metrics — the bridge between §20.2’s two halves.',
+  },
+  {
+    key: 'akkaya2019',
+    authors: 'Akkaya, I. et al. (OpenAI)',
+    year: 2019,
+    title: 'Solving Rubik’s Cube with a Robot Hand',
+    venue: 'arXiv:1910.07113',
+    url: 'https://arxiv.org/abs/1910.07113',
+    note: 'The in-hand result of §20.4, including automatic domain randomization.',
+  },
+  {
+    key: 'levine2018',
+    authors: 'Levine, S., Pastor, P., Krizhevsky, A., Ibarz, J. & Quillen, D.',
+    year: 2018,
+    title: 'Learning hand-eye coordination for robotic grasping with deep learning and large-scale data collection',
+    venue: 'International Journal of Robotics Research 37(4–5)',
+    note: 'Large-scale real-world grasp learning — the data-collection alternative to simulation.',
+  },
+  {
+    key: 'martinmartin2019',
+    authors: 'Martín-Martín, R., Lee, M. A., Gardner, R., Savarese, S., Bohg, J. & Garg, A.',
+    year: 2019,
+    title: 'Variable Impedance Control in End-Effector Space: An Action Space for Reinforcement Learning in Contact-Rich Tasks',
+    venue: 'IROS 2019',
+    note: 'The impedance action space of §20.3, with the comparison against position control.',
+  },
+  {
+    key: 'kroemer2021',
+    authors: 'Kroemer, O., Niekum, S. & Konidaris, G.',
+    year: 2021,
+    title: 'A Review of Robot Learning for Manipulation: Challenges, Representations, and Algorithms',
+    venue: 'Journal of Machine Learning Research 22(30)',
+    note: 'The comprehensive manipulation-learning survey.',
+  },
+]} />

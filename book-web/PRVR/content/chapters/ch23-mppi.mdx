@@ -1,0 +1,1066 @@
+---
+title: "Stochastic MPC: MPPI and Friends"
+description: Control by sampling — a thousand imagined futures, scored and reweighted every frame. MPPI is the particle filter's twin, and this chapter proves it term by term.
+chapter: 23
+part: PART VI
+partTitle: Planning and Acting under Uncertainty
+difficulty: Advanced
+readingTime: 55 min
+quote: Control inputs drawn from the optimal distribution achieve a lower cost, in expectation, than any other control distribution.
+quoteAuthor: Grady Williams, Paul Drews, Brian Goldfain, James M. Rehg, and Evangelos A. Theodorou
+quoteSource: "Information Theoretic Model Predictive Control: Theory and Applications to Autonomous Driving (2017), §III-A"
+---
+
+import { RolloutStorm } from '@/components/ch/ch23/rollout-storm';
+import { DynamicWindowBench } from '@/components/ch/ch23/dynamic-window-bench';
+import { TwinVision } from '@/components/ch/ch23/twin-vision';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State the receding-horizon control problem and say exactly what the robot commits to each cycle',
+    'Derive the Dynamic Window Approach from acceleration limits and braking distance, and name the one thing its hypothesis class cannot express',
+    'Prove the free-energy bound and identify the optimal control distribution that attains it',
+    'Derive the MPPI weight from the likelihood ratio — including the control-cost cross term almost every tutorial drops',
+    'Read the temperature λ as the sharpness of an importance-sampling tilt, and the effective sample size as the gauge that tells you when it is wrong',
+    'Implement MPPI in Rust on the book’s own dynamics and cost traits, with rayon rollouts and a WASM build that stays deterministic',
+    'Say honestly where sampling beats gradients, and where MPPI is not a planner and must not be asked to be one',
+  ]}
+  prerequisites={[
+    'Importance sampling, self-normalized weights, and effective sample size (Chapter 8)',
+    'The velocity motion model and its noise-free integration (Chapter 9)',
+    'Euclidean signed distance fields over a map (Chapter 19)',
+    'A reference path to track, and why sampling-based planners produce one (Chapter 20)',
+    'Cost-to-go and terminal cost as decision-theoretic objects (Chapter 21)',
+  ]}
+  builds="Chapter 8's importance sampling, pointed at the future: rollouts are particles, cost is a negative log-likelihood, and the horizon shift is the prediction step."
+>
+[Chapter 20](/chapters/ch20-motion-planning) produced a path. [Chapter 21](/chapters/ch21-mdps) and
+[Chapter 22](/chapters/ch22-pomdps) produced policies on grids small enough to enumerate. None of
+them produce the thing a real robot actually needs, which is a pair of numbers — a linear and an
+angular velocity — every fifty milliseconds, in a room where somebody has moved a chair since the
+path was planned.
+
+The classical answer is a feedback controller that tracks the path. It works beautifully until the
+world stops matching the map, and then it drives into the chair with excellent tracking error. The
+modern answer is to stop separating planning from execution: re-solve a short-horizon optimal
+control problem every cycle, execute only its first command, and throw the rest away. That is
+*model predictive control*, and its dominant sampling-based form, MPPI, turns out to be something
+the reader has already proved correct. It is importance sampling over control sequences: the
+particle filter of [Chapter 8](/chapters/ch08-nonparametric-filters), aimed forward in time.
+</Overview>
+
+## The problem with a plan
+
+A path is a claim about a world that no longer exists. It was computed from a map, and the map was
+recorded before the chair moved, before somebody left a box in the corridor, before the person
+walking toward Rusty decided which side to pass on.
+
+A tracking controller cannot fix this, because it is not being asked to. Give it a path and it will
+minimize the distance to that path, which is precisely the wrong objective when the path goes
+through a chair. Re-running the global planner instead is honest but expensive: at twenty hertz,
+with a planner that takes a hundred milliseconds and returns a structurally different path each
+time, Rusty would spend his life twitching between homotopy classes.
+
+The receding-horizon answer is narrower and cheaper. Do not re-plan the route. Re-solve, every
+cycle, a *short* optimal control problem — two seconds, not two minutes — that already knows about
+the chair, and execute one step of its answer.
+
+<Deferred>
+  <RolloutStorm />
+</Deferred>
+
+Watch a few cycles before reading on. Three things are worth naming now; each one becomes a theorem
+later in the chapter.
+
+**Nothing here is optimized in the usual sense.** There is no gradient, no line search, no
+convexity. Two hundred perturbed plans are simulated forward, each is assigned a number, and the
+next plan is a weighted average. That is the entire algorithm, and it is the reason the obstacle
+cost is allowed to be a hard `if` statement over an occupancy grid.
+
+**The purple plan is not one of the orange rollouts.** It is their weighted mean, and it is visibly
+smoother than any of them — the signature of an *expectation* rather than a selection. When the
+temperature is pushed toward zero this stops being true, and the plan snaps onto whichever single
+rollout got lucky. Watch the effective sample size collapse toward 1 when you do it.
+
+**The storm re-centres itself.** Each cycle inherits the previous plan, shifted forward one step.
+That warm start is why two hundred samples suffice where a cold start would need thousands, and it
+is the exact analogue of the particle filter's prediction step.
+
+<KeyIdea title="The one sentence version">
+There is a distribution over control sequences whose samples are optimal in expectation; you cannot
+sample from it, so you sample Gaussian perturbations of your current plan, weight them by
+exp(−cost/λ), and take the weighted mean. That is MPPI, and it is self-normalized importance
+sampling.
+</KeyIdea>
+
+## Building intuition: search velocities, not paths
+
+Before the path-integral machinery, the classical baseline — and it is a good one, still shipping in
+production stacks thirty years later. Fox, Burgard and Thrun's **Dynamic Window Approach** starts
+from a physical observation: a differential-drive robot cannot execute an arbitrary curve. Over one
+short control period it executes an arc, and which arcs are available is decided by its acceleration
+limits. So do not search over paths. Search over the *velocities* reachable in the next period.
+
+That search space is two-dimensional and tiny, which is why DWA ran on 1997 hardware at speeds up to
+95 cm/s. Its structure is worth internalizing because MPPI keeps one half of it and replaces the
+other:
+
+- **Keep:** commands are the decision variable, and the reachable set is a box set by acceleration
+  limits.
+- **Replace:** each candidate is scored along *one constant-curvature arc*, evaluated at its
+  endpoint. A hypothesis class of single arcs cannot express "slow, drift left, then turn hard
+  right" — not badly, but *at all*.
+
+<Deferred>
+  <DynamicWindowBench />
+</Deferred>
+
+The velocity plane on the left is where both controllers actually live, and putting them in the same
+axes is the fastest way to see what changed. DWA lays a grid over the reachable box and asks one
+question per cell: *if I hold this command, where do I end up and what do I hit?* MPPI scatters two
+hundred samples over the same plane, but each dot is the **head of a whole sequence**, and its weight
+depends on what the other twenty-four steps of that sequence cost.
+
+Two honest observations from the bench, both of which the numbers later in this chapter pin down.
+
+First, DWA threads the chairs down the centreline with **five centimetres** to spare, and no setting
+of its clearance weight changes that. The reason is worth the paragraph: Fox et al.'s clearance term
+is $\mathrm{dist}(v,\omega)$, the distance travelled before the arc *touches* something. A gap you
+fit through at all returns the same value as a gap with a metre to spare, so the term is saturated
+and its weight is inert. Swap in the modern repair — score the *minimum margin* anywhere along the
+arc, which the widget lets you toggle — and the weight bites, but what it buys is paralysis: above
+$w_c \approx 0.1$ Rusty stops 0.7 m short of the chair and never moves again. There is no setting in
+between, because the maneuver that keeps margin *and* makes progress is an S-curve, and an S-curve is
+not one arc.
+
+Second, in the counter pocket **both** controllers stall. A local controller is local. Getting out of
+that pocket is [Chapter 20](/chapters/ch20-motion-planning)'s job, and no temperature setting
+substitutes for it.
+
+## The mathematics
+
+### Setting
+
+<NotationTable
+  rows={[
+    { sym: 'H,\\ \\Delta t', meaning: 'Horizon in steps, and the control period. The plan spans H·Δt seconds; the robot commits to Δt of it.' },
+    { sym: 'U = (u_0, \\dots, u_{H-1})', meaning: 'The control sequence being optimized. For Rusty, u_k = (v_k, ω_k)ᵀ.' },
+    { sym: 'V = (v_0, \\dots, v_{H-1})', meaning: 'The sequence actually applied: the commanded mean plus injected noise, v_k = u_k + ε_k.' },
+    { sym: 'x_{k+1} = f(x_k, u_k)', meaning: 'Rollout dynamics — the noise-free Chapter 9 velocity model, integrated exactly.' },
+    { sym: 'S(V) = \\phi(x_H) + \\sum_k c(x_k, u_k)', meaning: 'Trajectory cost of one rollout: stage costs plus a terminal cost.' },
+    { sym: '\\Sigma_u', meaning: 'Covariance of the control perturbation. Its inverse appears in the weight, which is where the control cost comes from.' },
+    { sym: '\\lambda', meaning: 'Temperature. The chapter’s one headline parameter: how sharply exp(−S/λ) prefers cheap rollouts.' },
+    { sym: '\\alpha,\\ \\gamma = \\lambda(1-\\alpha)', meaning: 'Which base distribution defines the control cost, and the resulting coefficient of the cross term.' },
+    { sym: 'w^{(i)},\\ \\eta', meaning: 'Rollout weight and its normalizer — the same η the Bayes filter has used since Chapter 5.' },
+    { sym: '\\mathcal{F}(S)', meaning: 'Free energy of the control system, −λ log E_p[exp(−S/λ)].' },
+  ]}
+/>
+
+**Receding-horizon control** is the following loop, and its most consequential line is the last one.
+
+<Algorithm
+  name="receding_horizon(bel(x_t), U)"
+  inputs="the current belief, the plan carried over from last cycle"
+  outputs="one command, and the plan for next cycle"
+  complexity="one horizon optimization per control period"
+>
+1. $x_0 \leftarrow \operatorname{argmax}_x \bel(x_t)$ &nbsp;&nbsp; *(or the mean; see the honesty note below)*
+2. $U^\star \leftarrow \operatorname{argmin}_U\; \E\big[\phi(x_H) + \sum_{k} c(x_k, u_k)\big]$ subject to $x_{k+1} = f(x_k, u_k)$
+3. execute $u^\star_0$ for $\Delta t$
+4. $U \leftarrow \text{shift}(U^\star)$ &nbsp;&nbsp; *(drop $u^\star_0$, slide, repeat the tail)*
+5. discard everything else and go to 1
+</Algorithm>
+
+Line 5 is the trick. The controller solves a problem it does not intend to finish, which buys two
+things: the optimization only has to be *locally* right, and every cycle gets a fresh measurement.
+Feedback enters not through a gain matrix but through re-solving.
+
+<Callout type="warn">
+Line 1 collapses a belief into a point, and the whole of Parts II–IV was about why that is a lie.
+Doing it properly means optimizing over belief trajectories — belief-space MPC, of which
+[Chapter 22](/chapters/ch22-pomdps) is the exact-solution end. The cheap partial repair used in
+practice, and in this chapter's Rust, is to inflate the robot's footprint by the localization
+covariance: replace the body radius $r$ with $r + \kappa \sqrt{\lambda_{\max}(\Sigma_t)}$, where
+$\Sigma_t$ is the MCL position covariance from [Chapter 12](/chapters/ch12-localization-global) and
+$\kappa \approx 2$. A robot that does not know where it is drives as though it were bigger.
+</Callout>
+
+### DWA, formally
+
+The dynamic window is the intersection of three sets. The actuator envelope
+$V_s = [v_{\min}, v_{\max}] \times [-\omega_{\max}, \omega_{\max}]$; the *reachable* set
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{V_d} = \big[v - a_{\max}\Delta t,\; v + a_{\max}\Delta t\big] \times
+             \big[\omega - \dot\omega_{\max}\Delta t,\; \omega + \dot\omega_{\max}\Delta t\big]
+$$
+</LinkedMath>
+
+around the current command; and the *admissible* set $V_a$, the commands from which the robot can
+still stop before whatever its arc runs into.
+
+<Derivation title="Where the admissibility inequality comes from" result="|v| \le \sqrt{2\, \mathrm{dist}(v,\omega)\, a_{\max}}">
+Let $\mathrm{dist}(v, \omega)$ be the arclength travelled along the arc of curvature $\omega / v$
+before the robot's body first touches an obstacle. Braking at $a_{\max}$ from speed $v$ takes
+$t_b = |v| / a_{\max}$ and covers
+
+$$
+d_b = |v| t_b - \tfrac{1}{2} a_{\max} t_b^2 = \frac{v^2}{2 a_{\max}}.
+$$
+
+Requiring $d_b \le \mathrm{dist}(v, \omega)$ gives the inequality above, which is Fox et al.'s
+admissibility condition. The same argument on $\omega$ with the angular limit $\dot\omega_{\max}$ bounds the rotation.
+
+Two things are worth noticing. The first is that $\mathrm{dist}$ must be measured along the arc, not
+as a straight line — a fast arc that curves away from a wall is safe, and a slow one that curves into
+it is not. The second is that this condition is *exact only if the robot keeps the command*. It is a
+one-step guarantee, re-derived every cycle, which is why DWA at speed depends on a fast control loop
+rather than on a long horizon.
+</Derivation>
+
+<Algorithm
+  name="dwa_plan(x, x_goal, u_prev, esdf)"
+  inputs="pose, goal, previous command, an obstacle distance field"
+  outputs="the command (v, ω) maximizing the objective over the admissible window"
+  complexity="O(n_v · n_ω · H) — 651 arcs × 40 integration steps in this chapter's lab"
+>
+1. $V_d \leftarrow$ reachable box around $u_{prev}$ from the acceleration limits
+2. for all $(v, \omega)$ on a grid over $V_s \cap V_d$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;integrate the arc; $\mathrm{dist} \leftarrow$ arclength to first contact
+4. &nbsp;&nbsp;&nbsp;&nbsp;if $|v| > \sqrt{2\,\mathrm{dist}\,a_{\max}}$ then mark inadmissible; continue
+5. &nbsp;&nbsp;&nbsp;&nbsp;$G(v,\omega) \leftarrow \sigma\big(w_h \cdot \mathrm{heading} + w_c \cdot \mathrm{clearance} + w_v \cdot \mathrm{velocity}\big)$
+6. endfor
+7. return $\operatorname{argmax} G$ over the admissible candidates
+</Algorithm>
+
+$\sigma$ is normalization across the window: each term is scaled to $[0,1]$ before the weighted sum,
+so that metres and radians cannot decide the outcome by their units. (Fox et al. call the three
+weights $\alpha, \beta, \gamma$; this chapter needs those letters shortly for the temperature
+family, so they are $w_h, w_c, w_v$ here.) Everything else is a design choice, and every one of those
+choices is a place where a real deployment spends a week.
+
+### The optimal distribution
+
+Now the modern half. Fix a **base distribution** $p(V)$ over control sequences — think of it as a
+prior over what the robot might do — and define the **free energy** of the control system,
+
+$$
+\mathcal{F}(S) \;=\; -\lambda \log \E_{p}\!\left[\exp\!\left(-\tfrac{1}{\lambda} S(V)\right)\right].
+$$
+
+This object is the bridge between "minimize a cost" and "sample from a distribution", and the bridge
+is a single inequality.
+
+<Derivation title="The free-energy bound and the distribution that attains it" result="q^\star(V) = \tfrac{1}{\eta}\, p(V)\, e^{-S(V)/\lambda}">
+**Statement.** For every distribution $q$ absolutely continuous with respect to $p$,
+
+$$
+\mathcal{F}(S) \;\le\; \E_{q}[S(V)] \;+\; \lambda\, \KL(q \,\|\, p),
+$$
+
+with equality if and only if $q = q^\star$, where $q^\star(V) = \frac{1}{\eta} p(V) e^{-S(V)/\lambda}$
+and $\eta = \E_p[e^{-S/\lambda}]$.
+
+**Step 1 — insert the proposal.** Multiply and divide inside the expectation by $q$, which is the
+importance-sampling identity and nothing more:
+
+$$
+\mathcal{F}(S) = -\lambda \log \E_{q}\!\left[\frac{p(V)}{q(V)}\, e^{-S(V)/\lambda}\right].
+$$
+
+**Step 2 — Jensen.** The logarithm is concave, so $\log \E_q[Z] \ge \E_q[\log Z]$. Multiplying by
+$-\lambda < 0$ flips it:
+
+$$
+\mathcal{F}(S) \le -\lambda\, \E_q\!\left[\log \frac{p(V)}{q(V)} - \frac{S(V)}{\lambda}\right]
+= \E_q[S(V)] + \lambda\, \E_q\!\left[\log \frac{q(V)}{p(V)}\right].
+$$
+
+**Step 3 — name the second term.** That expectation is exactly $\KL(q \| p)$, giving the bound. Read
+it as an optimal control objective: *expected cost, plus a temperature times the price of deviating
+from the base behaviour.* The KL term is the control cost, and it arrived without being postulated.
+
+**Step 4 — equality.** Jensen is tight exactly when its argument is $q$-almost-surely constant:
+$\frac{p(V)}{q(V)} e^{-S(V)/\lambda} = c$. Solving for $q$ gives $q(V) \propto p(V) e^{-S(V)/\lambda}$,
+which normalizes to $q^\star$. Substituting $q^\star$ back into the right-hand side recovers
+$-\lambda \log \eta = \mathcal{F}(S)$, so the bound is attained. $\blacksquare$
+
+**Two readings of the same formula.** Statistically, $q^\star$ is a Boltzmann distribution: a prior
+tilted by an exponentiated cost. Bayesianly, it is a posterior — with the prior $p(V)$ and the
+"likelihood" $e^{-S(V)/\lambda}$, so that **a cost is a negative log-likelihood and $\lambda$ is the
+noise level you are willing to assume about your own objective.** Every posterior in this book has
+had that shape; this one just happens to be over the future.
+
+*Convention note.* Williams et al. define $F = \log \E_P[e^{-S/\lambda}]$ and call $\lambda$ the
+*inverse* temperature, so their bound reads $-\lambda F \le \E_Q[S] + \lambda \KL(Q\|P)$. The
+statement is identical; this book absorbs the $-\lambda$ into $\mathcal{F}$ and calls $\lambda$ the
+temperature, because larger $\lambda$ flattens the tilt exactly as temperature flattens a Boltzmann
+distribution.
+</Derivation>
+
+### The twin theorem: MPPI is importance sampling
+
+We now have a target, $q^\star$, and no way to sample from it — the familiar predicament of
+[Chapter 8](/chapters/ch08-nonparametric-filters), one dimension per horizon step deeper. The
+familiar remedy applies.
+
+<Derivation title="From q* to the MPPI update, cross term and all" result="w^{(i)} \propto \exp\big(-\tfrac{1}{\lambda}(\tilde S^{(i)} - \rho)\big)">
+**Step 1 — what we actually want.** Since $q^\star$ is a distribution and the robot must emit a
+single sequence, project: choose the Gaussian $q(\cdot \mid U, \Sigma_u)$ closest to $q^\star$ in
+KL. Expanding $\KL(q^\star \| q(\cdot|U,\Sigma_u))$ and dropping the terms that do not involve $U$
+leaves a quadratic minimization whose solution is moment matching,
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{u_k^\star} = \E_{q^\star}[v_k], \qquad k = 0, \dots, H-1.
+$$
+</LinkedMath>
+
+The optimal open-loop plan is the **mean of the optimal control distribution**. Not its mode, not
+its best sample.
+
+**Step 2 — a proposal we can sample.** Let $\hat U$ be the plan we are carrying (the shifted result
+of last cycle) and draw $V^{(i)} = \hat U + \epsilon^{(i)}$, $\epsilon^{(i)}_k \sim \Normal(0, \Sigma_u)$.
+Self-normalized importance sampling gives
+
+$$
+\E_{q^\star}[v_k] = \E_{q(\cdot|\hat U)}\!\big[w(V)\, v_k\big],
+\qquad
+w(V) = \frac{q^\star(V)}{q(V \mid \hat U, \Sigma_u)}.
+$$
+
+**Step 3 — expand the ratio.** Split it through the base distribution:
+
+$$
+w(V) \;=\; \frac{1}{\eta}\, e^{-S(V)/\lambda}\, \frac{p(V)}{q(V \mid \hat U, \Sigma_u)} .
+$$
+
+Take the base to be Gaussian about some nominal $\tilde U$, i.e. $p = q(\cdot \mid \tilde U, \Sigma_u)$.
+Then the log of that last ratio is a difference of two quadratics, and the quadratic terms in $v$
+cancel:
+
+$$
+\log \frac{p(V)}{q(V|\hat U)}
+= -\tfrac{1}{2}\sum_k \Big[(v_k - \tilde u_k)\T \Sigma_u^{-1}(v_k - \tilde u_k) - (v_k - \hat u_k)\T \Sigma_u^{-1}(v_k - \hat u_k)\Big]
+= \text{const} - \sum_k (\hat u_k - \tilde u_k)\T \Sigma_u^{-1} v_k .
+$$
+
+**Step 4 — the cross term.** Substitute $v_k = \hat u_k + \epsilon_k$ and drop everything that does
+not depend on the sample (self-normalization kills it). Writing the standard family
+$\tilde U = \alpha \hat U$ with $\alpha \in [0,1]$, so that $\hat u_k - \tilde u_k = (1-\alpha)\hat u_k$,
+and setting $\gamma = \lambda(1-\alpha)$:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{\tilde S^{(i)}} \;=\;
+\underbrace{S(V^{(i)})}_{\text{state cost}} \;+\;
+\gamma \sum_{k=0}^{H-1} \htmlClass{term-prior}{\hat u_k}\T \Sigma_u^{-1} \htmlClass{term-prediction}{\epsilon_k^{(i)}} .
+$$
+</LinkedMath>
+
+This second term is the one every quick tutorial drops. It is not decoration: it *is* the quadratic
+control cost, arriving through the likelihood ratio rather than by decree. Choosing $\alpha$ chooses
+what "control cost" means.
+
+- $\alpha = 0$: the base is the **uncontrolled** system, $\tilde U \equiv 0$, so $\gamma = \lambda$
+  and the objective charges $\tfrac{\lambda}{2}\sum_k u_k\T\Sigma_u^{-1}u_k$ — genuine control
+  effort. A robot under this base is reluctant to move at all unless the state cost pays for it.
+- $\alpha = 1$: the base **is the current plan**, so $\gamma = 0$ and the cross term vanishes. Effort
+  is free; what the KL term now charges is $\tfrac{1}{2}\sum_k (u_k - \hat u_k)\T \Sigma_u^{-1}(u_k - \hat u_k)$,
+  the *deviation from last cycle's plan*. This is a trust region, it is why $\alpha = 1$ implementations
+  produce smooth motion, and it is the setting this chapter's lab uses.
+
+**Step 5 — weights and the update.** Subtract $\rho = \min_i \tilde S^{(i)}$ before exponentiating.
+Self-normalized weights are invariant to any constant shift of the cost, so this changes nothing
+mathematically and everything numerically: it guarantees the largest exponent is exactly $e^0 = 1$.
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{w^{(i)}} = \frac{1}{\eta}\exp\!\Big(-\tfrac{1}{\lambda}\big(\tilde S^{(i)} - \rho\big)\Big),
+\qquad
+\eta = \sum_{j} \exp\!\Big(-\tfrac{1}{\lambda}\big(\tilde S^{(j)} - \rho\big)\Big),
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{u_k} \;\leftarrow\; \htmlClass{term-prior}{\hat u_k} \;+\; \sum_{i=1}^{K} \htmlClass{term-posterior}{w^{(i)}}\, \htmlClass{term-prediction}{\epsilon_k^{(i)}} .
+$$
+</LinkedMath>
+
+That is the whole algorithm, and it is the self-normalized importance-sampling estimator of
+$\E_{q^\star}[v_k]$ — biased at finite $K$, consistent as $K \to \infty$, exactly like every particle
+filter estimate in Part II. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="MPPI(x_0, U, K, λ, Σ_u)"
+  inputs="current state, the plan carried over, sample count, temperature, perturbation covariance"
+  outputs="the command to execute, and the improved plan"
+  complexity="O(K · H) dynamics and cost evaluations — embarrassingly parallel over K"
+>
+1. for $i = 1$ to $K$ do &nbsp;&nbsp; *(in parallel)*
+2. &nbsp;&nbsp;&nbsp;&nbsp;$x \leftarrow x_0$; &nbsp; $\tilde S^{(i)} \leftarrow 0$
+3. &nbsp;&nbsp;&nbsp;&nbsp;for $k = 0$ to $H-1$ do
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\epsilon_k^{(i)} \sim \Normal(0, \Sigma_u)$; &nbsp; $v_k \leftarrow g(u_k + \epsilon_k^{(i)})$
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$x \leftarrow f(x, v_k)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\tilde S^{(i)} \leftarrow \tilde S^{(i)} + c(x, v_k) + \gamma\, u_k\T \Sigma_u^{-1} \epsilon_k^{(i)}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\tilde S^{(i)} \leftarrow \tilde S^{(i)} + \phi(x)$
+9. endfor
+10. $w \leftarrow \texttt{ComputeWeights}(\tilde S^{(1{:}K)}, \lambda)$
+11. for $k = 0$ to $H-1$ do &nbsp;&nbsp; $u_k \leftarrow u_k + \sum_i w^{(i)} \epsilon_k^{(i)}$
+12. $U \leftarrow \texttt{SavitzkyGolay}(U)$
+13. execute $u_0$; &nbsp; shift $U$ &nbsp; *(and report $\mathrm{ESS} = 1/\sum_i (w^{(i)})^2$)*
+</Algorithm>
+
+<Algorithm
+  name="ComputeWeights(S̃_1:K, λ)"
+  inputs="the K tilted rollout costs and the temperature"
+  outputs="self-normalized weights"
+  complexity="O(K)"
+>
+1. $\rho \leftarrow \min_i \tilde S^{(i)}$
+2. $\eta \leftarrow \sum_{i} \exp\big(-(\tilde S^{(i)} - \rho)/\lambda\big)$
+3. for $i = 1$ to $K$ do &nbsp;&nbsp; $w^{(i)} \leftarrow \tfrac{1}{\eta}\exp\big(-(\tilde S^{(i)} - \rho)/\lambda\big)$
+4. return $w$
+</Algorithm>
+
+Set the two algorithms side by side and there is nothing left to argue about.
+
+| sub-step | particle filter (Ch. 8) | MPPI |
+|---|---|---|
+| hypothesis | a state $x^{(i)}$ | a control sequence $U^{(i)}$ |
+| proposal | motion model from the previous belief | Gaussian around the previous plan |
+| weight | $w^{(i)} \propto p(z_t \mid x^{(i)})$ | $w^{(i)} \propto e^{-\tilde S^{(i)}/\lambda}$ |
+| estimate | $\hat x = \sum_i w^{(i)} x^{(i)}$ | $U \leftarrow \hat U + \sum_i w^{(i)} \epsilon^{(i)}$ |
+| renewal | resample, then predict forward | execute $u_0$, shift, re-centre |
+| failure | particle deprivation: no sample near the truth | no rollout near the good maneuver |
+| gauge | $\mathrm{ESS} = 1/\sum_i (w^{(i)})^2$ | the same formula, unchanged |
+
+<Deferred>
+  <TwinVision />
+</Deferred>
+
+The correspondence is not an analogy, and the widget is not a metaphor: both panels run library code
+that the rest of this book already uses. The left one calls `lowVarianceResample` from
+`lib/filters/pf.ts`; the right one calls the same `Mppi` class that drives the corridor at the top of
+this chapter, restricted to one dimension.
+
+One asymmetry is real and worth stating. The particle filter's weights are handed to it — the
+likelihood is physics, and there is no knob. MPPI's weights come from a cost *you invented*, so
+$\lambda$ is a free parameter: it says how much you believe your own objective. That freedom is the
+subject of the next section.
+
+### Temperature, and the two limits
+
+<Derivation title="The λ → 0 and λ → ∞ limits" result="best-of-K, and the unweighted mean">
+Order the sampled costs so that $\tilde S^{(1)} < \tilde S^{(2)} \le \dots$, and assume the minimum is
+unique. Then
+
+$$
+w^{(i)} = \frac{e^{-(\tilde S^{(i)} - \tilde S^{(1)})/\lambda}}{\sum_j e^{-(\tilde S^{(j)} - \tilde S^{(1)})/\lambda}} .
+$$
+
+As $\lambda \to 0^+$ every exponent with $\tilde S^{(i)} > \tilde S^{(1)}$ has a numerator going to
+zero, so $w^{(1)} \to 1$ and the update becomes $u_k \leftarrow \hat u_k + \epsilon_k^{(1)}$: the
+single cheapest rollout wins outright, and $\mathrm{ESS} \to 1$. MPPI degenerates into random search
+with $K$ candidates, which is why the executed command starts jittering — a different sample wins
+every cycle, and the difference between the winner and the runner-up is Monte-Carlo noise.
+
+As $\lambda \to \infty$ every exponent goes to $0$ and $w^{(i)} \to 1/K$, so
+$\mathrm{ESS} \to K$ and the update is $u_k \leftarrow \hat u_k + \frac1K\sum_i \epsilon_k^{(i)}$.
+The perturbations are zero-mean, so the correction is $O(\sigma/\sqrt{K})$ — noise, not signal. The
+plan stops responding to the cost at all.
+
+Neither limit is a failure of the derivation: they are the correct behaviour of an exponential tilt
+at the two ends of its range. The engineering question is where in between to sit, and the ESS is
+the instrument that answers it.
+</Derivation>
+
+Here is that trade-off measured, on the corridor run of w23.1 (seed 23, $K = 200$, $H = 25$,
+$\Delta t = 0.1$ s, $\alpha = 1$). "Jitter" is the mean $|\Delta u|$ between consecutive executed
+commands — the number that shows up on screen as twitching.
+
+| $\lambda$ | ESS (of 200) | time to goal | min clearance | jitter |
+|---|---|---|---|---|
+| 0.5 | 1.5 | 17.9 s | 0.16 m | 0.583 |
+| 2 | 6.1 | 18.8 s | 0.21 m | 0.416 |
+| **8** | **26.0** | **15.2 s** | **0.23 m** | **0.156** |
+| 30 | 108.6 | 18.9 s | 0.21 m | 0.103 |
+| 120 | 187.8 | 34.1 s | 0.11 m | 0.080 |
+
+Read the extremes. At $\lambda = 0.5$ the controller is fast to react and horrible to ride, and its
+clearance suffers because a single lucky rollout is allowed to steer. At $\lambda = 120$ it is
+serene, twice as slow, and cuts its margin in half — the weights are nearly uniform, so the barrier
+cost barely moves the plan. The useful band is the one where the ESS sits somewhere
+around a tenth of $K$: enough samples voting to average out the noise, few enough that the cheap ones
+dominate.
+
+<Callout type="info">
+The same gauge, the same reading, the same fix as [Chapter 8](/chapters/ch08-nonparametric-filters):
+if the ESS is pinned near 1, your proposal does not cover the target. In a filter you fix it with a
+better proposal; here you fix it by raising $\lambda$, by widening $\Sigma_u$, or — most often — by
+smoothing the cost so that the rollouts are not all equally catastrophic.
+</Callout>
+
+### Constraints, and how sampling gets away with them
+
+**Input limits.** Do not reject samples and do not solve a QP. Push the clamp into the dynamics:
+$x_{k+1} = f(x_k, g(v_k))$ with $g$ the saturation. The sampler stays a plain Gaussian, and the
+non-smooth $g$ costs nothing because the update law never differentiates $f$. Clamp *before*
+integrating, so that the trajectory you score is one the actuators would actually produce.
+
+**Obstacles.** Two options, and the difference is measured in ESS. An indicator cost
+$c_{obs} = M \cdot \mathbb{1}[\text{in collision}]$ is legal — no gradient is required — but in a
+tight corridor it makes most rollouts equally infinite, the weights collapse onto whichever sample
+squeaked through, and the ESS falls to 1. The smooth barrier over the signed distance field of
+[Chapter 19](/chapters/ch19-map-representations),
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{c_{obs}(x)} = w_o \exp\!\left(-\frac{d_{\text{ESDF}}(x) - r}{\sigma_o}\right),
+$$
+</LinkedMath>
+
+grades the rollouts instead of censoring them, which keeps the importance weights informative. This
+chapter's lab uses the barrier *plus* a flat 900 for actual collision: graded where grading helps,
+brutal where it must be.
+
+**Chance constraints.** Inflating the footprint by the belief covariance, as in the callout above, is
+the cheap version. The honest version optimizes over belief trajectories and is a research field.
+
+## Implementation in Rust
+
+The design is two traits and one struct. Making `Dynamics` and `CostFn` traits rather than closures
+is what leaves the socket open for the gradient methods at the end of this chapter: iLQR needs the
+same simulator, plus derivatives.
+
+```rust title="crates/ch23_mppi/src/dynamics.rs"
+use nalgebra::SVector;
+
+/// A simulator. Note what is *not* required: no Jacobians, no differentiability,
+/// no continuity. This trait is the entire interface MPPI needs from a model.
+pub trait Dynamics<const NX: usize, const NU: usize>: Sync {
+    fn step(&self, x: &SVector<f64, NX>, u: &SVector<f64, NU>, dt: f64) -> SVector<f64, NX>;
+
+    /// Input constraints, pushed into the dynamics (Williams et al. §III-D3).
+    /// Clamp before integrating: a plan scored on commands the motors would
+    /// refuse is a plan scored on a lie.
+    fn clamp(&self, u: SVector<f64, NU>) -> SVector<f64, NU>;
+}
+
+/// Rusty: unicycle kinematics, the Chapter 9 velocity model with the noise off.
+pub struct DiffDrive {
+    pub v_lim: (f64, f64),
+    pub w_max: f64,
+    pub a_max: f64,
+}
+
+impl Dynamics<3, 2> for DiffDrive {
+    fn step(&self, x: &SVector<f64, 3>, u: &SVector<f64, 2>, dt: f64) -> SVector<f64, 3> {
+        let (v, w) = (u[0], u[1]);
+        let th = x[2];
+        // The exact arc solution (Thrun et al., eq. 5.9). As ω → 0 the radius
+        // blows up while the arc flattens; rather than trust that cancellation
+        // numerically we switch to the straight-line limit, exactly as the
+        // TypeScript port in `lib/sim/world.ts` does.
+        if w.abs() < 1e-9 {
+            SVector::<f64, 3>::new(x[0] + v * th.cos() * dt, x[1] + v * th.sin() * dt, th)
+        } else {
+            let r = v / w;
+            let nt = th + w * dt;
+            SVector::<f64, 3>::new(
+                x[0] - r * th.sin() + r * nt.sin(),
+                x[1] + r * th.cos() - r * nt.cos(),
+                wrap_pi(nt),
+            )
+        }
+    }
+
+    fn clamp(&self, u: SVector<f64, 2>) -> SVector<f64, 2> {
+        SVector::<f64, 2>::new(
+            u[0].clamp(self.v_lim.0, self.v_lim.1),
+            u[1].clamp(-self.w_max, self.w_max),
+        )
+    }
+}
+
+pub trait CostFn<const NX: usize, const NU: usize>: Sync {
+    fn stage(&self, x: &SVector<f64, NX>, u: &SVector<f64, NU>, k: usize) -> f64;
+    fn terminal(&self, x: &SVector<f64, NX>) -> f64;
+}
+
+/// Track Chapter 20's path, keep clear of Chapter 19's distance field.
+pub struct TrackAndClear<'a> {
+    pub path: &'a [SVector<f64, 2>],
+    pub esdf: &'a ch19_maps::Esdf2,
+    pub obstacles: &'a [Circle],
+    pub robot_radius: f64,
+    pub w_track: f64,
+    pub w_progress: f64,
+    pub w_obs: f64,
+    pub sigma_o: f64,
+    pub collision: f64,
+}
+
+impl CostFn<3, 2> for TrackAndClear<'_> {
+    fn stage(&self, x: &SVector<f64, 3>, u: &SVector<f64, 2>, _k: usize) -> f64 {
+        let (cross, s) = self.project(x[0], x[1]);
+        let clear = self.clearance(x[0], x[1]);
+        let obs = if clear <= 0.0 {
+            // A discontinuity. Legal here, fatal for a gradient method.
+            self.collision
+        } else {
+            self.w_obs * (-clear / self.sigma_o).exp()
+        };
+        self.w_track * cross * cross + obs - self.w_progress * s + 0.4 * u[1] * u[1]
+    }
+
+    fn terminal(&self, x: &SVector<f64, 3>) -> f64 {
+        let (_, s) = self.project(x[0], x[1]);
+        8.0 * (self.path_length() - s)
+    }
+}
+```
+
+The controller itself. The only subtle line is where the randomness happens: perturbations are drawn
+**serially** from a seeded generator and only then handed to `rayon`, because a parallel iterator
+that draws its own noise would make the run non-reproducible — and every simulation in this book is
+reproducible on purpose.
+
+```rust title="crates/ch23_mppi/src/mppi.rs" {41-49,58-66}
+use nalgebra::{SMatrix, SVector};
+use rand::{rngs::SmallRng, SeedableRng};
+use rand_distr::{Distribution, Normal};
+
+pub struct Mppi<D, C, const NX: usize, const NU: usize, const H: usize>
+where
+    D: Dynamics<NX, NU>,
+    C: CostFn<NX, NU>,
+{
+    pub lambda: f64,
+    pub sigma_u: SMatrix<f64, NU, NU>,
+    pub k_samples: usize,
+    /// γ = λ(1 − α). Zero means α = 1: the base distribution is the current
+    /// plan, so the KL term charges deviation from it rather than effort.
+    pub gamma: f64,
+    nominal: [SVector<f64, NU>; H],
+    dynamics: D,
+    cost: C,
+    rng: SmallRng,
+}
+
+pub struct MppiDiag<const NX: usize> {
+    pub weights: Vec<f64>,
+    pub ess: f64,
+    pub s_min: f64,
+    /// Every rollout, for the widget's storm. Native builds drop this.
+    pub rollouts: Vec<Vec<SVector<f64, NX>>>,
+}
+
+impl<D, C, const NX: usize, const NU: usize, const H: usize> Mppi<D, C, NX, NU, H>
+where
+    D: Dynamics<NX, NU>,
+    C: CostFn<NX, NU>,
+{
+    /// One control cycle. Returns the command to execute and the diagnostics
+    /// the widget renders; the improved plan is left in `self.nominal`.
+    pub fn plan(&mut self, x0: &SVector<f64, NX>, dt: f64) -> (SVector<f64, NU>, MppiDiag<NX>) {
+        let sigma_inv = self.sigma_u.try_inverse().expect("Σ_u must be positive definite");
+        let normals: Vec<Normal<f64>> = (0..NU)
+            .map(|i| Normal::new(0.0, self.sigma_u[(i, i)].sqrt()).unwrap())
+            .collect();
+
+        // Draw every perturbation up front, from the seeded generator. This is
+        // the price of determinism under rayon, and it is worth paying: the
+        // same seed must produce the same storm on 1 core and on 32.
+        let (k_samples, rng) = (self.k_samples, &mut self.rng);
+        let eps: Vec<[SVector<f64, NU>; H]> = (0..k_samples)
+            .map(|_| {
+                std::array::from_fn(|_| SVector::<f64, NU>::from_fn(|i, _| normals[i].sample(rng)))
+            })
+            .collect();
+
+        // Embarrassingly parallel: K independent simulations of H steps. On
+        // wasm32 there are no threads, so the same closure runs serially — and
+        // at K = 200, H = 25 that is 5 000 rollout steps a cycle, which this
+        // book's TypeScript port measures at about 1.6 ms on a laptop core.
+        #[cfg(not(target_arch = "wasm32"))]
+        let costs: Vec<f64> = { use rayon::prelude::*; eps.par_iter().map(|e| self.rollout(x0, e, &sigma_inv, dt)).collect() };
+        #[cfg(target_arch = "wasm32")]
+        let costs: Vec<f64> = eps.iter().map(|e| self.rollout(x0, e, &sigma_inv, dt)).collect();
+
+        let (weights, ess, s_min) = information_theoretic_weights(&costs, self.lambda);
+
+        // u_k ← u_k + Σ_i w_i ε_k^(i): the self-normalized IS estimate.
+        for k in 0..H {
+            let mut delta = SVector::<f64, NU>::zeros();
+            for (i, e) in eps.iter().enumerate() {
+                delta += weights[i] * e[k];
+            }
+            self.nominal[k] = self.dynamics.clamp(self.nominal[k] + delta);
+        }
+        savitzky_golay_inplace(&mut self.nominal); // §III-D4: kill the Monte-Carlo chatter
+
+        let u0 = self.nominal[0];
+        (u0, MppiDiag { weights, ess, s_min, rollouts: vec![] })
+    }
+
+    /// S̃ = S(V) + γ Σ_k u_kᵀ Σ_u⁻¹ ε_k — state cost plus the cross term.
+    fn rollout(
+        &self,
+        x0: &SVector<f64, NX>,
+        eps: &[SVector<f64, NU>; H],
+        sigma_inv: &SMatrix<f64, NU, NU>,
+        dt: f64,
+    ) -> f64 {
+        let mut x = *x0;
+        let mut s = 0.0;
+        for k in 0..H {
+            let u = self.dynamics.clamp(self.nominal[k] + eps[k]);
+            x = self.dynamics.step(&x, &u, dt);
+            s += self.cost.stage(&x, &u, k);
+            s += self.gamma * self.nominal[k].dot(&(sigma_inv * eps[k]));
+        }
+        s + self.cost.terminal(&x)
+    }
+
+    /// The receding step: drop the executed command, slide, repeat the tail.
+    /// The twin of the particle filter's prediction — the same belief, moved
+    /// one step into the future and re-centred there.
+    pub fn shift(&mut self) {
+        for k in 0..H - 1 {
+            self.nominal[k] = self.nominal[k + 1];
+        }
+    }
+}
+
+/// `ComputeWeights` — Williams et al., Algorithm 2.
+pub fn information_theoretic_weights(costs: &[f64], lambda: f64) -> (Vec<f64>, f64, f64) {
+    let rho = costs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mut w: Vec<f64> = costs.iter().map(|s| (-(s - rho) / lambda).exp()).collect();
+    let eta: f64 = w.iter().sum();
+    w.iter_mut().for_each(|x| *x /= eta);
+    let ess = 1.0 / w.iter().map(|x| x * x).sum::<f64>();
+    (w, ess, rho)
+}
+```
+
+### A worked example you can check by hand
+
+Take the smallest MPPI that is still MPPI: horizon $H = 1$, $K = 3$ rollouts, temperature
+$\lambda = 2$, perturbation $\sigma_v = 0.4$ m/s, and a nominal command $\hat u = 0.5$ m/s. Suppose
+the three perturbations come out $\epsilon = (+0.4,\, 0,\, -0.4)$ and the simulator returns state
+costs
+
+$$
+S = (4,\; 2,\; 6).
+$$
+
+**With $\alpha = 1$** (the base is the current plan, $\gamma = 0$, no cross term) the shift is
+$\rho = 2$, so the unnormalized weights are $e^{-1},\, e^{0},\, e^{-2} = 0.36788,\, 1,\, 0.13534$,
+summing to $\eta = 1.50321$. Normalizing:
+
+$$
+w = (0.24473,\; 0.66524,\; 0.09003),
+\qquad
+\mathrm{ESS} = \frac{1}{\sum_i w_i^2} = \frac{1}{0.51054} = 1.959 .
+$$
+
+Two of three rollouts are effectively voting. The update is the weighted mean of the perturbations,
+
+$$
+\Delta u = 0.4(0.24473) + 0 - 0.4(0.09003) = +0.06188,
+\qquad u \leftarrow 0.5619\ \text{m/s}.
+$$
+
+**Now switch to $\alpha = 0$**, the uncontrolled base, so $\gamma = \lambda = 2$ and
+$\Sigma_u^{-1} = 1/0.16 = 6.25$. Each rollout picks up
+$\gamma\, \hat u\, \Sigma_u^{-1} \epsilon = 2 (0.5)(6.25)\epsilon = 6.25\,\epsilon$:
+
+$$
+\tilde S = (6.5,\; 2,\; 3.5)
+\;\Longrightarrow\;
+w = (0.06680,\; 0.63381,\; 0.29939),
+\qquad
+\Delta u = -0.09303,
+\qquad u \leftarrow 0.4070\ \text{m/s} .
+$$
+
+The same three rollouts, the same state costs, and the update **changes sign**. Judged on state cost
+alone, going faster looked good; charged for the effort of going faster against a base distribution
+that would sit still, it no longer does. That is what the cross term is for, and why dropping it
+silently changes the problem you are solving.
+
+```rust title="crates/ch23_mppi/src/mppi.rs (tests)"
+#[test]
+fn worked_example_ch23_three_rollouts() {
+    // α = 1: no cross term. Weights are e^{-1}, e^{0}, e^{-2}, normalized.
+    let (w, ess, rho) = information_theoretic_weights(&[4.0, 2.0, 6.0], 2.0);
+    assert_relative_eq!(rho, 2.0, epsilon = 1e-12);
+    assert_relative_eq!(w[0], 0.2447284, epsilon = 1e-6);
+    assert_relative_eq!(w[1], 0.6652406, epsilon = 1e-6);
+    assert_relative_eq!(w[2], 0.0900310, epsilon = 1e-6);
+    assert_relative_eq!(ess, 1.958699, epsilon = 1e-5);
+
+    let eps = [0.4, 0.0, -0.4];
+    let du: f64 = w.iter().zip(eps).map(|(wi, e)| wi * e).sum();
+    assert_relative_eq!(du, 0.0618787, epsilon = 1e-6);
+
+    // α = 0: γ = λ = 2, Σ_u⁻¹ = 1/0.4² = 6.25, nominal u = 0.5.
+    let tilted: Vec<f64> = [4.0, 2.0, 6.0]
+        .iter()
+        .zip(eps)
+        .map(|(s, e)| s + 2.0 * 0.5 * 6.25 * e)
+        .collect();
+    assert_relative_eq!(tilted[0], 6.5, epsilon = 1e-12);
+
+    let (w2, _, _) = information_theoretic_weights(&tilted, 2.0);
+    let du2: f64 = w2.iter().zip(eps).map(|(wi, e)| wi * e).sum();
+    assert_relative_eq!(du2, -0.0930347, epsilon = 1e-6);
+    assert!(du2 < 0.0, "the control cost must reverse the update's sign");
+}
+
+/// Self-normalized weights cannot see a constant shift of the cost — which is
+/// exactly why subtracting ρ is safe.
+#[test]
+fn shift_invariance() {
+    let (a, _, _) = information_theoretic_weights(&[3.0, 7.0, 11.0, 2.0], 1.5);
+    let (b, _, _) = information_theoretic_weights(&[1003.0, 1007.0, 1011.0, 1002.0], 1.5);
+    for (x, y) in a.iter().zip(b) {
+        assert_relative_eq!(*x, y, epsilon = 1e-12);
+    }
+}
+```
+
+The TypeScript port runs the same assertions in `lib/control/__checks_ch23__.ts`, and the widgets on
+this page call the same functions the tests do. If the prose and the code ever disagree, the tests
+settle it.
+
+## Putting it together
+
+Here is the corridor run of w23.1, executed headless over twelve seeds: Rusty tracks a path planned
+before two chairs moved, with a third obstacle being pushed along the corridor while he drives.
+$K = 200$, $H = 25$ (2.5 s), $\Delta t = 0.1$ s, $\lambda = 8$,
+$\Sigma_u = \mathrm{diag}(0.22^2,\, 0.55^2)$, $\alpha = 1$.
+
+| metric | MPPI | DWA ($w_c = 0.2$) |
+|---|---|---|
+| runs that reached the goal | 12 of 12 seeds | 1 of 1 (deterministic) |
+| collisions | 0 | 0 |
+| worst clearance over all runs | 0.194 m | 0.050 m |
+| mean cross-track error | 0.051 m | 0.000 m |
+| time to goal (mean) | 16.8 s | 15.9 s |
+| command jitter, mean $\lvert \Delta u \rvert$ | 0.169 | 0.008 |
+| cost per cycle | 5 000 dynamics + cost evaluations | 651 arcs × 40 steps |
+
+Both controllers get there, and reading this table as "MPPI wins" would be the wrong lesson. DWA is
+*smoother* and marginally faster, because it always picks a single arc and the arc it picks is
+usually "straight ahead, fast". What it will not do is deviate laterally to buy margin — and, as the
+bench shows, cannot be made to by tuning. Its clearance term saturates the moment an arc is
+collision-free, and replacing it with a true minimum margin turns the controller timid rather than
+graceful: measured on this run, $w_c \le 0.08$ still shaves the chairs at 0.050 m, and $w_c \ge 0.12$
+freezes 0.7 m short. MPPI's exponential barrier grades the last few centimetres continuously and its
+hypothesis is a whole 2.5-second maneuver, so it swings out and back and keeps four times the margin
+at the same speed.
+
+The differences that *are* structural are these. MPPI evaluates a whole 2.5-second maneuver as one
+hypothesis, so it can commit to a plan whose first half looks worse. And MPPI does not care what the
+cost is made of — the barrier, the flat 900 for collision, and a raw occupancy lookup are all the
+same to it. Neither property is available to a controller that scores one arc by its endpoint.
+
+### When gradients beat samples
+
+<Callout type="info">
+**Rule of thumb.** Sampling for contact-rich, discontinuous, or multi-modal problems. Gradients for
+smooth, high-dimensional, or certified ones.
+</Callout>
+
+| | MPPI (sampling) | iLQR / DDP / SQP (gradients) |
+|---|---|---|
+| needs | a simulator of $f$, pointwise costs | $\nabla f$, $\nabla c$, and a smooth world |
+| cost functions | anything, including indicators and grids | must be differentiable; ESDF, not occupancy |
+| parallelism | embarrassing; $K$ independent rollouts | sequential backward pass |
+| dimension | sample complexity grows badly | handles tens of states comfortably |
+| constraints | soft, via cost; jitters near boundaries | hard, via KKT; tight and reliable |
+| local minima | escapes shallow ones by sampling both sides | commits to one homotopy class |
+| what it returns | a mean, re-estimated every cycle | a locally optimal trajectory *and a feedback gain* |
+
+That last row is the one people forget. iLQR returns $u_k = \bar u_k + K_k (x_k - \bar x_k)$ — a
+time-varying feedback law, valid between control cycles. MPPI returns a single open-loop command and
+relies on re-solving fast enough that open loop never has time to matter. At 20 Hz on a diff-drive
+that is a fine bet; on a machine whose joints need commands hundreds of times faster it is not, which
+is why sampling controllers at those rates are wrapped in a fast ancillary feedback law that tracks
+the sampled plan between updates.
+
+### What MPPI is not
+
+The counter pocket in w23.2 is in this chapter because it is the failure most likely to bite a reader
+who has just watched the storm and concluded that sampling solves planning. Rusty sits behind the
+kitchen counter; the goal is two metres north, through it. Escaping costs 1.9 m of travel in the
+wrong direction before a single metre is repaid.
+
+MPPI does not escape it. Not at $H = 10$, not at $H = 60$: the perturbations are white noise around
+the current plan, so the probability that some rollout traces a coherent four-metre detour is
+negligible, and every rollout that starts the detour looks worse than standing still. DWA does not
+escape it either, and neither of them is broken. **A local controller optimizes; it does not search.**
+Give the same MPPI a reference path around the counter and it follows it out in 13.6 seconds. That is
+the layered architecture the whole of Part VI has been building toward, and the reason
+[Chapter 20](/chapters/ch20-motion-planning) exists.
+
+### The small end of a real continuum
+
+It would be easy to read this chapter as a toy. It is not. The algorithm above is what Williams et
+al. ran on a fifth-scale rally car sliding around a dirt track: about 1 200 rollouts of 2.5 seconds
+at 40 Hz, roughly 4.8 million queries to the full nonlinear vehicle dynamics every second, on a GPU,
+over more than 100 km of autonomous driving. The same update law, with a stack of about a dozen
+pluggable cost critics, ships as a stock controller in ROS 2's Nav2 for exactly the kind of
+differential-drive robot Rusty is. The reader's `rayon` loop is the small end of that continuum, not a different thing.
+
+And there is a thread left deliberately loose. Every cost in this chapter has been about where the
+robot should *be*. Nothing stops a term in $c(x_k, u_k)$ from being about what the robot would
+*learn* — the expected entropy reduction of the map, say. Put that term in the cost and the same
+sampler that dodges chairs starts choosing where to look.
+[Chapter 24](/chapters/ch24-exploration) makes goals out of information.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Derive the cross term, then delete it">
+    Starting from $w(V) \propto e^{-S(V)/\lambda}\, p(V) / q(V \mid \hat U, \Sigma_u)$ with
+    $p = q(\cdot \mid \alpha\hat U, \Sigma_u)$, carry out the two-quadratic expansion in Step 3 of
+    the twin derivation and confirm that the sample-dependent part of the log-ratio is exactly
+    $-\sum_k (1-\alpha)\hat u_k\T \Sigma_u^{-1} \epsilon_k$. Then explain, using the free-energy
+    bound rather than intuition, what objective you are optimizing when you set $\gamma = 0$: what
+    replaces the effort penalty, and why that makes the resulting motion smoother rather than
+    faster.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Both limits, and the gauge between them">
+    Prove the two limits of the previous derivation carefully: that $\lambda \to 0^+$ gives
+    best-of-$K$ (state the tie-breaking assumption you need) and that $\lambda \to \infty$ gives an
+    update of size $O(\sigma/\sqrt{K})$. Then show that $\mathrm{ESS} = 1$ and $\mathrm{ESS} = K$ are
+    attained exactly in those limits, and use that to explain why the measured table above has its
+    *shortest* time-to-goal in the middle rather than at either end.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Why the mean, not the mode">
+    Step 1 of the twin derivation projects $q^\star$ onto a Gaussian by minimizing
+    $\KL(q^\star \| q(\cdot|U,\Sigma_u))$ and lands on moment matching. Do the algebra. Then argue
+    what would change if you minimized the *reverse* KL instead, $\KL(q(\cdot|U,\Sigma_u) \| q^\star)$,
+    and relate your answer to what happens in w23.1 as $\lambda \to 0$. Which of the two
+    divergences describes a controller that commits to one option in a bimodal cost landscape, and
+    which describes one that steers between them into the obstacle?
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check: starve the proposal">
+    In w23.1, set the exploration $\sigma_v$ to roughly a quarter of its default (0.06 m/s) and leave
+    everything else alone. Before you press play, predict: does Rusty still find the gap beside the
+    first chair, and does the ESS go *up* or *down*? Run it. Explain what you see in the
+    proposal-coverage language of [Chapter 8](/chapters/ch08-nonparametric-filters) — and note which
+    of the two possible ESS answers is the *bad* one here, which is the opposite of the filtering
+    case.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Try to make DWA safe">
+    In w23.2, run the corridor with DWA and note the minimum clearance. Predict what raising the
+    clearance weight $w_c$ from 0.02 to 0.5 will do, then do it — and explain the result from the
+    definition of $\mathrm{dist}(v,\omega)$ rather than from the plot. Now switch on minimum-margin
+    clearance and find the largest $w_c$ that still reaches the goal, and the smallest that freezes
+    the robot. Report both, and say why there is no useful value in between: what shape of trajectory
+    would be needed, and why is it not in DWA's hypothesis class? Finally, name the property of
+    $\exp(-d/\sigma_o)$ that a normalized linear term lacks.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Colored noise">
+    White perturbations spend most of their probability mass on plans that reverse direction every
+    step — plans no robot would consider. Implement temporally correlated sampling in `mppi.rs`:
+    draw $\epsilon_k = \beta \epsilon_{k-1} + \sqrt{1-\beta^2}\, \xi_k$ with
+    $\xi_k \sim \Normal(0, \Sigma_u)$, so the marginal variance is unchanged. Measure, on the
+    corridor run over twelve seeds, the mean $|\Delta u|$, the minimum clearance, and the time to
+    goal as a function of $\beta \in \{0, 0.3, 0.6, 0.9\}$. At which $\beta$ does the controller
+    stop being able to react to the moving obstacle, and why?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A gradient rival on the same traits">
+    Implement one iLQR iteration against the same `Dynamics` and `CostFn` traits, adding only the
+    two Jacobian methods it needs. Race it against MPPI on (a) the smooth-ESDF corridor and (b) a
+    version whose obstacle cost is a raw occupancy-grid lookup with no smoothing. Report time to
+    goal, minimum clearance, and iterations to convergence for both, and reproduce the top two rows
+    of this chapter's scorecard with your own numbers. If iLQR fails on (b), say precisely at which
+    line of your implementation it fails.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Fox, D., Burgard, W., and Thrun, S."
+    year={1997}
+    title="The Dynamic Window Approach to Collision Avoidance"
+    venue="IEEE Robotics & Automation Magazine 4(1), 23–33"
+    doi="10.1109/100.580977"
+    note="The classical baseline of this chapter, from the same authors as the book's spine. Section III is the source of the admissibility inequality and the three-term objective; the RHINO experiments ran at up to 95 cm/s in populated corridors."
+  />
+  <Reference
+    authors="Theodorou, E., Buchli, J., and Schaal, S."
+    year={2010}
+    title="A Generalized Path Integral Control Approach to Reinforcement Learning"
+    venue="Journal of Machine Learning Research 11, 3137–3181"
+    url="https://jmlr.org/papers/v11/theodorou10a.html"
+    note="Where the exponentiated-cost weighting entered robotics, as PI². Read it for the continuous-time path-integral derivation this chapter deliberately replaces with the discrete-time information-theoretic one."
+  />
+  <Reference
+    authors="Williams, G., Aldrich, A., and Theodorou, E. A."
+    year={2017}
+    title="Model Predictive Path Integral Control: From Theory to Parallel Computation"
+    venue="Journal of Guidance, Control, and Dynamics 40(2), 344–357"
+    doi="10.2514/1.G001921"
+    note="The paper that named MPPI and made the case for GPU rollouts. Its parallel-computation analysis is the reason the Rust here draws noise serially and parallelizes only the simulations."
+  />
+  <Reference
+    authors="Williams, G., Drews, P., Goldfain, B., Rehg, J. M., and Theodorou, E. A."
+    year={2018}
+    title="Information-Theoretic Model Predictive Control: Theory and Applications to Autonomous Driving"
+    venue="IEEE Transactions on Robotics 34(6), 1603–1622"
+    doi="10.1109/TRO.2018.2865891"
+    note="This chapter's Foundation section follows its §III exactly: the free-energy bound, the optimal distribution, the importance-sampling weight with its cross term, and Algorithms 1–2. The preprint is arXiv:1707.02342, and the epigraph is from its §III-A."
+  />
+  <Reference
+    authors="Macenski, S., Moore, T., Lu, D. V., Merzlyakov, A., and Ferguson, M."
+    year={2023}
+    title="From the Desks of ROS Maintainers: A Survey of Modern & Capable Mobile Robotics Algorithms in the Robot Operating System 2"
+    venue="Robotics and Autonomous Systems 168, 104493"
+    doi="10.1016/j.robot.2023.104493"
+    note="Deployment evidence for the claim that MPPI is now a default rather than a curiosity: written by the Nav2 maintainers, it surveys the controller stack that ships MPPI alongside DWB, the direct descendant of the 1997 paper above."
+  />
+  <Reference
+    authors="Kazim, M., Hong, J., Kim, M.-G., and Kim, K.-K. K."
+    year={2024}
+    title="Recent Advances in Path Integral Control for Trajectory Optimization: An Overview in Theoretical and Algorithmic Perspectives"
+    venue="Annual Reviews in Control 57, 100931"
+    doi="10.1016/j.arcontrol.2023.100931"
+    note="The map of the field since 2018 — cross-entropy variants, covariance adaptation, smoothing schemes — and the best single source for what to read next after this chapter."
+  />
+  <Reference
+    authors="Trevisan, E. and Alonso-Mora, J."
+    year={2024}
+    title="Biased-MPPI: Informing Sampling-Based Model Predictive Control by Fusing Ancillary Controllers"
+    venue="IEEE Robotics and Automation Letters 9(6), 5871–5878"
+    doi="10.1109/LRA.2024.3397083"
+    note="The modern answer to this chapter's counter-pocket failure: keep the proposal, but seed it with samples from controllers that already know the way out. The importance weights stay valid, which is exactly the point of deriving them properly."
+  />
+  <Reference
+    authors="Homburger, H., Messerer, F., Diehl, M., and Reuter, J."
+    year={2025}
+    title="Optimality and Suboptimality of MPPI Control in Stochastic and Deterministic Settings"
+    venue="IEEE Control Systems Letters"
+    doi="10.1109/LCSYS.2025.3574151"
+    note="An honest accounting of what MPPI actually returns: the suboptimality of the sampled solution grows second-order in the noise scaling for smooth unconstrained problems. Read it before promising anyone that MPPI is optimal."
+  />
+</References>

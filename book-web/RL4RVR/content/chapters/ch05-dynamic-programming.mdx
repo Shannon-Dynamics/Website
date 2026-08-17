@@ -1,0 +1,323 @@
+---
+title: 'Dynamic Programming: Planning with a Known Model'
+chapter: 5
+quote:
+  text: An optimal policy has the property that whatever the initial state and initial decision are, the remaining decisions must constitute an optimal policy with regard to the state resulting from the first decision.
+  author: Richard Bellman
+  affiliation: RAND Corporation · The principle of optimality
+  source: Dynamic Programming, 1957
+---
+
+<ChapterOverview
+  summary="Suppose Rusty is handed the warehouse blueprint: the exact transition probabilities and rewards from Chapter 4. No sensors needed, no trial and error — finding the best policy becomes pure computation. But the naive computation, enumerating all 4^80 policies, is beyond astronomical. This chapter shows how Bellman structure replaces enumeration with iteration, proves that greedy improvement can never make a policy worse, and extracts the pattern — generalized policy iteration — that every remaining algorithm in this book is a variation on."
+  outcomes={[
+    'Implement iterative policy evaluation and explain why in-place sweeps converge faster than two-array ones',
+    'Prove the policy improvement theorem and understand why it makes greedy improvement safe',
+    'Explain the difference between policy iteration and value iteration as truncation of the same process',
+    'Use the Bellman-error stopping rule to bound how suboptimal your current policy is',
+    'State generalized policy iteration and identify it in every later algorithm in the book',
+    'Quantify why dynamic programming cannot scale to a real robot',
+  ]}
+  foundation="Iterative policy evaluation, the policy improvement theorem with proof, policy and value iteration, convergence rates, the Bellman-error bound, and asynchronous DP."
+  conceptual="The book's signature dashboard: value rippling outward from the dock sweep by sweep, with Δ and the suboptimality bound streaming beside it."
+  practical="rl-tabular's DP module operating on the Chapter 4 Mdp trait, with the sweep-by-sweep generator that drives the dashboard."
+/>
+
+## 5.1 The blueprint changes everything
+
+Overnight, Rusty receives the warehouse blueprint — the exact MDP from Chapter 4. The $12 \times 9$ grid, $p_{\text{slip}} = 0.2$, rewards of $+25$ at the dock, $-1$ per step, $-10$ per shelf bump, and $\gamma = 0.95$.
+
+With $p$ and $r$ in hand, "what should Rusty do?" is no longer an experimental question. It is arithmetic. But which arithmetic?
+
+The direct approach is to enumerate every deterministic policy, evaluate each, and keep the best. With roughly 80 states and four actions that is $4^{80} \approx 10^{48}$ policies. At a billion evaluations per second you would finish some $10^{30}$ times after the heat death of the universe.
+
+**Dynamic programming** is the family of methods that exploits Bellman structure to replace that enumeration with iteration. The key insight is Bellman's own principle of optimality, quoted above: an optimal policy's tail must itself be optimal. That means we can build the answer up from local consistency conditions rather than searching the space of whole policies.
+
+## 5.2 Iterative policy evaluation
+
+Start with the easier problem: given a policy $\pi$, what is $v_\pi$?
+
+Chapter 4 showed this is a linear system solvable by matrix inversion, at cost $O(|\mathcal{S}|^3)$. Iteration is cheaper. Turn the Bellman expectation equation into an assignment:
+
+$$v_{k+1}(s) \leftarrow \sum_a \pi(a\mid s) \sum_{s',r} p(s',r\mid s,a)\left[r + \gamma\, v_k(s')\right],$$
+
+which is exactly applying the operator $T_\pi$. Theorem 4.3 proved $T_\pi$ is a $\gamma$-contraction, so by Banach the sequence converges to the unique fixed point $v_\pi$ from any initialization — including all zeros.
+
+<Callout variant="note" title="In-place sweeps converge faster">
+The equation above describes a *two-array* (Jacobi) update: compute all new values from the old array, then swap. The alternative is to update in place, so later states in the sweep already see the freshly-computed values of earlier ones — a Gauss–Seidel sweep.
+
+In-place converges strictly faster and uses half the memory, and it still converges to $v_\pi$: the operator remains a contraction. It is also what makes *asynchronous* DP possible (§5.6). Every implementation in this book sweeps in place.
+</Callout>
+
+When do we stop? Track $\Delta = \max_s |v_{k+1}(s) - v_k(s)|$ and halt when it falls below a threshold $\theta$. Banach's bound converts $\Delta$ into a guarantee: if the greedy policy with respect to $v_k$ is $\pi$, then
+
+$$\|v_\pi - v_*\|_\infty \le \frac{2\gamma\,\Delta}{1 - \gamma}.$$
+
+This is not decoration. It is the difference between "the numbers stopped changing much" and "my policy is provably within $\epsilon$ of optimal", and the dashboard below displays it live.
+
+## 5.3 The policy improvement theorem
+
+Now the result that makes everything work. Suppose we have $v_\pi$ and construct a new policy $\pi'$ that acts greedily with respect to it:
+
+$$\pi'(s) = \arg\max_a q_\pi(s,a) = \arg\max_a \sum_{s',r} p(s',r\mid s,a)\left[r + \gamma\, v_\pi(s')\right].$$
+
+Is $\pi'$ better? It is *locally* better by construction — but each state's improvement changes which states you visit, so the argument is not obvious. It is, however, true.
+
+<Theorem kind="Theorem" n="5.1" title="Policy improvement theorem">
+Let $\pi$ and $\pi'$ be deterministic policies such that for all $s$,
+
+$$q_\pi(s, \pi'(s)) \ge v_\pi(s).$$
+
+Then $\pi'$ is at least as good as $\pi$: $v_{\pi'}(s) \ge v_\pi(s)$ for all $s$. If the first inequality is strict at any state, the second is strict at that state too.
+</Theorem>
+
+<Proof>
+Start from the hypothesis and expand $q_\pi$ repeatedly, each time replacing $v_\pi$ by the hypothesis applied one step further along:
+
+$$
+\begin{aligned}
+v_\pi(s) &\le q_\pi(s, \pi'(s)) \\
+&= \mathbb{E}\left[R_{t+1} + \gamma\, v_\pi(S_{t+1}) \,\middle|\, S_t = s,\, A_t = \pi'(s)\right] \\
+&= \mathbb{E}_{\pi'}\left[R_{t+1} + \gamma\, v_\pi(S_{t+1}) \,\middle|\, S_t = s\right] \\
+&\le \mathbb{E}_{\pi'}\left[R_{t+1} + \gamma\, q_\pi(S_{t+1}, \pi'(S_{t+1})) \,\middle|\, S_t = s\right] \\
+&= \mathbb{E}_{\pi'}\left[R_{t+1} + \gamma\, \mathbb{E}\left[R_{t+2} + \gamma v_\pi(S_{t+2})\right] \,\middle|\, S_t = s\right] \\
+&= \mathbb{E}_{\pi'}\left[R_{t+1} + \gamma R_{t+2} + \gamma^2 v_\pi(S_{t+2}) \,\middle|\, S_t = s\right] \\
+&\;\;\vdots \\
+&\le \mathbb{E}_{\pi'}\left[R_{t+1} + \gamma R_{t+2} + \gamma^2 R_{t+3} + \cdots \,\middle|\, S_t = s\right] = v_{\pi'}(s).
+\end{aligned}
+$$
+
+Each inequality applies the hypothesis at the newly-exposed state; each equality is the tower property. The $\gamma^k v_\pi(S_{t+k})$ remainder term vanishes as $k \to \infty$ because $v_\pi$ is bounded and $\gamma < 1$ — the same geometric argument as everywhere else in this book. $\qquad \blacksquare$
+</Proof>
+
+<Callout variant="insight" title="Why this theorem is the load-bearing wall">
+Acting greedily with respect to your current value estimate can never make things worse. That single guarantee is what licenses the entire pattern: evaluate, improve, repeat, without fear of oscillation or regress.
+
+And when improvement produces *no* change — when $\pi' = \pi$ — the greedy equation becomes the Bellman optimality equation, so $v_\pi = v_*$ and the policy is optimal. The algorithm's own stopping condition certifies optimality. Very few algorithms in machine learning have that property, and it is worth appreciating before Part II takes it away.
+</Callout>
+
+## 5.4 Policy iteration and value iteration
+
+**Policy iteration** alternates the two operations to convergence:
+
+$$\pi_0 \xrightarrow{\text{evaluate}} v_{\pi_0} \xrightarrow{\text{improve}} \pi_1 \xrightarrow{\text{evaluate}} v_{\pi_1} \xrightarrow{\text{improve}} \cdots \to \pi_*$$
+
+Since each improvement strictly increases the value of at least one state unless the policy is already optimal, and there are finitely many deterministic policies, policy iteration **terminates in finitely many iterations at an exactly optimal policy**. In practice it converges in a handful — often fewer than ten, even on large problems.
+
+The cost is that each evaluation runs to convergence, which is many sweeps of work to answer a question ("which action is best here?") that may not need that precision.
+
+**Value iteration** takes the opposite extreme: truncate evaluation after a single sweep, folding the improvement into it by using a max instead of a policy average:
+
+$$v_{k+1}(s) \leftarrow \max_a \sum_{s',r} p(s',r\mid s,a)\left[r + \gamma\, v_k(s')\right].$$
+
+This is just repeated application of $T_*$, which Theorem 4.3 proved is a $\gamma$-contraction. It converges geometrically, though — unlike policy iteration — it approaches optimality asymptotically rather than hitting it exactly.
+
+<GpiDashboard />
+
+Watch what happens when you press play on value iteration. Value appears first at the dock, then bleeds outward one cell per sweep. That is not an artifact of the visualization: with $\gamma = 0.95$ and a one-step backup, information about the goal can travel exactly one cell per sweep. Cells far from the dock cannot know anything about it until the wave arrives.
+
+Then switch to policy iteration and watch a different rhythm: long stretches of evaluation where the arrows barely move, punctuated by improvement steps where large regions of the policy flip at once.
+
+<RustSnippet title="rl-tabular/src/dp.rs" caption="Value iteration as a sweep-by-sweep iterator. Returning snapshots rather than only the final answer is what lets the dashboard animate the algorithm — and, more importantly, lets you debug it.">
+
+```rust
+use rl_core::Mdp;
+
+pub struct Sweep {
+    pub index: usize,
+    pub values: Vec<f64>,
+    pub delta: f64,
+    /// Bellman-error bound on ‖v_π − v*‖∞ implied by this Δ.
+    pub suboptimality: f64,
+}
+
+/// Value iteration with in-place (Gauss–Seidel) sweeps.
+pub fn value_iteration<M: Mdp>(mdp: &M, theta: f64, max_sweeps: usize) -> Vec<Sweep> {
+    let gamma = mdp.gamma();
+    let mut v = vec![0.0; mdp.states().len()];
+    let mut history = Vec::new();
+
+    for index in 1..=max_sweeps {
+        let mut delta: f64 = 0.0;
+
+        for (i, state) in mdp.states().iter().enumerate() {
+            if mdp.is_terminal(state) { continue; }
+            let old = v[i];
+
+            // max_a Σ p(s′,r|s,a)[r + γ v(s′)] — the Bellman optimality backup.
+            v[i] = mdp
+                .actions(state)
+                .iter()
+                .map(|&a| {
+                    mdp.transitions(state, a)
+                        .iter()
+                        .map(|&(next, reward, prob)| prob * (reward + gamma * v[next]))
+                        .sum::<f64>()
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            delta = delta.max((old - v[i]).abs());
+        }
+
+        history.push(Sweep {
+            index,
+            values: v.clone(),
+            delta,
+            suboptimality: 2.0 * gamma * delta / (1.0 - gamma),
+        });
+
+        if delta < theta { break; }
+    }
+    history
+}
+```
+
+</RustSnippet>
+
+## 5.5 Generalized policy iteration
+
+Step back and notice that policy iteration and value iteration are the same algorithm with a dial set differently.
+
+Both maintain a value estimate and a policy. Both push the value toward consistency with the policy (**evaluation**) and push the policy toward greediness with respect to the value (**improvement**). They differ only in how much evaluation happens between improvements: everything, one sweep, or — in *modified policy iteration* — some number in between.
+
+**Generalized policy iteration** (GPI) is the name for this pattern in the abstract: any interleaving of evaluation and improvement, at any granularity, in any order, including asynchronously and on subsets of states.
+
+<Callout variant="insight" title="This is the pattern for the entire book">
+The two processes compete and cooperate. Improvement makes the value function wrong (it was correct for the old policy). Evaluation makes the policy non-greedy (values shifted). Each undoes some of the other's work — yet together they converge, because both are pushing toward the same joint fixed point: the value function consistent with a policy that is greedy with respect to it. That joint condition is the Bellman optimality equation.
+
+Once you see GPI you will not stop seeing it. Monte Carlo control in Chapter 6 is GPI with sampled evaluation. Q-learning is GPI with one-step sampled backups. Actor–critic in Chapter 10 is GPI with a parameterized policy and a learned critic. SAC in Chapter 11 is GPI with a soft improvement step. The rest of this book largely consists of replacing "evaluation" and "improvement" with things that work without a model, in continuous spaces, from pixels.
+</Callout>
+
+## 5.6 Asynchronous DP, and the wall
+
+Nothing requires sweeping states in order, or sweeping all of them equally. **Asynchronous DP** updates states in any order, as long as every state is updated infinitely often in the limit. Convergence still holds.
+
+This licenses genuinely useful strategies: back up states along a trajectory the robot actually visits, prioritize states whose values just changed a lot (Chapter 7's prioritized sweeping), or focus computation near the goal where it does most good.
+
+But no ordering saves dynamic programming for a real robot. The problem is not the sweep order — it is that a sweep must touch every state, and the number of states is exponential in the robot's degrees of freedom.
+
+<CurseOfDimensionality />
+
+Set the widget to 7 degrees of freedom with 10 bins per dimension — a deliberately crude discretization of a modest research arm — and read the time for a single sweep. No faster computer rescues this; the curve is exponential in the exponent.
+
+This is the first of Kober's four curses, and Chapter 14 develops all four properly. Its consequence for us is immediate and structural: **we must stop enumerating states and start generalizing across them.** That is Part II.
+
+## 5.7 What DP still buys you
+
+Before leaving, it is worth being clear that dynamic programming is not merely a pedagogical stepping stone.
+
+It remains the correct tool whenever the state space is genuinely small — inventory control, discrete task planning, the high-level layer of a hierarchical robot controller. It is the ground truth against which approximate methods are measured: every algorithm in Chapters 6 through 12 is trying to approximate what DP computes exactly. And its theory transfers wholesale: the contraction argument, the improvement theorem, and GPI survive into the approximate setting, sometimes weakened but always recognizable.
+
+Chapter 12 will bring DP back in a new guise, planning against a *learned* model rather than a given one — Bellman backups over dynamics the robot discovered for itself.
+
+## 5.8 Chapter bridge
+
+We assumed the blueprint. Rusty does not have one.
+
+Real robots are handed no transition probabilities. Friction is unmeasured, payloads change, and the only access to the dynamics is to act and observe what happens. Chapter 6 removes the model entirely and asks whether anything survives. The answer is that a great deal does — Monte Carlo methods learn from complete episodes, temporal-difference methods learn from single transitions by bootstrapping from their own estimates, and the GPI pattern from this chapter carries over intact with sampling in place of expectation.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Jacobi versus Gauss–Seidel',
+    difficulty: 2,
+    body: 'Prove that the in-place policy-evaluation sweep still converges to v_π. Then construct a small MDP and a state ordering where in-place converges in strictly fewer sweeps, and one where the ordering makes almost no difference.',
+  },
+  {
+    layer: 'F',
+    title: 'The improvement theorem, carefully',
+    difficulty: 2,
+    body: 'Reproduce the proof of Theorem 5.1, justifying every equality and inequality. In particular, state precisely why the remainder term γ^k v_π(S_{t+k}) vanishes and what would break if γ = 1.',
+  },
+  {
+    layer: 'F',
+    title: 'Termination in finite time',
+    difficulty: 2,
+    body: 'Prove that policy iteration terminates after finitely many improvement steps. Then give an upper bound on the number of steps in terms of |S| and |A|, and explain why the observed number is usually far smaller.',
+  },
+  {
+    layer: 'F',
+    title: 'The stopping bound',
+    difficulty: 3,
+    body: 'Derive the bound ‖v_π − v*‖∞ ≤ 2γΔ/(1−γ) where π is greedy with respect to a value function whose latest sweep changed by at most Δ. Where does the factor of 2 come from?',
+  },
+  {
+    layer: 'C',
+    title: 'The propagation wave',
+    difficulty: 1,
+    body: 'In the GPI dashboard, run value iteration and count how many sweeps pass before the cell farthest from the dock has a non-zero value. Relate this to the grid’s diameter, and explain why one-step backups make this inevitable.',
+  },
+  {
+    layer: 'C',
+    title: 'Two rhythms',
+    difficulty: 2,
+    body: 'Compare policy iteration and value iteration on the same problem. Record total sweeps to convergence for each at γ = 0.9 and γ = 0.99. Which degrades faster as γ → 1, and does the contraction bound predict it?',
+  },
+  {
+    layer: 'P',
+    title: 'Modified policy iteration',
+    difficulty: 2,
+    body: 'Implement modified policy iteration with a configurable number k of evaluation sweeps per improvement. Plot total backups to convergence as a function of k. There should be an interior optimum — find it and explain its existence.',
+  },
+  {
+    layer: 'P',
+    title: 'Measure the wall',
+    difficulty: 2,
+    body: 'Benchmark value iteration on grids from 10×10 up to as large as your machine tolerates, and fit the scaling. Then extrapolate to the 14-dimensional state of a 7-DoF arm and report the number honestly.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapter 4 in full: §4.1 policy evaluation, §4.2 policy improvement, §4.3 policy iteration, §4.4 value iteration, §4.5 asynchronous DP, §4.6 generalized policy iteration.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§3.1 the curse of dimensionality — the argument §5.6 turns into arithmetic.',
+  },
+  {
+    key: 'bellman1957',
+    authors: 'Bellman, R.',
+    year: 1957,
+    title: 'Dynamic Programming',
+    venue: 'Princeton University Press',
+    note: 'The principle of optimality, and the coining of "curse of dimensionality" by the person who had the most right to complain about it.',
+  },
+  {
+    key: 'howard1960',
+    authors: 'Howard, R. A.',
+    year: 1960,
+    title: 'Dynamic Programming and Markov Processes',
+    venue: 'MIT Press',
+    note: 'The origin of policy iteration.',
+  },
+  {
+    key: 'puterman1994',
+    authors: 'Puterman, M. L.',
+    year: 1994,
+    title: 'Markov Decision Processes: Discrete Stochastic Dynamic Programming',
+    venue: 'Wiley',
+    note: 'Modified policy iteration, convergence rates, and the complete theory of the methods sketched here.',
+  },
+  {
+    key: 'bertsekas2012',
+    authors: 'Bertsekas, D. P.',
+    year: 2012,
+    title: 'Dynamic Programming and Optimal Control, Vol. II',
+    venue: 'Athena Scientific, 4th edition',
+    note: 'Asynchronous DP, and the approximate dynamic programming that bridges to Part II of this book.',
+  },
+]} />

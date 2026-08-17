@@ -1,0 +1,1277 @@
+---
+title: 'SLAM as Least Squares: Factor Graphs'
+description: The modern backbone of SLAM — write down the whole posterior instead of filtering it away, watch it shatter into springs, and discover that the sparse matrix you get is a picture of the graph.
+chapter: 15
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Advanced
+readingTime: 70 min
+quote: We can think of this information as a constraint between x_{t-1} and x_t, or a "spring" in a spring-mass model of the world.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 11
+---
+
+import { SpringGraphOptimizer } from '@/components/ch/ch15/spring-graph-optimizer';
+import { SparsityScope } from '@/components/ch/ch15/sparsity-scope';
+import { DescentDuel } from '@/components/ch/ch15/descent-duel';
+import { KernelGallery } from '@/components/ch/ch15/kernel-gallery';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write the full SLAM posterior and read its factorization as a bipartite graph of variables and factors',
+    'Turn −log of that posterior into a sum of squared Mahalanobis residuals, so MAP inference becomes nonlinear least squares',
+    'Derive Gauss–Newton and Levenberg–Marquardt on the manifold, with ⊞ retraction and analytic SE(2) Jacobians',
+    'Prove that Ω mirrors the graph — and that eliminating a variable is the Schur complement, which is Thrun’s EIF_reduce under a new name',
+    'Explain why ordering, not sparsity, decides how fast a smoother runs, and measure the difference',
+    'Make a back end survive one lying loop closure, and say precisely what that robustness costs',
+    'Build the whole thing in Rust on nalgebra + faer, then rebuild it in forty lines with factrs 0.3',
+  ]}
+  prerequisites={[
+    'SE(2), exp/log, and the ⊞ / ⊟ retraction (Chapter 3)',
+    'The information form ξ, Ω and why information adds (Chapter 6)',
+    'Jacobians of models evaluated on a manifold (Chapter 7)',
+    'Motion and measurement models as probability distributions (Chapters 9 and 10)',
+    'EKF SLAM, its dense covariance, and its frozen linearizations (Chapter 14)',
+  ]}
+>
+[Chapter 14](/chapters/ch14-ekf-slam) ended with a filter that had painted itself into a corner. It
+was overconfident because it had linearized each landmark exactly once, at the moment of worst
+uncertainty, and it could not repair that mistake later because the poses it would need to repair
+had already been marginalized away. The filter's state is the *present*; the evidence that the past
+was wrong arrives in the *future*; and there is no arrangement of the recursion that lets those two
+meet.
+
+The fix is radical in concept and mundane in mechanics: **keep the past**. Write down the entire
+posterior over the whole trajectory and the whole map, take its logarithm, and watch the product
+shatter into a sum of small quadratic penalties — one per control, one per observation. That sum is
+a **factor graph**, its minimizer is the MAP estimate, and computing it is sparse nonlinear least
+squares. Every Jacobian gets re-evaluated at the newest estimate on every iteration, so Chapter 14's
+central sin is not fixed but *structurally impossible*.
+
+This is the chapter where the book's baseline meets its future. The 2005 text's GraphSLAM chapter
+already had the pieces — construct, reduce, solve, iterate — but not the vocabulary or the sparse
+solvers. What follows is the same algorithm, said in the language of 2026, and running in your
+browser.
+</Overview>
+
+## The map that could not be fixed
+
+Here is Rusty's problem, laid out in full. He drives east along the Apartment corridor, ducks into
+room C through its doorway, once around the room, and back home along the other side of the
+corridor — 55 poses, 12 corner reflectors, 176 sightings. His wheel odometry has a 3.5% turn bias:
+not noise, a *bias*, the kind that does not average away. By the time he gets home the dead-reckoned
+path says he finished 1.66 m from where he started.
+
+He also knows he is home. The doorway he sees now is the doorway he saw fifty poses ago. That single
+recognition contradicts every one of the 54 odometry readings, slightly, and there is no filter
+update that can distribute the contradiction backwards across all of them.
+
+So stop filtering. Put all 189 unknown numbers on the table at once and ask what values make the
+whole data set most probable.
+
+<Deferred>
+  <SpringGraphOptimizer />
+</Deferred>
+
+Three things in that widget deserve your attention before any mathematics.
+
+**The correction is not spread evenly through time — it is spread according to *evidence*.** Pose 0
+does not move at all, because the prior pins it. The poses in room C move about 0.4 m. The last pose
+moves 1.65 m, which is the entire accumulated drift, because that is where the contradiction lives.
+No rule was written down to produce that gradient; it is what minimizing a sum of squares does when
+the constraints have different stiffnesses.
+
+**Almost everything happens in three iterations.** $J$ falls from 3780 to 599 to 161 to 117 and then
+stops. Least squares on a well-initialized SLAM problem is not an iterative slog; it is two or three
+re-linearizations and a lot of back-substitution.
+
+**One bad spring bends the whole map.** Press *inject a false loop closure* and the smoother —
+which was just praised for using all its evidence — dutifully uses the evidence that is wrong. The
+RMSE goes from 0.197 m to 0.765 m. Robustness is not something least squares has; it is something
+you must add, and the last third of this chapter is about the price.
+
+<KeyIdea title="The one sentence version">
+The full SLAM posterior factorizes into one term per measurement; minus its logarithm is a sum of
+squared Mahalanobis residuals; minimizing that sum is sparse nonlinear least squares, and the sparse
+matrix you factor is a picture of the graph you drew.
+</KeyIdea>
+
+## Building intuition: springs, and a ledger of who is connected to whom
+
+Thrun, Burgard and Fox already gave us the metaphor, in the sentence at the top of this chapter. A
+control is a spring between two consecutive poses. An observation is a spring between a pose and a
+landmark. The stiffness of a spring is the *information* of the measurement that produced it — a
+laser with 1 cm noise makes a stiffer spring than sonar with 30 cm noise. The robot's estimate is
+where the whole assembly comes to rest.
+
+That metaphor is worth more than its charm, because it makes three otherwise separate ideas visibly
+the same thing:
+
+<KeyIdea title="The triple equivalence">
+**Probability.** The posterior $p(x_{0:t}, m \mid z_{1:t}, u_{1:t})$ factorizes into a product of
+local terms, one per control and one per observation.
+
+**Optimization.** Its negative log is $J(y) = \tfrac12\sum_k \norm{r_k(y)}_{\Sigma_k}^2$, a sum of
+spring energies; the MAP estimate is the minimum-energy configuration.
+
+**Linear algebra.** The Hessian of that energy, $\Omega = \sum_k J_k\T \Sigma_k^{-1} J_k$, has a
+nonzero block exactly where two variables share a factor — so the matrix you factor *is* the
+adjacency structure of the graph you drew.
+
+Every section below is one face of this box. If you ever lose the thread, come back here and ask
+which face you are looking at.
+</KeyIdea>
+
+The rest of the chapter needs a little new notation, all of it local to Part V.
+
+<NotationTable
+  rows={[
+    { sym: 'y = (x_{0:t},\\, m)', meaning: 'The stacked vector of every unknown — Thrun’s full-SLAM state. For the Apartment loop, 55 poses × 3 + 12 landmarks × 2 = 189 tangent dimensions.' },
+    { sym: '\\phi_k', meaning: 'Factor k: a function of the few variables it touches, proportional to the likelihood of one measurement.' },
+    { sym: 'r_k(y),\\ \\Sigma_k', meaning: 'The residual of factor k (how badly its measurement is explained) and its noise covariance.' },
+    { sym: '\\lVert r \\rVert_\\Sigma^2 = r^\\mathsf{T}\\Sigma^{-1} r', meaning: 'Squared Mahalanobis norm: error measured in sigmas, not metres.' },
+    { sym: 'J(y)', meaning: 'The MAP objective, −log posterior up to a constant.' },
+    { sym: 'A,\\ \\bar r', meaning: 'Whitened stacked Jacobian and residual at the current linearization point.' },
+    { sym: '\\Omega = A^\\mathsf{T} A,\\ b = A^\\mathsf{T}\\bar r', meaning: 'The normal equations Ω Δ = −b. Ω is Chapter 6’s information matrix, at trajectory scale.' },
+    { sym: '\\Delta,\\ y \\boxplus \\Delta', meaning: 'The tangent-space update and the retraction that applies it.' },
+    { sym: '\\lambda', meaning: 'Levenberg–Marquardt damping: the size of the region in which you trust the linear model.' },
+    { sym: '\\rho(\\cdot),\\ w = \\rho\'(e)/e', meaning: 'Robust kernel and the IRLS weight it induces.' },
+    { sym: '\\operatorname{nnz}(L)', meaning: 'Nonzeros in the Cholesky factor — the real currency of a sparse solver.' },
+  ]}
+/>
+
+## The mathematics
+
+### The posterior is a graph
+
+Nothing new is assumed here. The Markov property from [Chapter 5](/chapters/ch05-bayes-filter), the
+motion model of [Chapter 9](/chapters/ch09-motion-models), the measurement model of
+[Chapter 10](/chapters/ch10-sensor-models), and — for now — known correspondences: we are told which
+landmark each observation belongs to. ([Chapter 16](/chapters/ch16-scan-matching) removes that
+assumption, and the robust machinery at the end of this chapter is what makes removing it survivable.)
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x_{0:t}, m \mid z_{1:t}, u_{1:t})} \;\propto\;
+\htmlClass{term-prior}{p(x_0)}
+\prod_{\tau=1}^{t} \htmlClass{term-prediction}{p(x_\tau \mid x_{\tau-1}, u_\tau)}
+\prod_{\tau=1}^{t} \prod_{i} \htmlClass{term-measurement}{p(z_\tau^i \mid x_\tau, m_{c_\tau^i})}
+$$
+</LinkedMath>
+
+Read the right-hand side as a drawing. Each factor is a small box; each box is wired to the two or
+three variables it mentions. The prior box touches $x_0$. Each motion box touches a consecutive pair
+$(x_{\tau-1}, x_\tau)$. Each measurement box touches one pose and one landmark. **No box ever touches
+two landmarks.** That last sentence is the whole reason this chapter scales, and we will cash it in
+twice.
+
+<Derivation title="From the factorized posterior to a sum of squares" result="J(y) = \tfrac12 \sum_k \lVert r_k(y)\rVert^2_{\Sigma_k}">
+**Step 1 — the factorization.** Bayes' rule plus the Markov assumption gives the product above; the
+normalizer $\eta$ does not depend on $y$ and therefore cannot move the arg-max, so we drop it and
+work with an unnormalized posterior throughout. (This is the one place where MAP is genuinely
+cheaper than full Bayesian inference: we never have to compute the evidence.)
+
+**Step 2 — substitute Gaussian noise models.** Each factor is a Gaussian in its own residual. For the
+motion factor, the noise lives on the manifold, so the residual is a $\bminus$, not a subtraction:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{r_{u_\tau}} = (x_{\tau-1}^{-1} x_\tau) \bminus \delta_\tau
+= \log\!\big(\delta_\tau^{-1}\, x_{\tau-1}^{-1}\, x_\tau\big) \in \R^3,
+\qquad
+p(x_\tau \mid x_{\tau-1}, u_\tau) \propto \exp\!\Big(-\tfrac12 \norm{r_{u_\tau}}^2_{\Sigma_u}\Big)
+$$
+</LinkedMath>
+
+where $\delta_\tau = \operatorname{odom}(u_\tau)$ is the relative pose the wheels reported. For a
+range–bearing observation the residual is ordinary subtraction with the bearing wrapped to
+$(-\pi, \pi]$:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{r_{z_\tau^i}} = h(x_\tau, m_{c_\tau^i}) - z_\tau^i,
+\qquad
+h(x, m) = \begin{pmatrix} \norm{{}^{b}m} \\ \operatorname{atan2}({}^{b}m_y, {}^{b}m_x)\end{pmatrix},
+\quad {}^{b}m = R(\theta)\T (m - t)
+$$
+</LinkedMath>
+
+**Step 3 — take minus the logarithm.** Products become sums and Gaussian densities become half
+squared Mahalanobis norms:
+
+<LinkedMath>
+$$
+-\log \htmlClass{term-posterior}{p(y \mid z, u)} \;=\;
+\underbrace{\tfrac12 \norm{x_0 \bminus \bar x_0}^2_{\Sigma_0}}_{\htmlClass{term-prior}{\text{prior}}}
++ \underbrace{\tfrac12 \sum_\tau \norm{r_{u_\tau}}^2_{\Sigma_u}}_{\htmlClass{term-prediction}{\text{controls}}}
++ \underbrace{\tfrac12 \sum_{\tau,i} \norm{r_{z_\tau^i}}^2_{\Sigma_z}}_{\htmlClass{term-measurement}{\text{observations}}}
++ \text{const}
+$$
+</LinkedMath>
+
+**Step 4 — read each summand as an edge.** The formula *is* the picture: one term per box in the
+drawing, each depending on only the variables its box is wired to. Define
+
+$$
+\hat y = \arg\min_y J(y), \qquad J(y) = \tfrac12 \sum_{k} \norm{r_k(y)}^2_{\Sigma_k}
+$$
+
+and MAP inference has become nonlinear least squares. $\blacksquare$
+
+**A note on the prior.** Without $p(x_0)$ the objective is invariant under a global rigid motion of
+everything — three directions along which $\Omega$ is exactly singular. Solvers hide this with a
+tiny diagonal nudge; the honest fix is to say where the origin is, which is what the prior factor
+does.
+</Derivation>
+
+### Whitening: why every residual is measured in sigmas
+
+Carrying $\Sigma_k^{-1}$ around inside every norm is clumsy. Factor it out once, at the point where
+the factor is built. Let $\Sigma_k^{-1} = S_k\T S_k$ (Cholesky, from
+[Chapter 2](/chapters/ch02-probability)) and define the **whitened** residual $\tilde r_k = S_k r_k$.
+Then
+
+$$
+\norm{r_k}^2_{\Sigma_k} = \norm{\tilde r_k}^2_2,
+\qquad\text{so}\qquad
+J(y) = \tfrac12 \sum_k \norm{\tilde r_k(y)}^2
+$$
+
+Every residual is now dimensionless and measured in standard deviations, which means residuals from
+a laser, a wheel encoder and a loop-closure detector are directly comparable. It also means the
+number the widget prints beside a bad spring — $e = 35\sigma$ — has an unambiguous meaning: *this
+measurement is thirty-five standard deviations from what the current estimate predicts*.
+
+<Callout type="info">
+From here on, $r$ and $J$ always mean the whitened residual and its Jacobian. This is not a
+convenience; it is the reason one solver can serve every sensor in the book without knowing what any
+of them measure.
+</Callout>
+
+### Gauss–Newton on the manifold
+
+$J$ is not quadratic — $h$ has an $\operatorname{atan2}$ in it and poses live on $\SEtwo$ — but it is
+*locally* quadratic, and that is enough.
+
+<Derivation title="Normal equations from the linearized residuals" result="\Omega\,\Delta = -b,\quad \Omega = \sum_k J_k^{\mathsf T} J_k">
+**Step 1 — expand in the tangent space.** Perturb the current estimate through the retraction rather
+than by addition, so the perturbed poses are still poses:
+
+$$
+r_k(y^0 \bplus \Delta) \;\approx\; \bar r_k + J_k \Delta,
+\qquad
+J_k = \left.\frac{\partial\, r_k(y^0 \bplus \Delta)}{\partial \Delta}\right|_{\Delta = 0}
+$$
+
+**Step 2 — stack.** Let $A$ be the block matrix whose $k$-th block row is $J_k$ (with columns only
+where factor $k$ touches a variable) and $\bar r$ the stacked residuals. Then
+
+$$
+J(y^0 \bplus \Delta) \approx \tfrac12 \norm{A\Delta + \bar r}^2
+= \tfrac12 \Delta\T A\T A \Delta + \Delta\T A\T \bar r + \tfrac12\norm{\bar r}^2
+$$
+
+**Step 3 — differentiate and set to zero.** With $\Omega = A\T A$ and $b = A\T \bar r$,
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\Omega}\,\Delta = -\,\htmlClass{term-measurement}{b},
+\qquad
+\Omega = \sum_k J_k\T J_k, \quad b = \sum_k J_k\T \bar r_k
+$$
+</LinkedMath>
+
+The sums matter more than the matrices: **assembly is a loop over factors**, each writing into only
+its own blocks. Nothing is ever formed densely unless you ask for it.
+
+**Step 4 — retract, and repeat.** $y \leftarrow y \bplus \Delta$, re-evaluate every $\bar r_k$ and
+every $J_k$ at the new $y$, solve again. Stop when the relative decrease in $J$ falls below
+tolerance.
+
+**Step 5 — the payoff.** Step 4 re-evaluates *every* Jacobian, including the one for a pose fifty
+steps in the past. There is no stored linearization to go stale, because there is no stored
+linearization at all. Chapter 14's frozen-Jacobian inconsistency cannot be expressed in this
+algorithm. $\blacksquare$
+</Derivation>
+
+<Derivation title="What Gauss–Newton throws away, and what Ω means at the optimum" result="\nabla^2 J = \Omega + \sum_k r_k^{\mathsf T}\nabla^2 r_k">
+The exact Hessian of $J$ is
+
+$$
+\nabla^2 J = \sum_k \Big( J_k\T J_k + \sum_i (\bar r_k)_i\, \nabla^2 (r_k)_i \Big)
+$$
+
+Gauss–Newton keeps the first term and drops the second. The dropped term is weighted by the
+residuals themselves, so near a good solution — where residuals are a sigma or two — it is small,
+and GN inherits Newton's near-quadratic convergence. Far from the solution, or when the residuals
+stay large because the model is wrong, the dropped term is not small, and GN can take a step that
+increases the cost. That is exactly the failure Levenberg–Marquardt insures against.
+
+The consolation prize is worth a section of its own. At convergence, $\Omega$ is the information
+matrix of the Laplace approximation to the posterior:
+
+$$
+p(y \mid z_{1:t}, u_{1:t}) \;\approx\; \Normal\big(\hat y,\ \Omega^{-1}\big)
+$$
+
+so covariances are still available — as *selected entries* of $\Omega^{-1}$, computed by
+back-substitution rather than by inverting anything. This is Chapter 6's duality, grown up: the
+smoother stores $\Omega$ because $\Omega$ is sparse, and produces $\Sigma$ on demand because $\Sigma$
+is not.
+</Derivation>
+
+The Jacobians are where the manifold discipline of [Chapter 7](/chapters/ch07-ekf-ukf-manifolds)
+earns its keep. For the between factor $r = \log(\delta^{-1} x_i^{-1} x_j)$, perturbing $x_j$ on the
+right gives $\log(E \exp(\Delta_j)) \approx r + J_r^{-1}(r)\Delta_j$, while perturbing $x_i$ pushes
+the perturbation through the adjoint:
+
+$$
+\frac{\partial r}{\partial \Delta_i} = -\,J_r^{-1}(r)\, \Ad_{x_j^{-1} x_i},
+\qquad
+\frac{\partial r}{\partial \Delta_j} = J_r^{-1}(r)
+$$
+
+with $J_r$ the right Jacobian of $\SEtwo$. Both are exact, both are cheap, and the library checks
+them against finite differences of the $\bplus$ perturbation to eight digits.
+
+<Algorithm
+  name="linearize_graph(G, y)"
+  inputs="factor graph G with K factors, current estimate y"
+  outputs="Ω, b, and the cost J(y)"
+  complexity="O(K) — one pass, O(1) work per factor"
+>
+1. $\Omega \leftarrow 0$, $b \leftarrow 0$, $J \leftarrow 0$
+2. for each factor $k \in G$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$(\bar r_k, \{J_{k,a}\}) = \mathbf{linearize}_k(y)$ &nbsp;&nbsp;// whitened
+4. &nbsp;&nbsp;&nbsp;&nbsp;$e_k = \norm{\bar r_k}$, &nbsp; $w_k = \rho'(e_k)/e_k$, &nbsp; $J \mathrel{+}= \rho(e_k)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;for each pair $(a, c)$ of variables touched by $k$ do
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\Omega_{[a][c]} \mathrel{+}= w_k\, J_{k,a}\T J_{k,c}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$b_{[a]} \mathrel{+}= w_k\, J_{k,a}\T \bar r_k$
+8. return $(\Omega, b, J)$
+</Algorithm>
+
+<Algorithm
+  name="gauss_newton(G, y⁰, tol, n_max)"
+  inputs="graph, initial estimate, relative-decrease tolerance"
+  outputs="ŷ and a report: cost per iteration, ‖Δ‖, nnz(L)"
+  complexity="per iteration O(K) assembly + one sparse Cholesky (ordering-dependent: near-linear on a chain, ~O(n^1.5) on a planar graph, O(n³) worst case)"
+>
+1. $y \leftarrow y^0$
+2. for $i = 1$ to $n_{max}$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$(\Omega, b, J) = \mathbf{linearize\_graph}(G, y)$
+4. &nbsp;&nbsp;&nbsp;&nbsp;solve $\Omega\,\Delta = -b$ &nbsp;&nbsp;// sparse Cholesky in a good ordering
+5. &nbsp;&nbsp;&nbsp;&nbsp;$y \leftarrow y \bplus \Delta$
+6. &nbsp;&nbsp;&nbsp;&nbsp;if $|J_{prev} - J| / J_{prev} < tol$ then break
+7. return $y$
+</Algorithm>
+
+### Damping: how far may you trust a linear model?
+
+Gauss–Newton believes its own linearization completely. Where the cost valley curves — which in SLAM
+means anywhere a large rotation is being corrected — that belief produces a step that lands somewhere
+absurd. Levenberg–Marquardt adds a knob:
+
+<LinkedMath>
+$$
+\big(\htmlClass{term-posterior}{\Omega} + \lambda \diag \Omega\big)\, \Delta = -b
+$$
+</LinkedMath>
+
+As $\lambda \to 0$ this is Gauss–Newton. As $\lambda \to \infty$ it becomes
+$\Delta \approx -(\lambda \diag\Omega)^{-1} b$, a very short step along the (scaled) negative
+gradient: slow, but it cannot be wrong about direction. Marquardt's $\diag\Omega$ scaling — rather
+than $\lambda I$ — makes the trust region an ellipsoid shaped like the problem, so a well-determined
+direction is not damped as hard as a poorly-determined one.
+
+<Deferred>
+  <DescentDuel />
+</Deferred>
+
+The schedule is the algorithm's only cleverness. Compare the reduction the linear model *promised*
+with the reduction actually delivered:
+
+$$
+\varrho = \frac{J(y) - J(y \bplus \Delta)}{\tfrac12 \Delta\T (\lambda \diag\Omega\, \Delta - b)}
+$$
+
+If $\varrho$ is healthy, accept the step and shrink $\lambda$; if the cost went up, reject the step
+outright and grow $\lambda$ by an order of magnitude. Rejecting is cheap — you already have $\Omega$
+and only need to re-solve — and it is what makes LM the default in every production back end.
+
+<Algorithm
+  name="levenberg_marquardt(G, y⁰, λ₀)"
+  inputs="graph, initial estimate, initial damping λ₀ ≈ 10⁻³"
+  outputs="ŷ, plus the accepted/rejected trace"
+  complexity="Gauss–Newton per accepted step, plus O(n) per rejected trial"
+>
+1. $y \leftarrow y^0$, $\lambda \leftarrow \lambda_0$, $J_0 = \mathbf{cost}(G, y)$
+2. repeat
+3. &nbsp;&nbsp;&nbsp;&nbsp;$(\Omega, b, \cdot) = \mathbf{linearize\_graph}(G, y)$
+4. &nbsp;&nbsp;&nbsp;&nbsp;solve $(\Omega + \lambda \diag\Omega)\,\Delta = -b$
+5. &nbsp;&nbsp;&nbsp;&nbsp;$J_1 = \mathbf{cost}(G,\ y \bplus \Delta)$; &nbsp; compute the gain ratio $\varrho$
+6. &nbsp;&nbsp;&nbsp;&nbsp;if $J_1 < J_0$ then $y \leftarrow y \bplus \Delta$; &nbsp; $J_0 \leftarrow J_1$; &nbsp; $\lambda \leftarrow \lambda \cdot \max\!\big(\tfrac13,\, 1 - (2\varrho - 1)^3\big)$
+7. &nbsp;&nbsp;&nbsp;&nbsp;else $\lambda \leftarrow 10\lambda$
+8. until converged or $\lambda > \lambda_{max}$
+9. return $y$
+</Algorithm>
+
+### A worked example you can check by hand
+
+Three scalar positions on a line, four unit-information factors:
+
+<LinkedMath>
+$$
+\htmlClass{term-prior}{y_0 = 0}, \qquad
+\htmlClass{term-prediction}{y_1 - y_0 = 1}, \qquad
+\htmlClass{term-prediction}{y_2 - y_1 = 1}, \qquad
+\htmlClass{term-measurement}{y_2 = 1.5}
+$$
+</LinkedMath>
+
+The prior and the fix disagree: dead reckoning says $y_2 = 2$, the absolute measurement says $1.5$.
+Start from $y = (0,0,0)$, where the residuals are $r = (0,\, -1,\, -1,\, -1.5)$ and
+$J = \tfrac12(0 + 1 + 1 + 2.25) = 2.125$.
+
+The Jacobians are the rows $(1,0,0)$, $(-1,1,0)$, $(0,-1,1)$, $(0,0,1)$. Accumulate
+$\Omega = \sum J_k\T J_k$ and $b = \sum J_k\T r_k$ by hand — each factor writes into a $1{\times}1$ or
+$2{\times}2$ patch and nothing else:
+
+$$
+\Omega = \begin{pmatrix} 2 & -1 & 0 \\ -1 & 2 & -1 \\ 0 & -1 & 2\end{pmatrix},
+\qquad
+b = \begin{pmatrix} 1 \\ 0 \\ -2.5 \end{pmatrix}
+$$
+
+Notice the shape: tridiagonal, because the only variables sharing a factor are neighbors. Solving
+$\Omega \Delta = -b$ by elimination gives, in one step (the problem is linear, so Gauss–Newton
+converges exactly once):
+
+<LinkedMath>
+$$
+\hat y = \htmlClass{term-posterior}{(-0.125,\ 0.75,\ 1.625)}
+$$
+</LinkedMath>
+
+Now read the answer. Both odometry intervals came out $0.875$ — *equally* shortened, though only the
+second one is adjacent to the disagreeing measurement. And all four residuals end at exactly
+$\pm 0.125$, with $J = 4 \cdot \tfrac12 (0.125)^2 = 1/32$. Least squares shared the half-metre
+contradiction evenly across four equally stiff springs, because that is what minimizes a sum of
+squares: equal marginal cost everywhere. If you make the prior ten times stiffer, the tension moves
+to the other end. That is the entire behavior of a SLAM back end, in three numbers you can check on
+paper.
+
+## Sparsity: Ω is a picture of the graph
+
+Now cash in the observation from the factorization: no factor mentions two landmarks.
+
+<Derivation title="The block sparsity pattern of Ω" result="\Omega_{[j][k]} \ne 0 \iff j,k \text{ share a factor}">
+From the assembly rule, $\Omega = \sum_k J_k\T J_k$, and $J_k$ has nonzero columns only where factor
+$k$ touches a variable. So the product $J_k\T J_k$ writes into the block $(a,c)$ only when factor $k$
+touches *both* $a$ and $c$. Summing over factors:
+
+$$
+\Omega_{[j][k]} \ne 0 \quad\Longleftrightarrow\quad \exists\, \text{a factor touching both } j \text{ and } k
+$$
+
+which is the adjacency matrix of the graph, with blocks instead of bits. For SLAM this gives the
+bordered-block-diagonal pattern:
+
+- $\Omega_{[x_\tau][x_{\tau+1}]} \ne 0$ — consecutive poses, from controls: a tridiagonal band, plus
+  one off-band block per loop closure, which is precisely why loop closure is the expensive event;
+- $\Omega_{[x_\tau][m_j]} \ne 0$ — when pose $\tau$ observed landmark $j$ (the border);
+- $\Omega_{[m_i][m_j]} = 0$ for $i \ne j$ — **always**, because no measurement ever constrains two
+  landmarks relative to each other. All a robot ever receives are landmark-relative-to-pose readings.
+
+Count: the Apartment graph has 232 factors over 189 dimensions, and $\Omega$'s lower triangle holds
+1917 nonzeros out of a possible 17 955 — 11%. The number of nonzeros grows with the number of
+*edges*, not with $n^2$.
+
+**The contrast with Chapter 14 is exact.** The EKF's covariance is dense — gloriously, correctly
+dense, since every landmark really is correlated with every other one. But those correlations are
+what you get after marginalizing $x_{0:t-1}$ away. The smoother keeps the poses and so never induces
+them; the correlations still exist, implicitly, as paths through the graph. Sparsity is not an
+approximation here. It is what not throwing anything away looks like.
+</Derivation>
+
+<Deferred>
+  <SparsityScope />
+</Deferred>
+
+### Elimination is the Schur complement is `EIF_reduce`
+
+Sparsity in $\Omega$ is not automatically speed. You still have to solve $\Omega \Delta = -b$, and how
+you do that decides everything.
+
+Solving means eliminating variables one at a time, and eliminating a variable is exactly Gaussian
+marginalization in information form:
+
+<Derivation title="Eliminating the map block" result="\tilde\Omega = \Omega_{xx} - \Omega_{xm}\Omega_{mm}^{-1}\Omega_{mx}">
+**Step 1 — partition.** Order the variables poses-then-landmarks and split the system:
+
+$$
+\begin{pmatrix} \Omega_{xx} & \Omega_{xm} \\ \Omega_{mx} & \Omega_{mm} \end{pmatrix}
+\begin{pmatrix} \Delta_x \\ \Delta_m \end{pmatrix}
+= -\begin{pmatrix} b_x \\ b_m \end{pmatrix}
+$$
+
+**Step 2 — solve the bottom row for $\Delta_m$.**
+$\Delta_m = -\Omega_{mm}^{-1}(b_m + \Omega_{mx}\Delta_x)$.
+
+**Step 3 — substitute into the top row.**
+
+$$
+\big(\underbrace{\Omega_{xx} - \Omega_{xm}\Omega_{mm}^{-1}\Omega_{mx}}_{\tilde\Omega}\big)\Delta_x
+= -\big(\underbrace{b_x - \Omega_{xm}\Omega_{mm}^{-1} b_m}_{\tilde b}\big)
+$$
+
+$\tilde\Omega$ is the **Schur complement** of $\Omega_{mm}$, and by the Gaussian marginalization
+identity of Appendix B it is the information matrix of the *marginal* posterior over the trajectory.
+Nothing has been approximated: solving the reduced system and back-substituting for $\Delta_m$ gives
+bit-for-bit the same answer as solving the full one. (The library asserts this to $10^{-7}$ on the
+loop scene.)
+
+**Step 4 — read it on the graph.** $\Omega_{mm}$ is block-diagonal (landmarks never touch each
+other), so $\Omega_{xm}\Omega_{mm}^{-1}\Omega_{mx}$ decomposes into one small update per landmark:
+a landmark seen from poses $i, j, k$ contributes a nonzero block to every pose pair among
+$\{i,j,k\}$. Eliminating it *clique-connects its neighbors*. Thrun's own words for the same
+operation: "We simply have replaced springs connecting $m_j$ to various poses in our spring mass
+model by a set of springs directly linking these poses."
+
+**Step 5 — the general case.** Sparse Cholesky is nothing but this, one variable at a time: eliminate
+$y_i$, clique-connect its surviving neighbors, write its column of $L$, repeat. Each new edge in that
+clique that was not already there is **fill-in**. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="schur_marginalize(Ω, b, M)"
+  inputs="information system (Ω, b) and the set M of variables to eliminate"
+  outputs="the reduced system (Ω̃, b̃) over the remaining variables — exactly Thrun, Table 11.3"
+  complexity="O(Σ_{v ∈ M} deg(v)²) — local, because Ω_mm is block diagonal"
+>
+1. partition $\Omega$, $b$ into keep-blocks $x$ and victim-blocks $m$
+2. $K = \Omega_{xm}\,\Omega_{mm}^{-1}$
+3. $\tilde\Omega = \Omega_{xx} - K\,\Omega_{mx}$
+4. $\tilde b = b_x - K\, b_m$
+5. return $(\tilde\Omega, \tilde b)$ &nbsp;&nbsp;// recover $\Delta_m$ afterwards by back-substitution — Table 11.4
+</Algorithm>
+
+### Ordering is the algorithm
+
+Fill-in is created by elimination, so the *order* of elimination decides how much of it you pay for.
+Finding the optimal ordering is NP-hard; the heuristics that matter are minimum degree (AMD, COLAMD)
+and nested dissection (METIS). Here is what they are worth on the Apartment graph, all four solving
+the identical system to the identical answer:
+
+| Ordering | nnz(L) | as % of dense | fill edges | factorization flops |
+|---|---|---|---|---|
+| Minimum degree | **2 563** | 14.3% | 91 | 34 k |
+| Chronological | 4 821 | 26.9% | 480 | 130 k |
+| Poses first | 4 821 | 26.9% | 480 | 130 k |
+| Landmarks first (the "Schur trick") | 10 935 | 60.9% | 1 002 | 743 k |
+
+Two lessons, and the second one is the interesting one.
+
+**Ordering is worth an order of magnitude**, here 22× in flops between the best and worst choice, and
+the gap widens with problem size. This is why every serious solver runs a fill-reducing ordering as a
+first-class step, and why `nnz(L)` — not `nnz(Ω)` — is the number to quote.
+
+**The famous trick is the worst choice on this graph.** Eliminating landmarks first is the classical
+Schur trick from bundle adjustment, and it is excellent when each landmark is seen from few poses. In
+the Apartment, the corner reflectors are visible from long stretches of corridor, so eliminating one
+welds a dozen poses into a clique. Play with the *One landmark, seen by all* preset in the widget
+above: eliminating that hub first leaves $\operatorname{nnz}(L) = 351$ and twenty fill edges;
+eliminating it last leaves 216 and five. Same graph, same posterior, 63% more storage and a
+correspondingly denser factorization. Rules of thumb about ordering are statements about *graph
+shape*, not about algorithms.
+
+<Callout type="warn">
+Nothing in this section changed the answer. Every ordering produces the same $\hat y$ to machine
+precision. If a change of ordering changes your solution, you have a numerical conditioning problem,
+not an ordering problem — and the usual culprit is a missing prior, leaving $\Omega$ singular along
+the gauge directions.
+</Callout>
+
+## One bad spring: robustness
+
+Least squares is maximum likelihood under Gaussian noise, and a Gaussian says a 35σ event has
+probability smaller than $10^{-260}$. When one happens anyway — a false loop closure, a mis-associated landmark, a
+laser beam through a glass door — the estimator does not shrug. It concludes that the world must be
+bent, and bends it.
+
+<Derivation title="Robust kernels and the IRLS weight" result="w_k = \rho'(e_k)/e_k">
+**Step 1 — the diagnosis.** With $\rho(e) = \tfrac12 e^2$, the derivative $\rho'(e) = e$ is the
+*influence* of a residual: how hard it pulls. It is unbounded. Double the outlier, double its pull;
+the rest of the graph must move to meet it.
+
+**Step 2 — replace the loss.** Choose a $\rho$ that grows more slowly, and minimize
+$J(y) = \sum_k \rho(e_k)$ with $e_k = \norm{r_k(y)}$. Differentiate:
+
+$$
+\nabla J = \sum_k \rho'(e_k)\,\nabla e_k
+= \sum_k \underbrace{\frac{\rho'(e_k)}{e_k}}_{w_k}\, J_k\T r_k
+$$
+
+**Step 3 — recognize what that is.** The stationarity condition is identical to that of the *weighted*
+least-squares problem $\tfrac12\sum_k w_k \norm{r_k}^2$ with weights held fixed. So: compute weights
+from the current residuals, solve the weighted normal equations, recompute the weights, repeat. That
+is **iteratively reweighted least squares**, and it folds into Gauss–Newton as a single scalar
+multiply per factor — line 6 of `linearize_graph`, which is why that line was already written with
+$w_k$ in it.
+
+**Step 4 — the menu, and the bill.**
+
+| Kernel | $\rho(e)$ | $w(e) = \rho'(e)/e$ | Convex? |
+|---|---|---|---|
+| L2 | $\tfrac12 e^2$ | $1$ | yes |
+| Huber($k$) | $\tfrac12 e^2$ if $\abs{e}\le k$, else $k(\abs{e} - \tfrac{k}{2})$ | $\min(1,\ k/\abs{e})$ | yes |
+| Cauchy($c$) | $\tfrac{c^2}{2}\log\!\big(1 + e^2/c^2\big)$ | $1/(1 + e^2/c^2)$ | no |
+| Geman–McClure($c$) | $\dfrac{c^2 e^2}{2(c^2 + e^2)}$ | $c^4/(c^2+e^2)^2$ | no |
+
+Huber's influence *saturates*: an outlier still pulls, forever, just no harder than a $k$σ inlier
+does. Cauchy and Geman–McClure **redescend**: influence goes back to zero, so a far enough outlier is
+switched off entirely. And there is the bill — a redescending $\rho$ is non-convex, so the objective
+grows extra local minima, one of which sits on top of the outlier. $\blacksquare$
+</Derivation>
+
+<Deferred>
+  <KernelGallery />
+</Deferred>
+
+Run the numbers on the Apartment loop with a 1.6 m lie injected into one loop closure, and the theory
+is visible in three digits:
+
+| Back end | RMSE vs truth | weight on the false factor | its residual at the optimum |
+|---|---|---|---|
+| Clean graph (no outlier) | 0.197 m | — | — |
+| L2 | 0.765 m | 1.000 | 6.6σ |
+| Huber, $k = 1$ | 0.534 m | 0.052 | 19.2σ |
+| Cauchy, $c = 1$ | 0.211 m | 0.0009 | 34.0σ |
+| Geman–McClure, $c = 1$ | 0.199 m | 0.00002 | 34.7σ |
+
+Read the last column first. Under L2 the false factor got most of what it wanted — its residual is
+*only* 6.6σ at the optimum, because every pose between the two it names moved to meet it. Under Geman–McClure it sits at
+34.7σ, screaming, and nobody is listening: the map is back to 0.199 m, statistically indistinguishable
+from the clean solution. Huber lands in between, exactly as its influence function promises.
+
+So why is Huber still the industry default? Because convexity is a guarantee and robustness is a
+gamble. Huber's objective has one minimum, so the answer does not depend on where you started;
+Geman–McClure's depends on it completely, and a smoother that starts from bad odometry can converge
+to a confident, self-consistent, wrong map. The modern escalation ladder is:
+
+1. **Huber**, when outliers are rare and initialization is poor.
+2. **Switchable constraints** (Sünderhauf & Protzel) and their closed-form cousin, dynamic
+   covariance scaling: give every suspect factor its own switch variable and let the optimizer turn
+   it off — robustness as a modeling decision rather than a choice of loss function.
+3. **Graduated non-convexity** (Yang et al.), which starts with a convex surrogate and anneals it
+   toward the redescending kernel, so you get the redescending behavior *and* initialization
+   independence.
+4. **Certifiable solvers** (SE-Sync and its descendants), which solve a convex relaxation and hand
+   you a certificate that the answer is the global optimum — when the relaxation is tight.
+
+Or you can stop guessing the scale altogether: Chebrolu et al. put $\rho$ itself in a one-parameter
+family and estimate its shape parameter jointly with the state, so the kernel is tuned by the data
+rather than by you.
+
+## Why filtering lost
+
+It is worth being precise about the history, because the loser was not stupid and the winner did not
+appear from nowhere.
+
+**The EKF SLAM of Chapter 14 is this graph, filtered.** Take the factor graph, and after each step
+eliminate the previous pose immediately, at whatever linearization point was current. Eliminating
+$x_{t-1}$ clique-connects everything it touched — which is every landmark it saw — and that clique
+*is* the EKF's dense covariance. Marginalization is not a different algorithm; it is this algorithm
+with a policy of never looking back, and the density and the frozen Jacobians are what that policy
+costs.
+
+**The 2005 book's GraphSLAM already was Gauss–Newton, without the name.** Line them up:
+
+| Thrun et al., Chapter 11 | This chapter |
+|---|---|
+| `EIF_initialize` (Table 11.1) — chain the controls to get $\mu_{0:t}$ | The odometric initial guess $y^0$ |
+| `EIF_construct` (Table 11.2) — add each control and measurement into $\Omega, \xi$ at fixed $\mu$ | `linearize_graph`: linearize and assemble at $y$ |
+| `EIF_reduce` (Table 11.3) — remove the map from $\Omega, \xi$ | `schur_marginalize`: Schur-complement the landmark block |
+| `EIF_solve` (Table 11.4) — solve the reduced system, recover the map | Sparse Cholesky solve, then back-substitution |
+| The outer loop of `EIF_SLAM` (Table 11.5) — repeat with the new $\mu$ | The Gauss–Newton iteration |
+
+One table, twenty-five years. What the modern formulation adds is not the loop but everything around
+it: the manifold-correct residuals, the ordering theory that makes the solve fast rather than merely
+correct, the trust region that makes it converge from a bad start, the robust kernels that make it
+survive a bad front end, and a sparse linear algebra ecosystem that did not exist in 2000.
+
+**And SEIF was the heroic wrong turn.** Chapter 12 of the baseline noticed that the *online*
+information matrix is nearly sparse — most links are weak — and forced it to be exactly sparse by
+deleting the weak ones, buying constant-time updates. The instinct was right and the mechanism was
+wrong: deleting a link discards information the filter then does not know it has lost, and the
+resulting estimator is overconfident. Smoothing gets exact sparsity for free, by never marginalizing
+in the first place. The debt is still live, though —
+[Chapter 18](/chapters/ch18-visual-slam)'s sliding-window estimators must marginalize to bound
+computation, and they meet SEIF's dilemma again with better tools.
+
+<Callout type="info">
+**Deferred, deliberately.** This chapter's solver is *batch*: it re-optimizes everything, every time.
+Incremental smoothing — iSAM2 and the Bayes tree
+([Kaess et al., 2012](https://journals.sagepub.com/doi/10.1177/0278364911430419)) — re-eliminates
+only the part of the tree that the newest measurement touched, giving filter-like update rates with
+smoother-quality answers. No Rust crate implements it yet; `factrs` is batch-only, and this book says
+so rather than pretending otherwise.
+</Callout>
+
+## Implementation in Rust
+
+The library mirrors the mathematics one-to-one: a `Factor` knows its keys, its dimension and how to
+linearize itself; `Values` knows how to retract; the optimizer knows nothing about SLAM at all.
+
+```rust title="crates/ch15_graph/src/factor.rs"
+use nalgebra::{DMatrix, DVector, Matrix2, Matrix2x3, Matrix3, Vector2, Vector3};
+use pr_core::geom::{SE2, se2_right_jacobian_inv};  // Ch. 3
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum VarKey {
+    Pose(usize),
+    Landmark(usize),
+}
+
+impl VarKey {
+    /// Tangent-space dimension. Poses retract through SE(2); points just add.
+    pub const fn dim(self) -> usize {
+        match self {
+            VarKey::Pose(_) => 3,
+            VarKey::Landmark(_) => 2,
+        }
+    }
+}
+
+/// Every unknown in the problem. Two containers, one index.
+#[derive(Clone, Debug)]
+pub struct Values {
+    pub poses: Vec<SE2>,
+    pub landmarks: Vec<Vector2<f64>>,
+}
+
+impl Values {
+    /// y ← y ⊞ Δ. The whole reason a heading never gets averaged into nonsense.
+    pub fn retract(&mut self, delta: &DVector<f64>, index: &BlockIndex) {
+        for (slot, key) in index.order.iter().enumerate() {
+            let o = index.offset(slot);
+            match *key {
+                VarKey::Pose(i) => {
+                    let tau = Vector3::new(delta[o], delta[o + 1], delta[o + 2]);
+                    self.poses[i] = self.poses[i].boxplus(&tau);
+                }
+                VarKey::Landmark(l) => {
+                    self.landmarks[l] += Vector2::new(delta[o], delta[o + 1]);
+                }
+            }
+        }
+    }
+}
+
+/// A whitened residual and one Jacobian block per key.
+pub struct Linearization {
+    pub residual: DVector<f64>,
+    pub jacobians: Vec<DMatrix<f64>>,
+}
+
+pub trait Factor {
+    fn keys(&self) -> &[VarKey];
+    fn dim(&self) -> usize;
+    /// Returns Σ^{-1/2} r and the matching Σ^{-1/2} J, so the caller never
+    /// has to know which sensor this factor came from.
+    fn linearize(&self, v: &Values) -> Linearization;
+    fn kernel(&self) -> Kernel {
+        Kernel::L2
+    }
+}
+
+/// One control, or one loop closure: r = (xᵢ⁻¹ xⱼ) ⊟ δ.
+pub struct BetweenFactor {
+    pub keys: [VarKey; 2],       // [Pose(i), Pose(j)]
+    pub delta: SE2,
+    pub sqrt_info: Matrix3<f64>,
+    pub kernel: Kernel,
+}
+
+impl Factor for BetweenFactor {
+    fn keys(&self) -> &[VarKey] { &self.keys }
+    fn dim(&self) -> usize { 3 }
+
+    fn linearize(&self, v: &Values) -> Linearization {
+        let (VarKey::Pose(i), VarKey::Pose(j)) = (self.keys[0], self.keys[1]) else {
+            unreachable!("a between factor joins two poses")
+        };
+        let (xi, xj) = (v.poses[i], v.poses[j]);
+        let rel = xi.inverse() * xj;                                 // xᵢ⁻¹ xⱼ
+        let r: Vector3<f64> = (self.delta.inverse() * rel).log();    // r = rel ⊟ δ
+
+        // Right perturbation: xⱼ moves the residual through J_r⁻¹, while xᵢ
+        // must first be transported into j's frame — hence the adjoint.
+        let jr_inv = se2_right_jacobian_inv(&r);
+        let dj = self.sqrt_info * jr_inv;
+        let di = -&dj * (xj.inverse() * xi).adjoint();
+
+        Linearization {
+            residual: DVector::from(self.sqrt_info * r),
+            jacobians: vec![DMatrix::from(di), DMatrix::from(dj)],
+        }
+    }
+
+    fn kernel(&self) -> Kernel { self.kernel }
+}
+
+/// Range–bearing sighting: Chapter 10's model, reused verbatim as a factor.
+pub struct RangeBearingFactor {
+    pub keys: [VarKey; 2],        // [Pose(t), Landmark(j)]
+    pub z: Vector2<f64>,          // (range, bearing)
+    pub sqrt_info: Matrix2<f64>,
+    pub kernel: Kernel,
+}
+
+impl Factor for RangeBearingFactor {
+    fn keys(&self) -> &[VarKey] { &self.keys }
+    fn dim(&self) -> usize { 2 }
+
+    fn linearize(&self, v: &Values) -> Linearization {
+        let (VarKey::Pose(t), VarKey::Landmark(j)) = (self.keys[0], self.keys[1]) else {
+            unreachable!("a sighting joins a pose and a landmark")
+        };
+        let x = v.poses[t];
+        let d = x.inverse_transform_point(&v.landmarks[j]);         // body frame
+        let q = (d.x * d.x + d.y * d.y).max(1e-9);
+        let range = q.sqrt();
+        let r = Vector2::new(range - self.z[0], wrap_angle(d.y.atan2(d.x) - self.z[1]));
+
+        let dh_dd = Matrix2::new(d.x / range, d.y / range, -d.y / q, d.x / q);
+        // ∂d/∂Δ for a right perturbation of the pose: translate, then rotate.
+        let dd_dx = Matrix2x3::new(-1.0, 0.0, d.y, 0.0, -1.0, -d.x);
+        let dd_dm = x.rotation().matrix().transpose();
+
+        Linearization {
+            residual: DVector::from(self.sqrt_info * r),
+            jacobians: vec![
+                DMatrix::from(self.sqrt_info * dh_dd * dd_dx),
+                DMatrix::from(self.sqrt_info * dh_dd * dd_dm),
+            ],
+        }
+    }
+}
+```
+
+Assembly and the solve. The blocks go into a `nalgebra-sparse` COO triplet list — sparsity taught
+through the API before performance enters — and then into `faer` for the numeric factorization, which
+is the same engine `factrs` uses underneath, so graduating later changes the API and not the answer.
+
+```rust title="crates/ch15_graph/src/optimize.rs"
+use faer::linalg::solvers::Llt;
+use faer::sparse::SparseColMat;
+use nalgebra_sparse::CooMatrix;
+
+pub struct System {
+    pub omega: SparseColMat<usize, f64>,
+    pub b: DVector<f64>,
+    pub cost: f64,
+}
+
+/// `linearize_graph` — Table 15.1. One pass over the factors; O(1) work each.
+pub fn linearize_graph(g: &FactorGraph, v: &Values, index: &BlockIndex) -> System {
+    let n = index.total();
+    let mut coo = CooMatrix::<f64>::new(n, n);
+    let mut b = DVector::zeros(n);
+    let mut cost = 0.0;
+
+    for f in &g.factors {
+        let lin = f.linearize(v);
+        let e = lin.residual.norm();
+        // IRLS: one scalar per factor is the entire cost of robustness.
+        let w = f.kernel().weight(e);
+        cost += f.kernel().rho(e);
+
+        for (a, key_a) in f.keys().iter().enumerate() {
+            let oa = index.offset_of(key_a);
+            let ja = &lin.jacobians[a];
+            b.rows_mut(oa, ja.ncols()).add_assign(w * ja.transpose() * &lin.residual);
+
+            for (c, key_c) in f.keys().iter().enumerate() {
+                let oc = index.offset_of(key_c);
+                let block = w * ja.transpose() * &lin.jacobians[c];
+                for p in 0..block.nrows() {
+                    for q in 0..block.ncols() {
+                        // Duplicate triplets are summed on conversion to CSC,
+                        // which is exactly the accumulation Ω = Σ Jᵀ J needs.
+                        coo.push(oa + p, oc + q, block[(p, q)]);
+                    }
+                }
+            }
+        }
+    }
+
+    System { omega: SparseColMat::try_new_from_triplets(&coo).unwrap(), b, cost }
+}
+
+pub struct LmConfig {
+    pub max_iterations: usize,
+    pub tol: f64,
+    pub lambda0: f64,
+}
+
+/// `levenberg_marquardt` — Table 15.3.
+pub fn levenberg_marquardt(
+    g: &FactorGraph,
+    init: Values,
+    index: &BlockIndex,
+    cfg: &LmConfig,
+    ordering: Ordering,
+) -> (Values, Report) {
+    let mut y = init;
+    let mut lambda = cfg.lambda0;
+    let mut cost = g.cost(&y);
+    let mut report = Report::default();
+
+    for _ in 0..cfg.max_iterations {
+        let sys = linearize_graph(g, &y, index);
+        let damped = sys.damped(lambda);                  // Ω + λ diag Ω
+        // The symbolic pattern only changes when the graph does, so the
+        // fill-reducing ordering is computed once and reused every iteration.
+        let llt = Llt::try_new_with_symbolic(ordering.symbolic(&damped), damped.as_ref())
+            .expect("Ω is singular — is a prior factor missing?");
+        let delta = llt.solve(&-&sys.b);
+
+        let mut trial = y.clone();
+        trial.retract(&delta, index);
+        let trial_cost = g.cost(&trial);
+
+        // Gain ratio: what the linear model promised vs. what we got.
+        let predicted = 0.5 * delta.dot(&(lambda * sys.diag().component_mul(&delta) - &sys.b));
+        let rho = (cost - trial_cost) / predicted;
+
+        if trial_cost < cost {
+            y = trial;
+            cost = trial_cost;
+            lambda = (lambda * (1.0 - (2.0 * rho - 1.0).powi(3)).max(1.0 / 3.0)).max(1e-9);
+            report.push_accepted(cost, delta.norm(), lambda);
+            if report.relative_decrease() < cfg.tol { break; }
+        } else {
+            lambda *= 10.0;
+            report.push_rejected(lambda);
+        }
+    }
+    (y, report)
+}
+```
+
+And the worked example, pinned by a test, exactly as in every other chapter of this book:
+
+```rust title="crates/ch15_graph/tests/micro_1d.rs"
+use approx::assert_relative_eq;
+use ch15_graph::{FactorGraph, LinearFactor, Values, gauss_newton, linearize_graph};
+
+/// The 1-D chain from §15.4: prior y₀ = 0, odometry +1, +1, and a fix y₂ = 1.5.
+/// Every factor has unit information, so Ω is tridiagonal(−1, 2, −1) and the
+/// whole thing can be checked on paper.
+#[test]
+fn micro_chain_matches_the_hand_calculation() {
+    let g = FactorGraph::from(vec![
+        LinearFactor::new(&[0],    &[1.0],       0.0, 1.0),   // prior
+        LinearFactor::new(&[0, 1], &[-1.0, 1.0], 1.0, 1.0),   // odometry
+        LinearFactor::new(&[1, 2], &[-1.0, 1.0], 1.0, 1.0),   // odometry
+        LinearFactor::new(&[2],    &[1.0],       1.5, 1.0),   // absolute fix
+    ]);
+    let index = g.default_index();
+    let init = Values::scalars(vec![0.0, 0.0, 0.0]);
+
+    let sys = linearize_graph(&g, &init, &index);
+    assert_relative_eq!(sys.cost, 2.125, epsilon = 1e-12);
+    assert_relative_eq!(sys.omega[(0, 0)], 2.0, epsilon = 1e-12);
+    assert_relative_eq!(sys.omega[(0, 1)], -1.0, epsilon = 1e-12);
+    assert_relative_eq!(sys.omega[(0, 2)], 0.0, epsilon = 1e-12);   // not neighbors
+    assert_relative_eq!(sys.b[2], -2.5, epsilon = 1e-12);
+
+    let (y, report) = gauss_newton(&g, init, &index, &Default::default());
+    assert_relative_eq!(y.scalars[0], -0.125, epsilon = 1e-9);
+    assert_relative_eq!(y.scalars[1], 0.750, epsilon = 1e-9);
+    assert_relative_eq!(y.scalars[2], 1.625, epsilon = 1e-9);
+
+    // Both intervals shrink by the same amount: equal stiffness, equal share.
+    assert_relative_eq!(y.scalars[1] - y.scalars[0], 0.875, epsilon = 1e-9);
+    assert_relative_eq!(y.scalars[2] - y.scalars[1], 0.875, epsilon = 1e-9);
+    // A linear problem is solved by the *first* Gauss–Newton step; every later
+    // iteration moves nothing, which is how the loop knows it has converged.
+    assert!(report.steps()[0].step_norm > 1.0);
+    assert!(report.steps().last().unwrap().step_norm < 1e-12);
+    assert_relative_eq!(report.final_cost(), 1.0 / 32.0, epsilon = 1e-12);
+}
+```
+
+<Callout type="info">
+The widgets in this chapter run the TypeScript port of exactly this code, in `web/lib/optim/`. Its
+self-checks (`lib/optim/__checks_ch15__.ts`) assert the same three numbers, every analytic Jacobian
+against a finite difference of the $\bplus$ perturbation, $w = \rho'(e)/e$ for all four kernels, and
+that the Schur-reduced solve agrees with the full solve to $10^{-7}$. Prose, Rust and pixels are
+pinned to the same arithmetic.
+</Callout>
+
+### The same graph, in `factrs`
+
+Once the ideas are yours, stop hand-rolling. [`factrs` 0.3](https://github.com/rpl-cmu/factrs) is a
+GTSAM-shaped Rust library — typed variables, typed factors, automatic differentiation through dual
+numbers, GN and LM, robust kernels, serde, `rerun` output — and it builds the identical Apartment
+graph in about thirty lines:
+
+```rust title="crates/ch15_graph/examples/factrs_same_graph.rs"
+use factrs::{
+    assign_symbols,
+    core::{BetweenResidual, GaussNewton, Graph, Huber, PriorResidual, Values},
+    dtype, fac,
+    linalg::{Const, ForwardProp, Numeric, VectorX, vectorx},
+    residuals::Residual2,
+    traits::*,
+    variables::{SE2, VectorVar2},
+};
+
+// Type-tagged keys: X(3) is a pose and L(3) is a landmark, and the compiler
+// will not let you hand one to a factor that expects the other.
+assign_symbols!(X: SE2; L: VectorVar2);
+
+/// factrs ships prior and between residuals; a range–bearing sighting is ours
+/// to write. The only method that matters is `residual2`, generic over
+/// `Numeric` — factrs differentiates it with dual numbers, so this file
+/// contains no hand-derived Jacobians at all.
+#[derive(Clone, Debug)]
+#[factrs::mark]
+pub struct RangeBearing {
+    range: dtype,
+    bearing: dtype,
+}
+
+impl Residual2 for RangeBearing {
+    type V1 = SE2;
+    type V2 = VectorVar2;
+    type DimIn = Const<5>;
+    type DimOut = Const<2>;
+    type Differ = ForwardProp<Self::DimIn>;
+
+    fn residual2<T: Numeric>(&self, x: SE2<T>, m: VectorVar2<T>) -> VectorX<T> {
+        let d = x.inverse().apply(m.into());          // landmark in the body frame
+        let range = (d[0] * d[0] + d[1] * d[1]).sqrt();
+        vectorx![
+            range - T::from(self.range),
+            d[1].atan2(d[0]) - T::from(self.bearing)
+        ]
+    }
+}
+
+fn main() {
+    let data = apartment_loop(42); // the same dataset the widget optimizes
+    let mut values = Values::new();
+    let mut graph = Graph::new();
+
+    for (i, p) in data.odometry_chain().enumerate() {
+        values.insert(X(i), p);
+    }
+    for (l, m) in data.landmark_guesses().enumerate() {
+        values.insert(L(l), VectorVar2::new(m.x, m.y));
+    }
+
+    graph.add_factor(fac![PriorResidual::new(data.first_pose()), X(0), 0.01 as std]);
+
+    for e in data.edges() {
+        // Loop closures get the robust kernel; odometry does not need one.
+        graph.add_factor(match e.kind {
+            EdgeKind::Odometry => fac![BetweenResidual::new(e.delta), (X(e.i), X(e.j)), 0.04 as std],
+            EdgeKind::Loop => {
+                fac![BetweenResidual::new(e.delta), (X(e.i), X(e.j)), 0.05 as std, Huber::default()]
+            }
+        });
+    }
+    for z in data.observations() {
+        graph.add_factor(fac![
+            RangeBearing::new(z.range, z.bearing),
+            (X(z.pose), L(z.lm)),
+            (0.18, 0.085) as std
+        ]);
+    }
+
+    let mut opt: GaussNewton = GaussNewton::new_default(graph);
+    println!("{:#?}", opt.optimize(values).unwrap());
+}
+```
+
+It agrees with our solver to $10^{-8}$ and runs at comparable speed, because it is calling the same
+sparse Cholesky underneath. What the rewrite buys is type-tagged keys, automatic differentiation
+instead of hand-derived Jacobians, and serde graph I/O. What no Rust crate gives you yet is the Bayes
+tree; for incremental smoothing, GTSAM is still the reference implementation.
+
+## Putting it together
+
+Run the whole thing on the Apartment loop that opened this chapter — the same corridor, the same
+biased wheels, the same corner reflectors that the filter of
+[Chapter 14](/chapters/ch14-ekf-slam) had to swallow one at a time — and the numbers close Part V's
+arc:
+
+<div className="not-prose my-6 overflow-x-auto">
+
+| | Trajectory RMSE | Landmark RMSE | Final drift | Loop closure |
+|---|---|---|---|---|
+| Dead reckoning | 0.581 m | — | 1.66 m | contradicted |
+| EKF SLAM ([Chapter 14](/chapters/ch14-ekf-slam)) | overconfident: the map is self-consistent and wrong | — | — | absorbed at a frozen linearization |
+| Batch smoothing (this chapter) | **0.197 m** | 0.208 m | 0.05 m | satisfied to 0.31σ |
+
+</div>
+
+Seven Levenberg–Marquardt steps, 232 factors, 189 unknowns, $J$ from 3780 to 116.5 — a mean residual
+of 0.88σ across the whole graph, with the worst single factor at 2.6σ, which is what a correctly
+weighted least-squares fit is supposed to look like. The numeric factorization is 34 thousand
+floating-point operations under a minimum-degree ordering: microseconds of arithmetic. The reason
+this beats the filter is not that it is cleverer. It is that it kept the past, so it could change its
+mind about it.
+
+Three doors lead out of here.
+
+[Chapter 16](/chapters/ch16-scan-matching) removes the known-correspondence assumption. Scan matching
+produces the between-factors from raw LiDAR, place recognition proposes the loop closures, and the
+robust kernels of this chapter are what stand between a false proposal and a ruined map — the front
+end and back end finally meet, as RustSLAM-2D.
+
+[Chapter 17](/chapters/ch17-fastslam) attacks the same full posterior from the opposite side: sample
+the trajectory, and the map factorizes into independent little Gaussians. Same posterior, completely
+different computational bet.
+
+[Chapter 18](/chapters/ch18-visual-slam) scales the graph to cameras and IMUs, where the number of
+variables outruns the compute budget and something must be marginalized after all. That is where
+SEIF's ghost comes back — and where the fill-in you learned to count in the Sparsity Scope becomes an
+engineering decision with real consequences.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Assemble the micro chain by hand">
+    Using only the Jacobian rows $(1,0,0)$, $(-1,1,0)$, $(0,-1,1)$, $(0,0,1)$, accumulate $\Omega$ and
+    $b$ for the 1-D example and solve $\Omega\Delta = -b$ by elimination. Then answer in one sentence
+    why *both* odometry intervals shrank to 0.875 when only one of them is adjacent to the
+    disagreeing measurement. Finally, make the prior ten times stiffer ($\sigma_0 = 0.1$) and predict,
+    before recomputing, which residual grows.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The pattern claim, and the clique it hides">
+    Prove that $\Omega_{[j][k]} \ne 0$ if and only if variables $j$ and $k$ appear together in some
+    factor. Draw the block pattern for a graph of 5 poses and 2 landmarks, where landmark 1 is seen
+    from poses 0, 2 and 4. Then Schur-eliminate landmark 1 and show that the pose blocks
+    $(0,2), (0,4), (2,4)$ become nonzero — citing the Gaussian marginalization identity you used.
+    How many fill edges does eliminating landmark 1 create in general, as a function of how many
+    poses saw it?
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Huber's weight, from stationarity">
+    Derive $w = \rho'(e)/e$ from the stationarity condition of $\sum_k \rho(e_k)$, being careful about
+    the chain rule through $e_k = \norm{r_k(y)}$. Then show that L2's influence $\rho'(e) = e$ is
+    unbounded while Huber's saturates at $k$, and compute the asymptotic weight of a 30σ residual
+    under Huber($k{=}1$), Cauchy($c{=}1$) and Geman–McClure($c{=}1$). Which of the three still moves
+    the map, and by how much relative to a 1σ inlier?
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify: which ordering wins?">
+    In <a href="#w15.2">w15.2</a>, use the *Loop* graph. Before touching anything, predict whether
+    chronological or landmarks-first gives the smaller $\operatorname{nnz}(L)$, and write down your
+    reasoning. Check. Now switch to the *One landmark, seen by all* preset and predict again — your
+    rule of thumb should fail here. Explain the failure in terms of induced cliques, in one
+    paragraph, and state the graph property that actually decides the winner.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Predict, then verify: where robustness runs out">
+    In <a href="#w15.1">w15.1</a>, set the kernel to Huber with $k = 1$ and raise the false-closure
+    error until the RMSE readout doubles. Record that magnitude. Now switch to Geman–McClure and find
+    the magnitude at which *it* fails. Then use <a href="#w15.4">w15.4</a> to explain the difference
+    in terms of the two influence functions, and — using the bad-init row of the stat tiles — write
+    the one-paragraph pitch for graduated non-convexity that you would give to a colleague who wants
+    to ship Geman–McClure tomorrow.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="A bearing-only factor and a Cauchy kernel">
+    Implement `BearingOnlyFactor` (one scalar residual, the wrapped bearing) and add `Kernel::Cauchy`
+    to the kernel enum. Verify your Jacobian against a finite-difference of the $\bplus$ perturbation
+    to $10^{-6}$ — this is the single most common source of a "my optimizer diverges" bug, and the
+    test takes ten lines. Then build a graph in which a landmark is observed by bearing only from two
+    poses and show that $\Omega$ is singular when the two bearings are parallel. What does that
+    singularity mean physically?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Ordering, measured">
+    Implement minimum-degree ordering in `order.rs` (greedy, simulating fill as you go) and compare
+    $\operatorname{nnz}(L)$ and wall-clock factorization time against chronological and
+    landmarks-first on a 500-pose synthetic loop. Plot nnz(L) versus problem size for all three on log
+    axes and report the empirical exponents. Then port the same graph to `factrs` 0.3 and to
+    `tiny-solver` 0.18 and report agreement (should be $10^{-8}$) and relative timing. Which of the
+    three implementations would you actually ship, and why?
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 11 is this chapter's ancestor — the construct–reduce–solve pipeline that, iterated, is Gauss–Newton, and the source of the spring-mass framing this chapter runs on. Chapter 12's SEIF is the cautionary tale."
+  />
+  <Reference
+    authors="Dellaert, F. and Kaess, M."
+    year={2006}
+    title="Square Root SAM: Simultaneous Localization and Mapping via Square Root Information Smoothing"
+    venue="The International Journal of Robotics Research 25(12), 1181–1203"
+    doi="10.1177/0278364906072768"
+    note="The paper that made smoothing beat filtering, by pointing out that the sparse matrix factorization community had already solved the hard part. The ordering section above is its argument, thirty years on."
+  />
+  <Reference
+    authors="Kümmerle, R., Grisetti, G., Strasdat, H., Konolige, K., and Burgard, W."
+    year={2011}
+    title="g2o: A General Framework for Graph Optimization"
+    venue="IEEE International Conference on Robotics and Automation (ICRA), 3607–3613"
+    doi="10.1109/ICRA.2011.5979949"
+    note="The back end a generation of SLAM systems was built on, and the clearest statement of the graph-optimization interface that factrs and Ceres also implement."
+  />
+  <Reference
+    authors="Sünderhauf, N. and Protzel, P."
+    year={2012}
+    title="Switchable Constraints for Robust Pose Graph SLAM"
+    venue="IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 1879–1884"
+    doi="10.1109/IROS.2012.6385590"
+    note="Robustness as a modeling decision rather than a loss function: give every loop closure a switch variable and let the optimizer turn it off. Step 2 of this chapter's escalation ladder."
+  />
+  <Reference
+    authors="Dellaert, F. and Kaess, M."
+    year={2017}
+    title="Factor Graphs for Robot Perception"
+    venue="Foundations and Trends in Robotics 6(1–2), 1–139"
+    doi="10.1561/2300000043"
+    note="The standard modern treatment, and the source of this chapter's formulation. Read it next; its elimination-game chapter is the rigorous version of the Sparsity Scope."
+  />
+  <Reference
+    authors="Yang, H., Antonante, P., Tzoumas, V., and Carlone, L."
+    year={2020}
+    title="Graduated Non-Convexity for Robust Spatial Perception: From Non-Minimal Solvers to Global Outlier Rejection"
+    venue="IEEE Robotics and Automation Letters 5(2), 1127–1134"
+    doi="10.1109/LRA.2020.2965893"
+    note="How to get a redescending kernel's outlier immunity without its initialization dependence: anneal the surrogate from convex to non-convex. The answer to the failure w15.4 shows."
+  />
+  <Reference
+    authors="Chebrolu, N., Läbe, T., Vysotska, O., Behley, J., and Stachniss, C."
+    year={2021}
+    title="Adaptive Robust Kernels for Non-Linear Least Squares Problems"
+    venue="IEEE Robotics and Automation Letters 6(2), 2240–2247"
+    doi="10.1109/LRA.2021.3061331"
+    note="Stop hand-picking ρ and its scale: put the kernel in a one-parameter family and estimate the shape parameter jointly with the state."
+  />
+  <Reference
+    authors="Doherty, K., Papalia, A., Huang, Y., Rosen, D., Englot, B., and Leonard, J."
+    year={2024}
+    title="MAC: Graph Sparsification by Maximizing Algebraic Connectivity"
+    venue="arXiv:2403.19879 [cs.RO]"
+    url="https://arxiv.org/abs/2403.19879"
+    note="The other way to control fill-in: instead of ordering the graph you have, choose which measurements to keep, using the spectral quantity that predicts estimation error. Where Chapters 18 and 24 pick this up."
+  />
+</References>

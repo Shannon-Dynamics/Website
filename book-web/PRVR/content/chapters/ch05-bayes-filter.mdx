@@ -1,0 +1,587 @@
+---
+title: The Bayes Filter
+description: The recursion behind every estimator in this book — where beliefs come from, why sensing sharpens and moving smears, and what the Markov assumption is really costing you.
+chapter: 5
+part: PART II
+partTitle: The Bayes Filter Family
+difficulty: Foundational
+readingTime: 50 min
+quote: Instead of relying on a single "best guess" as to what might be the case in the world, probabilistic algorithms represent information by probability distributions over a whole space of possible hypotheses.
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 1
+---
+
+import { HallwayBeliefMachine } from '@/components/ch/ch05/hallway-belief-machine';
+import { MarkovBreaker } from '@/components/ch/ch05/markov-breaker';
+import { FilterFamilyTree } from '@/components/ch/ch05/filter-family-tree';
+import { Scrub } from '@/components/book/scrub';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Predict, CheckAnswer, Hints } from '@/components/book/predict';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State what a belief is, formally, and why it is a distribution rather than a point',
+    'Derive the Bayes filter recursion from Bayes rule and the Markov assumption',
+    'Explain exactly which independence assumption each step of the derivation consumes',
+    'Implement the filter as a Rust trait that every later estimator in this book satisfies',
+    'Recognize when the Markov assumption is failing, and repair it by growing the state',
+  ]}
+  prerequisites={[
+    'Conditional probability and Bayes rule (Chapter 2)',
+    'Marginalization: integrating a joint distribution down to one variable',
+    'Rust traits and associated types — a short refresher appears in the Practical section',
+  ]}
+>
+Every estimator in this book — the Kalman filter, the particle filter, Monte Carlo localization,
+the mapping algorithms, even the SLAM back-ends that appear to work differently — is one
+algorithm wearing different clothes. This chapter is that algorithm.
+
+The Bayes filter answers a single question: given everything the robot has done and everything
+it has sensed, what should it believe about the world right now? The answer is a recursion with
+exactly two moves. One incorporates an action and makes the belief worse. The other incorporates
+a measurement and makes it better. Everything else in Parts II through V is a decision about how
+to *represent* the belief so that those two moves can actually be computed.
+</Overview>
+
+## The problem with knowing where you are
+
+Put a robot in a corridor with three identical doors and ask it where it is. It has a door
+detector, and the detector says: *door*.
+
+Now what? A robot that insists on a single answer must pick one of the three doors, and it will
+be wrong two times out of three. Worse, it will be wrong *confidently*, and every computation
+downstream — the path it plans, the obstacle it swerves around — inherits that false certainty
+without any record that a guess was ever made.
+
+The probabilistic answer is to refuse the question as posed. The robot does not know where it
+is; it knows something weaker and far more useful, which is how plausible each location is given
+everything that has happened. That object is a **belief**, and this chapter is about how to keep
+one up to date.
+
+<Deferred>
+  <HallwayBeliefMachine />
+</Deferred>
+
+The two numbers that decide everything here are draggable. The wheels deliver the commanded step
+plus an error of about <Scrub id="ch05.motionNoise" value={0.12} min={0.01} max={0.5} step={0.01}
+unit="m" role="prediction" label="motion noise sigma" /> — drag that up and watch every peak in
+the belief widen. The door detector is right about
+<Scrub id="ch05.sensorNoise" value={0.18} min={0.02} max={0.45} step={0.01} role="measurement"
+label="sensor noise" /> of the time; drag *that* and watch how much a single sighting is allowed
+to sharpen the belief. Nothing else about the chapter changes — you are turning the two knobs the
+mathematics below will name.
+
+Watch it for a few cycles before reading on. Three things are worth noticing, and each one
+corresponds to a piece of mathematics later in the chapter.
+
+**The belief is multi-modal, and that is a feature.** After the first door sighting there are
+three peaks. No single number could express "I am at one of these three places, equally", and any
+representation that forces a single number — as the Kalman filter of [Chapter 6](/chapters/ch06-kalman-filters)
+does — cannot survive this corridor.
+
+**Sensing multiplies; moving convolves.** The green dashed curve is the measurement likelihood.
+Correction multiplies the belief by it pointwise, which is why peaks get sharper and mass
+concentrates. Prediction convolves with the motion noise, which is why everything spreads. Those
+two operations, and their opposite effects on certainty, are the whole filter.
+
+**Ambiguity dies from sequence, not from evidence.** No individual reading distinguishes door one
+from door three. What distinguishes them is the *pattern*: door, then a long gap, then a door.
+The recursion is what accumulates that pattern, and it is the reason a filter beats any single
+measurement no matter how good the sensor.
+
+<KeyIdea title="The one sentence version">
+A belief is a probability distribution over states, conditioned on all data so far. The Bayes
+filter maintains it recursively: predict with the motion model, then correct with the measurement
+model, and never store the history itself.
+</KeyIdea>
+
+## The mathematics
+
+### State, and what it means for it to be complete
+
+The **state** $x_t$ is whatever must be known about the world at time $t$ to predict the future.
+For a mobile robot it is usually the pose; in [Chapter 14](/chapters/ch14-ekf-slam) it grows to
+include the map.
+
+State is called **complete** when it is a sufficient summary of the past — when knowing $x_t$
+makes everything before $t$ irrelevant to predicting what comes next:
+
+$$
+p(x_{t} \mid x_{0:t-1}, z_{1:t-1}, u_{1:t}) = p(x_t \mid x_{t-1}, u_t)
+$$
+
+This is the **Markov assumption**, and it is the single most consequential claim in this book. It
+is also, strictly speaking, false for every real robot. We will come back to that.
+
+The robot interacts with the world through two streams, and the distinction matters because they
+have opposite effects on what it knows:
+
+<NotationTable
+  rows={[
+    { sym: 'u_t', meaning: 'Control — an action taken between t-1 and t. Costs information: the world changes, and the robot is not sure how.' },
+    { sym: 'z_t', meaning: 'Measurement — an observation at time t. Gains information: the world constrains what the robot could be seeing.' },
+  ]}
+/>
+
+Two conditional distributions describe these streams. The **motion model** (also called the state
+transition probability) and the **measurement model**:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{p(x_t \mid x_{t-1}, u_t)}
+\qquad\qquad
+\htmlClass{term-measurement}{p(z_t \mid x_t)}
+$$
+</LinkedMath>
+
+[Chapter 9](/chapters/ch09-motion-models) and [Chapter 10](/chapters/ch10-sensor-models) are
+devoted to writing these down for real hardware. For now they are given.
+
+### Belief
+
+The **belief** is the posterior over the state given every measurement and control so far:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)} \;=\; p(x_t \mid z_{1:t},\, u_{1:t})
+$$
+</LinkedMath>
+
+It is convenient to name the intermediate object that exists after the control has been folded in
+but before the measurement has:
+
+<LinkedMath>
+$$
+\htmlClass{term-prediction}{\belbar(x_t)} \;=\; p(x_t \mid z_{1:t-1},\, u_{1:t})
+$$
+</LinkedMath>
+
+The difference between those two subscripts — $z_{1:t}$ versus $z_{1:t-1}$ — is the entire
+correction step. Calling $\belbar$ the "prediction" and $\bel$ the "posterior" is exactly the
+orange and purple in the widget above.
+
+### The recursion
+
+<Algorithm
+  name="Bayes_filter(bel(x_{t-1}), u_t, z_t)"
+  inputs="the previous belief, the control, the measurement"
+  outputs="bel(x_t)"
+  complexity="O(|X|²) for a discrete state space of size |X| — the prediction integral dominates"
+>
+1. for all $x_t$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\belbar(x_t) = \int p(x_t \mid u_t, x_{t-1})\, \bel(x_{t-1})\, dx_{t-1}$
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\bel(x_t) = \eta\, p(z_t \mid x_t)\, \belbar(x_t)$
+4. endfor
+5. return $\bel(x_t)$
+</Algorithm>
+
+Written out in one line, with each term tinted the colour it wears in every figure in this book:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\bel(x_t)}
+\;=\;
+\eta\,
+\htmlClass{term-measurement}{p(z_t \mid x_t)}
+\int
+\htmlClass{term-prediction}{p(x_t \mid u_t, x_{t-1})}\,
+\htmlClass{term-prior}{\bel(x_{t-1})}\,
+dx_{t-1}
+$$
+</LinkedMath>
+
+Point at any coloured term above and the matching layer in the Hallway Belief Machine comes
+forward while the rest fade. The colours are not decoration: the green factor in that equation
+*is* the green dashed curve in the figure, and the purple result *is* the purple histogram.
+
+Line 2 is prediction — a convolution of the previous belief with the motion model. Line 3 is
+correction — a pointwise product with the measurement likelihood, renormalized by
+$\eta = 1/p(z_t \mid z_{1:t-1}, u_{1:t})$, the probability of the measurement you actually got.
+
+That normalizer is worth a moment. It is the **evidence**, and while the filter treats it as
+housekeeping, it is a genuine diagnostic: an unexpectedly small $\eta$ means the measurement was
+surprising under the current belief. [Chapter 11](/chapters/ch11-localization-gaussian) uses
+exactly this to reject outliers, and [Chapter 12](/chapters/ch12-localization-global) uses it to
+detect that a robot has been kidnapped.
+
+<Derivation title="Deriving the Bayes filter by induction" result="\bel(x_t) = \eta\, p(z_t \mid x_t) \int p(x_t \mid u_t, x_{t-1})\, \bel(x_{t-1})\, dx_{t-1}">
+We show that if line 5 returns the correct posterior at $t-1$, it returns the correct posterior at
+$t$. The base case is the prior $\bel(x_0)$, which we are given.
+
+**Step 1 — apply Bayes rule to split off the newest measurement.**
+
+$$
+p(x_t \mid z_{1:t}, u_{1:t}) = \frac{p(z_t \mid x_t, z_{1:t-1}, u_{1:t})\; p(x_t \mid z_{1:t-1}, u_{1:t})}{p(z_t \mid z_{1:t-1}, u_{1:t})}
+$$
+
+The denominator does not depend on $x_t$, so name it $\eta$ and move on.
+
+**Step 2 — use the Markov assumption on the measurement.** If $x_t$ is complete, then knowing it
+makes earlier data irrelevant to the current reading:
+
+$$
+p(z_t \mid x_t, z_{1:t-1}, u_{1:t}) = p(z_t \mid x_t)
+$$
+
+This gives $\bel(x_t) = \eta\, p(z_t \mid x_t)\, \belbar(x_t)$ — line 3.
+
+**Step 3 — expand the prediction by the law of total probability.** Introduce the previous state
+and integrate it back out:
+
+$$
+\belbar(x_t) = \int p(x_t \mid x_{t-1}, z_{1:t-1}, u_{1:t})\; p(x_{t-1} \mid z_{1:t-1}, u_{1:t})\, dx_{t-1}
+$$
+
+**Step 4 — use the Markov assumption on the motion.** Given $x_{t-1}$ and $u_t$, nothing earlier
+helps predict $x_t$:
+
+$$
+p(x_t \mid x_{t-1}, z_{1:t-1}, u_{1:t}) = p(x_t \mid x_{t-1}, u_t)
+$$
+
+**Step 5 — drop the future control from the past belief.** The control $u_t$ is applied *after*
+$x_{t-1}$, so it carries no information about it:
+
+$$
+p(x_{t-1} \mid z_{1:t-1}, u_{1:t}) = p(x_{t-1} \mid z_{1:t-1}, u_{1:t-1}) = \bel(x_{t-1})
+$$
+
+This assumes the controls are chosen without secretly consulting the state — a subtlety that
+becomes a real issue in [Chapter 24](/chapters/ch24-exploration), where the robot deliberately
+chooses actions based on its belief.
+
+Substituting Steps 4 and 5 into Step 3 gives line 2, and the induction closes. $\blacksquare$
+</Derivation>
+
+### What each assumption bought, and what it cost
+
+The derivation consumed the Markov assumption twice — once for measurements, once for motion —
+and it is worth being precise about what happens when it fails, because it always does.
+
+Real robots violate it constantly. A person walking through the room makes consecutive laser
+scans dependent in a way the pose alone does not explain. A systematically miscalibrated wheel
+radius makes consecutive odometry errors correlated. A map that is slightly wrong makes *every*
+measurement correlated forever.
+
+The failure has a characteristic signature: the filter becomes **overconfident**. It treats
+correlated errors as independent evidence and multiplies them together, so the belief keeps
+sharpening while the truth walks out of it.
+
+<Deferred>
+  <MarkovBreaker />
+</Deferred>
+
+There are exactly two honest repairs, and both appear later in the book:
+
+1. **Grow the state** until it is complete again. If a miscalibrated wheel radius is the problem,
+   estimate the wheel radius: put it in $x_t$. This is why [Chapter 14](/chapters/ch14-ekf-slam)
+   puts the map into the state, and why modern visual-inertial systems estimate IMU biases
+   ([Chapter 18](/chapters/ch18-visual-slam)).
+2. **Inflate the noise** to buy back the honesty you lost. Deliberately model the sensor as worse
+   than it is, so that correlated evidence cannot compound. This is a hack, it is what almost
+   every deployed system does, and [Chapter 10](/chapters/ch10-sensor-models) shows how to tune it
+   without lying to yourself.
+
+## The family tree
+
+The Bayes filter as written is not implementable. Line 2 is an integral over a continuous state
+space, and line 3 requires a function defined at every point of that space. Every practical filter
+is a choice of representation for $\bel$ that turns those into finite computation — and every one
+of those choices trades away something.
+
+<Deferred>
+  <FilterFamilyTree />
+</Deferred>
+
+That tree is the map of the next three chapters. The Kalman filter says: assume the belief is
+Gaussian and the models are linear, and the integral becomes matrix algebra. The particle filter
+says: represent the belief with samples, and the integral becomes a for-loop. Neither is more
+correct; they fail in different places, and knowing which failure you are buying is most of the
+skill.
+
+## Implementation in Rust
+
+The filter is an interface before it is an algorithm. In Rust that means a trait, and the
+associated types are what make it worth writing: a Kalman filter's control is a vector while a
+particle filter's is a motion command, and the compiler should not let you mix them up.
+
+```rust title="crates/pr-core/src/filters/bayes.rs"
+/// The Bayes filter recursion, as an interface.
+///
+/// Every estimator in this book implements this trait. The associated types are
+/// what let a Kalman filter take an `SVector<f64, 3>` control while Monte Carlo
+/// localization takes an odometry reading, without either one giving up type
+/// safety at the call site.
+pub trait BayesFilter {
+    /// What the belief is represented as: a Gaussian, a histogram, a particle set.
+    type Belief;
+    type Control;
+    type Measurement;
+
+    /// Prediction: fold in a control. This step *loses* information.
+    fn predict(&mut self, u: &Self::Control);
+
+    /// Correction: fold in a measurement. This step *gains* information.
+    ///
+    /// Returns the evidence p(z | z_{1:t-1}), the normalizer η⁻¹ from line 3.
+    /// A small value means the measurement was surprising — Chapter 11 uses this
+    /// to reject outliers and Chapter 12 to detect a kidnapped robot.
+    fn correct(&mut self, z: &Self::Measurement) -> f64;
+
+    fn belief(&self) -> &Self::Belief;
+}
+```
+
+The discrete case makes the two lines of the algorithm literal. A belief over a corridor is just
+an array of cell probabilities; prediction is a convolution, correction is a multiply.
+
+```rust title="crates/pr-core/src/filters/histogram.rs" {23-30,38-44}
+use crate::filters::BayesFilter;
+
+/// A discrete Bayes filter over a 1-D corridor — Thrun et al., Table 2.1.
+///
+/// No Gaussians, no linearization: the only approximation is the discretization
+/// itself. That makes this filter the reference every later one is measured against.
+pub struct HistogramFilter {
+    cells: Vec<f64>,
+    cell_width: f64,
+    /// Treat the corridor as a loop, so mass leaving one end re-enters the other.
+    wrap: bool,
+}
+
+impl HistogramFilter {
+    /// The uniform prior: maximal ignorance, log₂(n) bits of entropy.
+    pub fn uniform(n: usize, length: f64, wrap: bool) -> Self {
+        Self { cells: vec![1.0 / n as f64; n], cell_width: length / n as f64, wrap }
+    }
+
+    fn center(&self, i: usize) -> f64 {
+        (i as f64 + 0.5) * self.cell_width
+    }
+
+    /// Line 2: b̄(i) = Σⱼ b(j) · p(cᵢ | cⱼ, u) · Δx
+    ///
+    /// The motion model enters as a kernel over the displacement error, so this
+    /// is a discrete convolution — which is exactly why prediction always
+    /// spreads the belief out.
+    fn convolve(&self, u: f64, kernel: impl Fn(f64) -> f64) -> Vec<f64> {
+        let n = self.cells.len();
+        let mut out = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                if self.cells[j] < 1e-12 {
+                    continue; // negligible mass contributes nothing measurable
+                }
+                let mut delta = self.center(i) - self.center(j) - u;
+                if self.wrap {
+                    let span = n as f64 * self.cell_width;
+                    delta -= span * (delta / span).round();
+                }
+                out[i] += self.cells[j] * kernel(delta) * self.cell_width;
+            }
+        }
+        out
+    }
+}
+
+impl BayesFilter for HistogramFilter {
+    type Belief = Vec<f64>;
+    type Control = f64;
+    /// The likelihood p(z | x), evaluated at a cell center.
+    type Measurement = Box<dyn Fn(f64) -> f64>;
+
+    fn predict(&mut self, u: &f64) {
+        self.cells = self.convolve(*u, |d| gaussian_pdf(d, 0.0, self.motion_sigma));
+        normalize(&mut self.cells);
+    }
+
+    fn correct(&mut self, likelihood: &Self::Measurement) -> f64 {
+        // Line 3: pointwise multiply, then normalize. The normalizer we divide
+        // by IS the evidence, so we get the diagnostic for free.
+        for i in 0..self.cells.len() {
+            self.cells[i] *= likelihood(self.center(i));
+        }
+        let evidence: f64 = self.cells.iter().sum();
+        if evidence > 0.0 {
+            self.cells.iter_mut().for_each(|c| *c /= evidence);
+        }
+        evidence
+    }
+
+    fn belief(&self) -> &Vec<f64> {
+        &self.cells
+    }
+}
+```
+
+<Callout type="info">
+The widget at the top of this chapter runs this algorithm — the TypeScript in
+`lib/filters/bayes.ts` is a line-for-line port of the Rust above, and both are checked against the
+same worked example below.
+</Callout>
+
+### A worked example you can check by hand
+
+Take a corridor of four cells with a uniform prior, and a door sensor that reports correctly 80%
+of the time. Cells 1 and 3 have doors. The sensor fires.
+
+The prior is $\bel = (0.25,\, 0.25,\, 0.25,\, 0.25)$. The likelihood of *door detected* is $0.8$
+at a door and $0.2$ elsewhere, giving $(0.2,\, 0.8,\, 0.2,\, 0.8)$. Multiply pointwise:
+
+$$
+(0.05,\; 0.2,\; 0.05,\; 0.2)
+\qquad\text{summing to}\qquad
+\eta^{-1} = 0.5
+$$
+
+Normalize: $\bel = (0.1,\, 0.4,\, 0.1,\, 0.4)$. Two hypotheses now hold 80% of the belief between
+them, and the filter has committed to neither. The evidence $0.5$ says the reading was neither
+surprising nor especially informative — which is right, since half the corridor has a door.
+
+Now carry it one step further yourself. The robot moves one cell to the right, with a motion model
+that lands where commanded 80% of the time and overshoots by one cell 20% of the time. What is the
+new belief in cell 2?
+
+<CheckAnswer
+  id="ch05.worked"
+  prompt="After the move, what is bel(cell 2)?"
+  answer={0.34}
+  tolerance={0.005}
+>
+Cell 2 receives 80% of cell 1's mass and 20% of cell 0's:
+$0.8 \times 0.4 + 0.2 \times 0.1 = 0.34$. Notice that the peak has moved *and* flattened — it was
+0.4 before the move and is 0.34 after. Prediction never sharpens, which is the claim Exercise 3
+asks you to prove.
+</CheckAnswer>
+
+```rust title="crates/pr-core/src/filters/histogram.rs (tests)"
+#[test]
+fn worked_example_ch05_door_sighting() {
+    let mut f = HistogramFilter::uniform(4, 4.0, false);
+    let likelihood: Box<dyn Fn(f64) -> f64> =
+        Box::new(|x| if x > 1.0 && x < 2.0 || x > 3.0 { 0.8 } else { 0.2 });
+
+    let evidence = f.correct(&likelihood);
+
+    assert_relative_eq!(evidence, 0.5, epsilon = 1e-12);
+    assert_relative_eq!(f.belief()[1], 0.4, epsilon = 1e-12);
+    assert_relative_eq!(f.belief()[0], 0.1, epsilon = 1e-12);
+}
+```
+
+Every worked example in this book has a test like this one beside it. If the prose and the code
+ever disagree, the test is what settles it.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={1} title="The evidence is not a nuisance">
+    Show that the normalizer in line 3 equals $p(z_t \mid z_{1:t-1}, u_{1:t})$ — the probability of
+    the measurement, averaged over the predicted belief. Then explain in one sentence why a
+    sequence of small evidence values is a better kidnapping detector than any single one.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Where the assumption enters">
+    The derivation uses the Markov assumption in Step 2 and Step 4. For each, construct a concrete
+    robot scenario in which it fails, and say which of the two repairs (grow the state, inflate
+    the noise) you would use and why.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Prediction cannot sharpen">
+    Prove that the prediction step never decreases the entropy of the belief when the motion
+    kernel has non-zero variance. (Hint: prediction is a convolution; consider what convolution
+    does to a distribution's Fourier transform, or apply the entropy power inequality.) Then
+    explain why this is the formal statement of "moving smears".
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check">
+    <Predict
+      id="ch05.e4"
+      question="Set motion noise to its maximum and switch sensing off. After twenty steps, what does the belief look like?"
+      options={[
+        { label: 'A single peak that has drifted away from the truth',
+          because: 'Drift would require the filter to be wrong about the mean. It is not — prediction is unbiased. What it loses is certainty, not accuracy.' },
+        { label: 'A flat belief, spread over the whole corridor', correct: true,
+          because: 'Right. Each prediction convolves with the motion kernel, and repeated convolution drives any distribution on a loop toward the uniform one. Entropy rises every step and nothing pushes it back down.' },
+        { label: 'Three peaks, one at each door',
+          because: 'Doors only enter through the measurement model. With sensing off the filter has never heard of them.' },
+      ]}
+    >
+    Now turn sensing back on. The belief does not recover in one sighting: the first correction
+    reinstates three peaks, and only the *sequence* — door, gap, gap, door — collapses them to one.
+    Count how many sightings it actually takes, then try it again with the sensor made unreliable.
+    </Predict>
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Break it deliberately">
+    Find a parameter setting where the filter is confidently wrong — the belief has one sharp peak
+    that does not contain the true position. What did you have to do to produce it? Which of the
+    two Markov repairs would fix it?
+
+    <Hints>
+      <>Confidence comes from correction and is destroyed by prediction. So you want a filter that corrects often and predicts little.</>
+      <>Being <em>wrong</em> as well as confident needs the evidence to mislead. What does a sensor that is right 55% of the time do to a belief, over many readings, if you let the filter keep trusting it?</>
+      <>Turn the sensor's reliability down toward the middle and the step size down toward zero, then let it run. The filter accumulates near-worthless evidence as if it were decisive.</>
+    </Hints>
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Implement the recursion">
+    Implement `HistogramFilter` in Rust so that the worked-example test above passes. Then add a
+    method `entropy()` returning the belief's entropy in bits, and reproduce the claim in
+    Exercise 3 numerically: log the entropy for twenty alternating predict/correct steps and show
+    that prediction never lowers it.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A filter that knows it is lost">
+    Extend your implementation to track a running average of the evidence returned by `correct`.
+    Trigger a `Lost` state when the recent average drops below a fraction of the long-run average.
+    Test it by teleporting the true robot mid-run. You have just built the core idea behind
+    Augmented MCL, which [Chapter 12](/chapters/ch12-localization-global) derives properly.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 2 is the source of this chapter's derivation and notation. The Bayes filter appears there as Table 2.1."
+  />
+  <Reference
+    authors="Kalman, R. E."
+    year={1960}
+    title="A New Approach to Linear Filtering and Prediction Problems"
+    venue="Journal of Basic Engineering 82(1), 35–45"
+    doi="10.1115/1.3662552"
+    note="The special case that started it all; Chapter 6 derives it as a Bayes filter with Gaussian belief."
+  />
+  <Reference
+    authors="Barfoot, T. D."
+    year={2024}
+    title="State Estimation for Robotics"
+    venue="Cambridge University Press, 2nd edition"
+    url="https://www.cambridge.org/core/books/state-estimation-for-robotics/AC0EF7B0F04B2C7A3E01B5A56B8E1C39"
+    note="The modern reference treatment. Chapter 4 presents the same recursion in a form that generalizes cleanly to Lie groups — which is where Chapter 7 takes it."
+  />
+  <Reference
+    authors="Chen, Z."
+    year={2003}
+    title="Bayesian Filtering: From Kalman Filters to Particle Filters, and Beyond"
+    venue="Statistics 182(1), 1–69"
+    url="https://www.cs.ubc.ca/~murphyk/Software/Kalman/ChenBayesian.pdf"
+    note="A survey that lays out the family tree in this chapter's third section, with the approximations each branch makes stated explicitly."
+  />
+  <Reference
+    authors="Särkkä, S. and Svensson, L."
+    year={2023}
+    title="Bayesian Filtering and Smoothing"
+    venue="Cambridge University Press, 2nd edition"
+    doi="10.1017/9781108917407"
+    note="The rigorous probabilistic-systems treatment, and the best source for the smoothing counterpart that Chapter 6 introduces."
+  />
+</References>

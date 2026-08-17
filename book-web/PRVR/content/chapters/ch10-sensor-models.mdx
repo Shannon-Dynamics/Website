@@ -1,0 +1,1479 @@
+---
+title: Probabilistic Sensor Models
+description: Where p(z | x, m) comes from — the four causes behind a range reading, how to learn their weights from data with EM, why likelihood fields beat physics inside a filter, and what multiplying hundreds of "independent" beams really costs.
+chapter: 10
+part: PART III
+partTitle: Probabilistic Models
+difficulty: Intermediate
+readingTime: 60 min
+quote: "Herein lies a key advantage of probabilistic techniques over classical robotics: in practice, we can get away with extremely crude models."
+quoteAuthor: Sebastian Thrun, Wolfram Burgard, and Dieter Fox
+quoteSource: Probabilistic Robotics, Chapter 6
+---
+
+import { BeamMixtureMixer } from '@/components/ch/ch10/beam-mixture-mixer';
+import { LikelihoodFieldExplorer } from '@/components/ch/ch10/likelihood-field-explorer';
+import { OverconfidenceMeter } from '@/components/ch/ch10/overconfidence-meter';
+import { LandmarkDonut } from '@/components/ch/ch10/landmark-donut';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Write p(z | x, m) for a range finder as a four-way mixture, and name the physical mechanism behind each component',
+    'Derive the EM updates that learn the mixture parameters from logged data, and find the bias hiding in one of them',
+    'Build a likelihood field with an exact O(N) distance transform, and say honestly what it is not',
+    'Evaluate the landmark model with known correspondence, and invert it into a sampler over poses',
+    'Measure the overconfidence that beam independence buys you, and repair it by tempering',
+    'Choose between the beam model, the likelihood field, correlation, and features — on evidence, not taste',
+  ]}
+  prerequisites={[
+    'Densities, mixtures, and maximum likelihood (Chapter 2)',
+    'Ray casting and LiDAR phenomenology in the Apartment (Chapter 4)',
+    'Where p(z | x) sits in the Bayes filter recursion (Chapter 5)',
+    'Importance weights — these likelihoods become particle weights (Chapter 8)',
+    'Its twin chapter on motion (Chapter 9)',
+  ]}
+>
+[Chapter 9](/chapters/ch09-motion-models) built the half of the generative story that makes the
+robot less certain. This chapter builds the half that makes it more certain: the measurement model
+$p(z_t \mid x_t, m)$, the function that turns a laser scan into an opinion about where the robot is.
+
+Sensing fails differently from moving. Wheel slip is a small perturbation of a mostly-correct
+answer, which is why one Gaussian per motion leg is a defensible model. A LiDAR beam does not
+perturb — it *switches*. It either measures the wall the map predicts, or it measures the person
+standing in front of the wall, or it measures nothing at all because the wall was black felt, or it
+returns a number that came from a neighbouring transducer's echo. Four categorically different
+things happen, and a model that averages them is a model of nothing.
+
+So the chapter has two aha moments and they pull in opposite directions. The first is that a
+mixture of four dead-simple densities reproduces the messy histogram a real sensor produces, and
+that its parameters can be *learned from data* instead of guessed. The second is that the
+likelihood you then compute is almost always far too confident, because multiplying hundreds of
+"independent" beams counts the same evidence over and over. Managing that overconfidence turns out
+to matter more than the fidelity of the model that caused it.
+</Overview>
+
+## The problem: one pose, ten thousand beams
+
+Park Rusty in the corridor outside room A and aim a single beam south, through the doorway, at the
+far wall of the apartment. The map says the range is 4.4 m. Fire the beam ten thousand times and
+histogram what comes back.
+
+<Deferred>
+  <BeamMixtureMixer />
+</Deferred>
+
+Nothing about that shape is a bell curve, and the deviations are not small.
+
+**There is a hump where the map says there should be one**, and it is roughly Gaussian, roughly
+11 cm wide. That is the part of the sensor everyone models: timing resolution, surface roughness,
+beam divergence. It is also, in an empty corridor, only about 86% of the mass — and with people
+walking through, 70%.
+
+**There is a shoulder in front of the wall.** Every reading in it is *shorter* than the map
+predicts, never longer, because the only thing that can produce it is an object the map does not
+contain — and objects the map does not contain occlude, they do not become transparent. The
+asymmetry is physics, not convention.
+
+**There is a spike piled up at $z_{max}$ and a thin floor everywhere else.** The spike is beams
+that hit nothing detectable: black upholstery, glass, a surface angled so the light left and never
+came back. The floor is everything else — crosstalk, multipath, a stray reflection off a passing
+elbow — and it is uniform because we have nothing better to say about it.
+
+<KeyIdea title="The one sentence version">
+A range reading is produced by one of four causes, and which one is unobserved. The measurement
+model is therefore a mixture over causes; fitting it is a latent-variable problem; and the
+mixture weights are as much a property of the *environment* as of the sensor.
+</KeyIdea>
+
+## Building intuition
+
+### Four causes, and the hardware that makes them
+
+The four components are not a curve-fitting convenience. Each is a distinct failure mode of a real
+device, and knowing which is which is what lets you predict how the weights will move when you
+change rooms or change sensors.
+
+| Component | What it is | Ultrasonic ranger | 2-D LiDAR |
+|---|---|---|---|
+| $p_{hit}$ | Correct return, corrupted | Cone width, speed-of-sound drift with temperature | Time-of-flight quantization, surface roughness, beam divergence |
+| $p_{short}$ | Something closer than the map | People, chair legs, *and* specular pre-returns off an angled surface | People, chair legs, an open door the map has closed |
+| $p_{max}$ | No return at all | Specular reflection away from the transducer; absorptive foam | Black or retro-dark surfaces, glass, grazing incidence, beyond range |
+| $p_{rand}$ | A number with no cause | Crosstalk between transducers in a ring — sound is slow, echoes linger | Multipath, sunlight, interference from another robot's LiDAR |
+
+Two entries deserve emphasis because they are the ones people get backwards. Ultrasonic sensors
+produce $p_{short}$ *and* $p_{max}$ for the same reason — a smooth wall at an angle acts as a
+mirror — and whether you get a short reading or no reading depends on what the redirected pulse
+eventually hits. And $p_{rand}$ in a sonar ring is dominated by crosstalk, which is why the
+component's weight depends on how many transducers you fire at once, a fact no amount of staring
+at one beam will reveal.
+
+### Where the exponential comes from
+
+The shoulder's exponential shape is usually presented as an assumption. It is not: it is a
+consequence, and the derivation takes two lines.
+
+Model unmodelled objects as a homogeneous Poisson process of rate $\lambda_{short}$ along the ray —
+"clutter is scattered along the beam at some objects-per-metre, independently of where the wall
+is." The reading is short exactly when the first clutter object lies before the wall, and the
+distance to the first point of a Poisson process satisfies
+
+$$
+\Pr(\text{no clutter within } d) = e^{-\lambda_{short} d}
+\quad\Longrightarrow\quad
+p(d) = \lambda_{short}\, e^{-\lambda_{short} d}
+$$
+
+Condition on the reading actually being short — that is, on the first clutter point lying before
+the wall, an event of probability $1 - e^{-\lambda_{short} z^*}$ — and you get $p_{short}$ with its
+normalizer $\eta_s$ already attached. The widget above generates its shoulder by literally sampling
+that Poisson field, so the weight $z_{short}$ it recovers is the true probability of clutter,
+$1 - e^{-\lambda_{short} z^*}$, to within a percent. Its estimate of $\lambda_{short}$ itself is a
+different story, and Step 6 of the EM derivation below explains exactly why.
+
+## The mathematics
+
+### The scan, and the assumption that makes it tractable
+
+<NotationTable
+  rows={[
+    { sym: 'z_t = \\{z_t^1, \\ldots, z_t^K\\}', meaning: 'A scan: K individual range readings taken at one time step.' },
+    { sym: 'z_t^{k*}', meaning: 'The true range of beam k — ray cast into the map m from the hypothesised pose.' },
+    { sym: 'z_{max}', meaning: 'The sensor\'s maximum range. A reading equal to it is a *failure*, not a measurement.' },
+    { sym: '\\Theta = (z_{hit}, z_{short}, z_{max}, z_{rand}, \\sigma_{hit}, \\lambda_{short})', meaning: 'The intrinsic parameters: four mixture weights on the simplex, plus two shape parameters.' },
+    { sym: 'd(x, y)', meaning: 'Distance from a point to the nearest occupied cell of m — the likelihood field.' },
+    { sym: 'f_t^i = (r_t^i\\ \\ \\phi_t^i\\ \\ s_t^i)^{\\mathsf{T}}', meaning: 'A feature: range, bearing, and signature of one detected landmark.' },
+    { sym: 'c_t^i \\in \\{1..N, \\varnothing\\}', meaning: 'The correspondence variable: which map landmark feature i came from, or none.' },
+    { sym: 'Q_t = \\operatorname{diag}(\\sigma_r^2, \\sigma_\\phi^2, \\sigma_s^2)', meaning: 'Feature measurement noise. A Q, not an R — measurement noise, per Chapter 6.' },
+    { sym: '\\kappa', meaning: 'Tempering exponent: the model is used as p^{1/κ}. κ = 1 is the raw product.' },
+  ]}
+/>
+
+A scan is a set of readings, and the model of the whole scan is the product of the models of its
+parts:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{p(z_t \mid x_t, m)} = \prod_{k=1}^{K} p(z_t^k \mid x_t, m)
+$$
+</LinkedMath>
+
+This is a conditional independence assumption — that given the pose and the map, the beams do not
+share anything. It is false. Thrun says so on the page where he introduces it, and then defers the
+consequences; we will not defer them, because they are the difference between a filter that works
+and one that is confidently lost. The last section of this chapter measures the damage.
+
+### The beam model
+
+Per beam, four causes, four densities, four weights that sum to one:
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{p(z_t^k \mid x_t, m)} =
+z_{hit}\, p_{hit}(z_t^k) + z_{short}\, p_{short}(z_t^k) + z_{max}\, p_{max}(z_t^k) + z_{rand}\, p_{rand}(z_t^k)
+$$
+</LinkedMath>
+
+$$
+z_{hit} + z_{short} + z_{max} + z_{rand} = 1
+$$
+
+with, writing $\htmlClass{term-truth}{z^{k*}}$ for the ray-cast range and $\mathbb{1}[\cdot]$ for
+the indicator of a condition,
+
+<LinkedMath>
+$$
+p_{hit}(z) = \eta\, \Normal\big(z;\ \htmlClass{term-truth}{z^{k*}},\ \sigma_{hit}^2\big)\ \mathbb{1}[0 \le z \le z_{max}],
+\qquad
+\eta = \left[\int_0^{z_{max}} \Normal(z;\ z^{k*},\ \sigma_{hit}^2)\, dz\right]^{-1}
+$$
+</LinkedMath>
+
+<LinkedMath>
+$$
+p_{short}(z) = \eta_s\, \lambda_{short}\, e^{-\lambda_{short} z}\ \mathbb{1}\big[0 \le z \le \htmlClass{term-truth}{z^{k*}}\big],
+\qquad
+\eta_s = \frac{1}{1 - e^{-\lambda_{short} z^{k*}}}
+$$
+</LinkedMath>
+
+$$
+p_{max}(z) = \mathbb{1}[z = z_{max}]
+\qquad\qquad
+p_{rand}(z) = \frac{1}{z_{max}}\ \mathbb{1}[0 \le z < z_{max}]
+$$
+
+Three details that a first implementation usually gets wrong, and that the book's unit tests pin:
+
+1. **Both truncations carry a normalizer.** $p_{hit}$ lives on $[0, z_{max}]$ and $p_{short}$ on
+   $[0, z^{k*}]$. Drop $\eta_s$ and the model quietly prefers hypotheses with short true ranges,
+   because a shorter interval concentrates the same unit of mass. Exercise 1 makes you find what
+   breaks.
+2. **$p_{max}$ is a point mass, not a density.** It integrates to 1 by itself. Mixing a point mass
+   and three densities in one equation is a mild abuse that everybody commits; in code it means the
+   max-range case is a branch, not a formula.
+3. **$z^{k*}$ depends on the hypothesis.** Every candidate pose needs its own ray cast, which is
+   what makes this model expensive and what the likelihood field will eliminate.
+
+<Algorithm
+  name="beam_range_finder_model(z_t, x_t, m)"
+  inputs="a scan of K ranges, a hypothesised pose, the map"
+  outputs="q = p(z_t | x_t, m)"
+  complexity="O(K · C_ray), C_ray the cost of one ray cast — the dominant cost in the whole filter"
+>
+1. $q = 1$
+2. for $k = 1$ to $K$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;compute $z_t^{k*}$ for the measurement $z_t^k$ using ray casting into $m$ from $x_t$
+4. &nbsp;&nbsp;&nbsp;&nbsp;$p = z_{hit}\cdot p_{hit}(z_t^k \mid x_t, m) + z_{short}\cdot p_{short}(z_t^k \mid x_t, m) + z_{max}\cdot p_{max}(z_t^k \mid x_t, m) + z_{rand}\cdot p_{rand}(z_t^k \mid x_t, m)$
+5. &nbsp;&nbsp;&nbsp;&nbsp;$q = q \cdot p$
+6. endfor
+7. return $q$
+</Algorithm>
+
+In practice line 5 is a sum of logs. Per-beam likelihoods of order $0.3$ underflow `f64` at around
+600 beams, and a hypothesis that is merely *wrong* — per-beam likelihoods of $10^{-3}$ — underflows
+after 100. More importantly, the log form is the one tempering acts on linearly, which the last
+section needs.
+
+### Learning $\Theta$ instead of guessing it
+
+The six intrinsic parameters are usually hand-tuned, and hand-tuning is defensible — the epigraph
+to this chapter is the reason. But there is no need. Given a log of range readings $Z$ taken from
+*known* poses $X$ in a known map, the parameters that maximize $\prod_i p(z_i \mid x_i, m, \Theta)$
+can be computed, because the only thing standing in the way is the unobserved cause of each beam,
+and that is exactly what EM handles.
+
+<Derivation title="EM for the beam model's intrinsic parameters" result="z_c = |Z|^{-1} Σ_i e_{i,c},  σ_hit² = Σ_i e_{i,hit}(z_i − z_i*)² / Σ_i e_{i,hit},  λ_short = Σ_i e_{i,short} / Σ_i e_{i,short} z_i">
+**Step 1 — name the missing data.** Attach to each reading $z_i$ a latent label
+$c_i \in \{hit, short, max, rand\}$ saying which cause produced it. With the labels known, the
+log-likelihood separates completely:
+
+$$
+\log p(Z \mid X, m, \Theta) = \sum_i \sum_c \mathbb{1}[c_i = c]\,\big(\log z_c + \log p_c(z_i \mid x_i, m)\big)
+$$
+
+Each component's parameters appear in exactly one term, so with labels this would be four
+independent one-line maximum-likelihood problems. That is the entire reason EM is worth doing here.
+
+**Step 2 — E-step: replace the labels by their posteriors.** The labels are unknown, so take the
+expectation of Step 1 over $c_i$ given the current $\Theta$. The required posterior is Bayes rule
+on a four-way discrete variable:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{e_{i,c}} = p(c_i = c \mid z_i, x_i, m, \Theta)
+= \frac{z_c\, p_c(z_i \mid x_i, m)}{\sum_{c'} z_{c'}\, p_{c'}(z_i \mid x_i, m)}
+$$
+</LinkedMath>
+
+The denominator is the mixture likelihood of the reading — the same number `beam_range_finder_model`
+computes per beam. So the E-step costs one extra pass over data you were evaluating anyway.
+
+**Step 3 — M-step for the weights.** Maximizing $\sum_i \sum_c e_{i,c}\log z_c$ subject to
+$\sum_c z_c = 1$ with a Lagrange multiplier $\mu$ gives
+$\partial/\partial z_c: \sum_i e_{i,c}/z_c = \mu$, so $z_c \propto \sum_i e_{i,c}$, and the
+constraint fixes the constant because $\sum_c \sum_i e_{i,c} = |Z|$:
+
+<LinkedMath>
+$$
+z_c = \frac{1}{|Z|}\sum_i \htmlClass{term-posterior}{e_{i,c}}
+$$
+</LinkedMath>
+
+The weights are just the average responsibility. Nothing about this step knows what the components
+*are*.
+
+**Step 4 — M-step for $\sigma_{hit}$.** Only the $hit$ term contains $\sigma_{hit}$. Dropping the
+truncation normalizer for the moment, the objective is the usual weighted Gaussian log-likelihood
+in the residuals $z_i - z_i^*$, whose maximizer is the responsibility-weighted second moment:
+
+<LinkedMath>
+$$
+\sigma_{hit}^2 = \frac{\sum_i e_{i,hit}\,(z_i - \htmlClass{term-truth}{z_i^*})^2}{\sum_i e_{i,hit}}
+$$
+</LinkedMath>
+
+**Step 5 — M-step for $\lambda_{short}$.** Likewise, $\sum_i e_{i,short}(\log\lambda - \lambda z_i)$
+is maximized at the reciprocal of the responsibility-weighted mean:
+
+$$
+\lambda_{short} = \frac{\sum_i e_{i,short}}{\sum_i e_{i,short}\, z_i}
+$$
+
+Iterate Steps 2–5. Each iteration is $O(|Z|)$ once the $z_i^*$ are cached, and the data
+log-likelihood never decreases — which makes a dip in the trace a bug report, not a result.
+
+**Step 6 — the bias nobody mentions.** Step 5 is the maximum-likelihood estimator for an
+*untruncated* exponential, but $p_{short}$ is truncated at $z^*$. For truncated data the sample
+mean is smaller than $1/\lambda$,
+
+$$
+\E[z \mid z \le z^*] = \frac{1}{\lambda} - \frac{z^*}{e^{\lambda z^*} - 1}
+$$
+
+so the estimator converges to something larger than the truth, and the error blows up when
+$\lambda z^*$ is small. Measured on 40 000 synthetic beams generated with
+$\lambda = 1.0\ \mathrm{m^{-1}}$ and no random component in the data: at $z^* = 2$ m the formula
+above predicts a limit of $1.46$ and EM
+returns $1.53$; at $z^* = 8$ m it predicts $1.003$ and EM returns $1.009$. The fix is one Newton
+step on the truncated likelihood, and the reason we implement Table 6.2 unmodified anyway is that
+$\lambda_{short}$ is the parameter the posterior is least sensitive to — but you should know that
+the number EM hands you is not the clutter density. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="learn_intrinsic_parameters(Z, X, m)"
+  inputs="ranges Z with the poses X they were taken from, and the map"
+  outputs="Θ = (z_hit, z_short, z_max, z_rand, σ_hit, λ_short)"
+  complexity="O(|Z|) per iteration after caching z*; monotone in the data log-likelihood"
+>
+1. repeat
+2. &nbsp;&nbsp;&nbsp;&nbsp;for all $z_i \in Z$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\eta = \big[p_{hit}(z_i) + p_{short}(z_i) + p_{max}(z_i) + p_{rand}(z_i)\big]^{-1}$
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$e_{i,hit} = \eta\, z_{hit}\, p_{hit}(z_i)$, and likewise $e_{i,short},\, e_{i,max},\, e_{i,rand}$
+5. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+6. &nbsp;&nbsp;&nbsp;&nbsp;$z_{hit} = |Z|^{-1}\sum_i e_{i,hit}$, and likewise $z_{short},\, z_{max},\, z_{rand}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;$\sigma_{hit} = \sqrt{\big(\sum_i e_{i,hit}\big)^{-1} \sum_i e_{i,hit}\,(z_i - z_i^*)^2}$
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\lambda_{short} = \sum_i e_{i,short} \big/ \sum_i e_{i,short}\, z_i$
+9. until convergence
+10. return $\Theta$
+</Algorithm>
+
+<Callout type="info">
+The widget at the top of this chapter runs exactly this, on data generated by geometry rather than
+by the model being fitted. With the corridor quiet, EM recovers mixture weights of
+$(0.875,\ 0.027,\ 0.048,\ 0.050)$ against a generator whose true weights are
+$(0.865,\ 0.047,\ 0.050,\ 0.038)$ and $\sigma_{hit} = 0.110$ m against a true $0.110$ m. Turn on
+"people in the corridor" and it returns $(0.709,\ 0.178,\ 0.050,\ 0.063)$ against a truth of
+$(0.700,\ 0.212,\ 0.050,\ 0.038)$ — $z_{short}$ triples, $z_{max}$ does not move, and a little
+short mass leaks into $z_{rand}$ because a clutter return far from the wall looks exactly like a
+random one. Twenty-four iterations over 4 500 beams take about 50 ms.
+</Callout>
+
+### Likelihood fields
+
+The beam model has a physical story and two practical problems, and Thrun states both plainly: it
+is *unsmooth* in $x_t$, and it is *expensive*. Both come from the same place — the ray cast on
+line 3.
+
+Unsmoothness is the serious one. Move a hypothesis 2 cm sideways and a beam that was grazing a door
+frame now slips past it; $z^{k*}$ jumps from 0.8 m to 6 m; that beam's likelihood collapses from
+"excellent" to $z_{rand}/z_{max}$. The pose-likelihood surface is therefore full of cliffs, and
+everything that has to search it — a particle filter with a finite number of particles, a hill
+climber, an optimizer — suffers.
+
+<Deferred>
+  <LikelihoodFieldExplorer />
+</Deferred>
+
+The likelihood field is the fix, and it is worth being honest about what kind of fix it is. It is
+not a better model of the sensor. It is not a generative model of $z$ at all — it does not
+normalize over $z$, and it cannot tell you what reading to expect. It is a *scoring function* that
+happens to be smooth, cheap, and empirically excellent.
+
+The construction is: project each reading to the point in the world it claims to have hit,
+
+$$
+x_{z^k} = x + \big(x_{k,sens}\cos\theta - y_{k,sens}\sin\theta\big) + z_t^k \cos(\theta + \theta_{k,sens})
+$$
+
+$$
+y_{z^k} = y + \big(x_{k,sens}\sin\theta + y_{k,sens}\cos\theta\big) + z_t^k \sin(\theta + \theta_{k,sens})
+$$
+
+The middle bracket is the sensor's mounting offset rotated into the world frame — $R(\theta)$
+applied to $(x_{k,sens},\ y_{k,sens})$ — and the last term walks the measured distance along the
+beam's own bearing. Then ask only how far that point is from the nearest obstacle — *any* obstacle,
+no correspondence, no ray:
+
+<LinkedMath>
+$$
+q \mathrel{{\times}{=}} \Big(\htmlClass{term-measurement}{z_{hit}\, \Normal\big(d(x_{z^k}, y_{z^k});\ 0,\ \sigma_{hit}^2\big)} + \frac{z_{rand}}{z_{max}}\Big)
+$$
+</LinkedMath>
+
+Max-range readings are skipped outright. "I saw nothing" projects to a point 8 m away that means
+nothing at all, and scoring it would punish poses for a beam that carries no information.
+
+<Algorithm
+  name="likelihood_field_range_finder_model(z_t, x_t, m)"
+  inputs="a scan, a pose, the map (as a precomputed distance field)"
+  outputs="q, a smooth score — not a normalized density over z"
+  complexity="O(K) lookups, after an O(N) precomputation over the N map cells"
+>
+1. $q = 1$
+2. for all $k$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;if $z_t^k \neq z_{max}$ then
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$x_{z^k} = x + x_{k,sens}\cos\theta - y_{k,sens}\sin\theta + z_t^k\cos(\theta + \theta_{k,sens})$
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$y_{z^k} = y + y_{k,sens}\cos\theta + x_{k,sens}\sin\theta + z_t^k\sin(\theta + \theta_{k,sens})$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mathrm{dist} = \min_{x', y'}\big\{\sqrt{(x_{z^k} - x')^2 + (y_{z^k} - y')^2}\ \big|\ \langle x', y'\rangle \text{ occupied in } m\big\}$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$q = q \cdot \big(z_{hit}\cdot \mathbf{prob}(\mathrm{dist},\ \sigma_{hit}^2) + z_{rand}/z_{max}\big)$
+8. &nbsp;&nbsp;&nbsp;&nbsp;endif
+9. endfor
+10. return $q$
+</Algorithm>
+
+Line 6 is a nearest-neighbour search over every occupied cell, which sounds catastrophic and is
+free, because it does not depend on the scan. Compute it once for every cell of the map and the
+per-beam cost becomes an array lookup. That precomputation is the distance transform, and the
+modern algorithm for it is exact and linear.
+
+<Derivation title="The exact Euclidean distance transform in O(N)" result="D(x, y) = min_{x'} [ (x − x')² + min_{y'} ( (y − y')² + f(x', y') ) ]">
+**Step 1 — write it as a minimization over a sampled function.** Let $f(p) = 0$ at occupied cells
+and $+\infty$ elsewhere. Then the squared distance transform is
+
+$$
+D(q) = \min_{p} \big(\lVert q - p\rVert^2 + f(p)\big)
+$$
+
+which is a *min-plus convolution* of $f$ with a parabola. Nothing about it requires $f$ to be
+binary, which is why the same routine also serves as the max-product message pass in belief
+propagation and the inner loop of a chamfer matcher.
+
+**Step 2 — separate the axes.** Squared Euclidean distance is a sum over coordinates, so the
+minimization factors:
+
+$$
+D(x, y) = \min_{x'}\Big[(x - x')^2 + \underbrace{\min_{y'}\big((y - y')^2 + f(x', y')\big)}_{\text{1-D transform down a column}}\Big]
+$$
+
+A 2-D transform is a 1-D transform down every column followed by a 1-D transform along every row.
+Separability is exactly what a chamfer sweep gives up: it propagates costs along an 8-neighbour
+mask, so its error accumulates with distance from the nearest obstacle, while the separable form is
+exact at every cell no matter how far away the nearest obstacle is.
+
+**Step 3 — the 1-D transform is a lower envelope of parabolas.** Each sample $p$ contributes the
+parabola $z \mapsto (z - p)^2 + f(p)$. All of them have the same curvature, so any two intersect
+exactly once, and the lower envelope of $n$ of them has at most $n$ pieces in left-to-right order.
+Sweep the samples left to right maintaining a stack of the parabolas currently on the envelope and
+the breakpoints between them: a new parabola either takes over the rightmost region — push it — or
+it dominates the parabola on top, in which case pop and retry. Each parabola is pushed once and
+popped at most once, so the sweep is $O(n)$, and a second pass reads the envelope off at each grid
+position. Two passes per axis, $O(N)$ overall, and the result is *exact* — Felzenszwalb and
+Huttenlocher's algorithm computes the true lattice minimum, not an approximation of it.
+
+**Step 4 — what remains inexact, measured.** The transform is exact; the *map* is not. Rasterizing
+a wall onto a grid moves it by up to half a cell diagonal, and that error passes straight through:
+on the Apartment at a 5 cm cell, the exact transform of the rasterized map differs from the true
+continuous distance-to-wall by at most $\sqrt{2}\,c/2 = 3.5$ cm and on average 2.5 cm — and both
+numbers halve when the cell does (1.8 cm and 1.2 cm at 2.5 cm). Meanwhile the whole
+$240 \times 180$ field builds in about 1.5 ms, the same as the chamfer sweep it replaces. So the
+sensible engineering statement is: never pay for an approximate transform, and spend your accuracy
+budget on the grid resolution instead. $\blacksquare$
+</Derivation>
+
+<Callout type="warn">
+The likelihood field's blind spot is that it cannot tell "the beam went through a wall" from "the
+beam stopped at a wall". Only the endpoint is scored, so a pose that puts a 6 m reading's endpoint
+onto a wall in the *next room* is rewarded exactly as much as the correct one. Thrun's fix — score
+only endpoints whose ray stays inside known free space — costs a ray cast and gives back the
+unsmoothness that the field existed to remove, so almost nobody does it; the practical mitigation
+is to keep max-range and implausibly long readings out of the field entirely.
+</Callout>
+
+### Map correlation, in one paragraph
+
+There is a third way to score a scan that neither ray-casts nor looks up distances: turn the scan
+into a little local map $m_{loc}$ and correlate it with the global one. With $\bar m$ the mean cell
+value over both maps,
+
+$$
+\rho_{m, m_{loc}, x_t} = \frac{\sum_i (m_i - \bar m)(m_{loc,i} - \bar m)}
+{\sqrt{\sum_i (m_i - \bar m)^2\ \sum_i (m_{loc,i} - \bar m)^2}},
+\qquad
+p(m_{loc} \mid x_t, m) = \max\{\rho_{m, m_{loc}, x_t},\ 0\}
+$$
+
+It is the odd one out: clipping a correlation coefficient at zero and calling it a probability is
+not derivable from anything, and the score is invariant to a global brightness shift in a way a
+likelihood should not be. It earns its place because it degrades gracefully when the map is partly
+wrong, and because its descendant — correlative scan matching over a discretized pose grid — is
+the workhorse of [Chapter 16](/chapters/ch16-scan-matching).
+
+### Features, landmarks, and the variable that will become the villain
+
+Sometimes the front end does not hand you 180 ranges but a handful of *detections*: "a corner at
+3.2 m, bearing $-0.4$ rad, signature 7". Feature extraction itself — line fitting, corner
+detection, blob detection — is a perception topic and we let [Chapter 18](/chapters/ch18-visual-slam)
+have it. What matters here is the model of the detection, and the bookkeeping variable that comes
+with it.
+
+That variable is the **correspondence** $c_t^i$: which landmark in the map produced feature $i$.
+Give it to the model and everything is easy. Withhold it and you have the data-association problem
+that [Chapter 11](/chapters/ch11-localization-gaussian) spends half its length on and that breaks
+more SLAM systems than any other single cause. Introducing $c_t^i$ one chapter early, while it is
+still harmless, is deliberate.
+
+With the correspondence known, $c_t^i = j$, the model is a noisy polar observation of a known
+point:
+
+$$
+\hat r = \sqrt{(m_{j,x} - x)^2 + (m_{j,y} - y)^2},
+\qquad
+\hat\phi = \operatorname{atan2}(m_{j,y} - y,\ m_{j,x} - x) - \theta
+$$
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{p(f_t^i \mid c_t^i, x_t, m)} =
+\Normal(r_t^i - \hat r;\ 0, \sigma_r^2)\;
+\Normal(\phi_t^i - \hat\phi;\ 0, \sigma_\phi^2)\;
+\Normal(s_t^i - m_{j,s};\ 0, \sigma_s^2)
+$$
+</LinkedMath>
+
+<Algorithm
+  name="landmark_model_known_correspondence(f_t^i, c_t^i, x_t, m)"
+  inputs="a feature (r, φ, s), its known identity, the pose, the map"
+  outputs="q = p(f_t^i | c_t^i, x_t, m)"
+  complexity="O(1) per feature — three ray casts' worth of work for a whole scan's worth of information"
+>
+1. $j = c_t^i$
+2. $\hat r = \sqrt{(m_{j,x} - x)^2 + (m_{j,y} - y)^2}$
+3. $\hat\phi = \operatorname{atan2}(m_{j,y} - y,\ m_{j,x} - x) - \theta$
+4. $q = \mathbf{prob}(r_t^i - \hat r,\ \sigma_r^2)\cdot \mathbf{prob}(\phi_t^i - \hat\phi,\ \sigma_\phi^2)\cdot \mathbf{prob}(s_t^i - m_{j,s},\ \sigma_s^2)$
+5. return $q$
+</Algorithm>
+
+The bearing residual must be wrapped into $(-\pi, \pi]$ before it is squared. A predicted $179°$
+and an observed $-179°$ are two degrees apart, and a model that thinks they are 358 degrees apart
+will reject the correct landmark and then confidently accept the wrong one — the failure
+[Chapter 3](/chapters/ch03-geometry-of-motion) built the wrap-around machinery to prevent.
+
+Because a feature has fewer degrees of freedom than a pose, the model can be run backwards.
+
+<Derivation title="Sampling poses from one landmark observation" result="x = m_{j,x} + r̂ cos γ̂,  y = m_{j,y} + r̂ sin γ̂,  θ = γ̂ − π − φ̂">
+**Step 1 — invert Bayes rule under a flat prior.** We want $p(x_t \mid f_t^i, c_t^i, m)$. Bayes
+gives $\eta\, p(f_t^i \mid c_t^i, x_t, m)\, p(x_t \mid c_t^i, m)$, and if the pose prior is uniform
+the second factor is a constant. What is left is the measurement model, read as a function of the
+pose.
+
+**Step 2 — count the constraints.** The reading supplies two numbers, $(r, \phi)$; the pose has
+three. One degree of freedom is therefore *unconstrained by construction*, and no cleverness will
+recover it. Geometrically: the range confines the robot to a circle of radius $r$ about the
+landmark, and the bearing then fixes the heading given where on that circle it sits.
+
+**Step 3 — sample the free parameter, then the noise.** Draw the angular position of the robot
+around the landmark uniformly, $\hat\gamma \sim \mathcal{U}(0, 2\pi)$, and perturb the observation
+by its own noise, $\hat r = r_t^i + \varepsilon_{\sigma_r^2}$,
+$\hat\phi = \phi_t^i + \varepsilon_{\sigma_\phi^2}$. Perturbing the *observation* rather than the
+prediction is legitimate because a Gaussian is symmetric in its two arguments — the same trick that
+makes Chapter 9's odometry sampler a three-liner.
+
+**Step 4 — place the pose.** Sitting at angle $\hat\gamma$ around the landmark puts the robot at
+$(m_{j,x} + \hat r\cos\hat\gamma,\ m_{j,y} + \hat r\sin\hat\gamma)$, from which the landmark bears
+$\hat\gamma + \pi$ in world coordinates. The heading that makes the landmark appear at relative
+bearing $\hat\phi$ is therefore $\theta = \hat\gamma + \pi - \hat\phi$, which Table 6.5 writes as
+$\hat\gamma - \pi - \hat\phi$ — the same angle, and worth checking rather than trusting.
+
+**Step 5 — the caveat.** The prior is not uniform in reality: poses inside walls are impossible,
+and the robot was somewhere plausible a moment ago. Everything this sampler produces must therefore
+be treated as a *proposal* to be reweighted, which is exactly how
+[Chapter 12](/chapters/ch12-localization-global) uses it in the mixture-MCL proposal that lets a
+kidnapped robot recover in one step. $\blacksquare$
+</Derivation>
+
+<Algorithm
+  name="sample_landmark_model_known_correspondence(f_t^i, c_t^i, m)"
+  inputs="a feature and its known identity, the map"
+  outputs="a pose x_t drawn from p(x_t | f_t^i, c_t^i, m) under a uniform pose prior"
+  complexity="O(1) — one uniform and two normal draws"
+>
+1. $j = c_t^i$
+2. $\hat\gamma = \mathbf{rand}(0, 2\pi)$
+3. $\hat r = r_t^i + \mathbf{sample}(\sigma_r^2)$
+4. $\hat\phi = \phi_t^i + \mathbf{sample}(\sigma_\phi^2)$
+5. $x = m_{j,x} + \hat r\cos\hat\gamma$
+6. $y = m_{j,y} + \hat r\sin\hat\gamma$
+7. $\theta = \hat\gamma - \pi - \hat\phi$
+8. return $(x\ \ y\ \ \theta)\T$
+</Algorithm>
+
+<Deferred>
+  <LandmarkDonut />
+</Deferred>
+
+The counting argument is worth stating once, because it governs every feature-based estimator in
+Part V. Each detection supplies two numbers about the pose — a range and a bearing — and the pose
+has three unknowns. One detection therefore leaves a one-parameter family of explanations; two
+detections give four constraints on three unknowns and the family collapses to a blob whose size is
+pure measurement noise, about 20 cm across for $\sigma_r = 0.25$ m. Adding a third detection buys
+you not localization but *redundancy* — which is exactly what
+[Chapter 11](/chapters/ch11-localization-gaussian) needs, because redundancy is the only thing that
+can catch a wrong correspondence.
+
+### The lie of independence
+
+Now the part that the baseline defers and that decides whether your filter survives contact with a
+real building.
+
+$p(z_t \mid x_t, m) = \prod_k p(z_t^k \mid x_t, m)$ says the beams are independent given the pose.
+They are not, and the dependence is not subtle: a person standing in front of the robot corrupts
+twenty adjacent beams at once, and a map that is 2 cm off corrupts *every* beam in the same
+direction, forever.
+
+<Deferred>
+  <OverconfidenceMeter />
+</Deferred>
+
+<Derivation title="What false independence costs, and the three ways to pay it back" result="log p(z | x)^{1/κ} = (1/κ) Σ_k log p(z_t^k | x, m)">
+**Step 1 — the extreme case.** Suppose two beams are perfectly correlated: $z^2 \equiv z^1$. The
+honest likelihood of the pair is $p(z^1 \mid x)$ — the second reading adds nothing. The product
+rule reports $p(z^1 \mid x)^2$. Every likelihood *ratio* between two hypotheses is therefore
+squared, so the posterior odds are squared, and a hypothesis that was twice as likely becomes four
+times as likely on no new evidence at all.
+
+**Step 2 — the general case.** If a scan of $K$ beams carries only $K_{\text{eff}}$ beams' worth
+of independent information, the product overstates every log-odds by the factor
+$K / K_{\text{eff}}$. The log-likelihood grows linearly in $K$ whether or not the information does:
+for $K$ genuinely independent measurements of the same quantity the posterior width would fall like
+$1/\sqrt{K}$, and the table below falls faster still, because each new beam also brings geometry the
+earlier ones missed. What matters is that the width is driven by $K$ and is completely blind to
+whether the map is right. The result is not a wrong estimate; it is a *certain* estimate, and a
+filter that is certain stops listening.
+
+**Step 3 — measured, on the Apartment.** Take the corridor pose in the widget above and a map that
+is 1% too wide, which is the kind of defect an unlucky wheel-radius calibration bakes into a
+SLAM-built map. The posterior over the along-corridor coordinate behaves like this:
+
+| beams $K$ | $\sigma$, correct map | $\sigma$, 1% error | peak offset, 1% error | truth inside the 95% set, 1% error |
+|---|---|---|---|---|
+| 4 | 7.97 cm | 7.86 cm | −7.0 cm | yes |
+| 9 | 3.96 cm | 4.00 cm | −6.5 cm | **no** |
+| 30 | 1.56 cm | 1.57 cm | −3.5 cm | **no** |
+| 90 | 0.96 cm | 0.73 cm | −4.5 cm | **no** |
+| 180 | 0.41 cm | 0.68 cm | −4.0 cm | **no** |
+
+With a perfect map the truth stays inside the interval at every $K$. With a 1% map error, the
+estimate is stuck about 4 cm off and the claimed uncertainty keeps shrinking around the wrong
+answer: at $K = 180$ the truth is roughly six standard deviations outside the filter's own belief.
+The lag-1 correlation of the beam residuals tells you which regime you are in without knowing the
+truth — it is $-0.03$ with the correct map and $+0.44$ with the wrong one.
+
+**Step 4 — the three repairs are one repair.** Subsample every $\kappa$-th beam; inflate
+$\sigma_{hit}$; or temper,
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{p(z_t \mid x_t, m)^{1/\kappa}}
+\qquad\Longleftrightarrow\qquad
+\frac{1}{\kappa}\sum_k \log p(z_t^k \mid x_t, m)
+$$
+</LinkedMath>
+
+All three flatten the likelihood surface; they differ in what else they do. Subsampling throws away
+$1 - 1/\kappa$ of the data, so the peak moves as well as widening — measured on the same scan,
+$\kappa = 10$ tempering gives $\sigma = 2.1$ cm with the peak where the full scan put it
+($-4.0$ cm), while subsampling to 18 beams gives a comparable $\sigma = 3.4$ cm but drags the peak
+to $-5.0$ cm and *still* fails to cover the truth. Inflating $\sigma_{hit}$ widens each beam's
+tolerance but also changes which beams count as outliers, which is a different intervention
+wearing the same coat. Tempering is the cleanest: one scalar, no data discarded, and it acts
+linearly on the log-likelihood you already compute.
+
+**Step 5 — where $\kappa$ comes from.** It is not free. Tempering has a respectable statistical
+home — a generalized Bayesian update with a scaled loss, in the sense of Bissiri, Holmes and
+Walker — but the theory does not hand you the number. Calibrate it: run the filter on logged data
+with ground truth and choose the smallest $\kappa$ whose 95% credible sets actually contain the
+truth 95% of the time. In the experiment above that is $\kappa \approx 10$ for a 1% map error and
+$\kappa = 1$ for a perfect one, and if that sounds like a lot of tuning, note that AMCL's
+`laser_max_beams` parameter is the same knob with worse manners.
+$\blacksquare$
+</Derivation>
+
+## Implementation in Rust
+
+The `sensor` crate exports one trait, the range-finder models that implement it, and one model that
+deliberately does not — a feature detection is not a scan, and pretending otherwise would put a
+`Vec<f64>` where a `(r, φ, s)` belongs. All of it is consumed unchanged by
+[Chapter 11](/chapters/ch11-localization-gaussian) and
+[Chapter 12](/chapters/ch12-localization-global), so the interface matters more than any of the
+models behind it.
+
+```rust title="crates/sensor/src/lib.rs"
+use nalgebra::{Matrix3, Point2};
+use pr_core::geom::se2::SE2;
+use sim::World; // Chapter 4's polyline world *is* the map, until Chapter 13
+
+/// One sweep of a range finder: ranges plus the bearings they were taken at.
+///
+/// Bearings are stored, not assumed. A sub-sampled scan is still a valid `Scan`,
+/// which is what makes tempering-by-subsampling a two-line operation instead of
+/// an index-arithmetic bug farm.
+#[derive(Clone, Debug)]
+pub struct Scan {
+    pub ranges: Vec<f64>,
+    /// Bearings relative to the robot's heading, radians.
+    pub bearings: Vec<f64>,
+    pub max_range: f64,
+}
+
+/// Anything Chapters 11–12 can localize with.
+///
+/// Log-likelihood, not likelihood: the product for any hypothesis that is even
+/// slightly wrong underflows `f64` within a hundred beams, and tempering is a
+/// single multiply in log space.
+pub trait SensorModel {
+    fn log_likelihood(&self, scan: &Scan, x: &SE2, map: &World) -> f64;
+
+    /// Cheap enough to call per particle per step? Chapter 12 branches on it.
+    fn is_cheap(&self) -> bool {
+        false
+    }
+}
+
+/// Θ — the six intrinsic parameters of the beam model.
+///
+/// The four weights are *not* a `[f64; 4]`: naming them stops the classic
+/// transposition bug where `z_short` and `z_max` get swapped and the model
+/// starts believing every dropout is a person.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeamIntrinsics {
+    pub z_hit: f64,
+    pub z_short: f64,
+    pub z_max: f64,
+    pub z_rand: f64,
+    pub sigma_hit: f64,
+    pub lambda_short: f64,
+    pub max_range: f64,
+}
+
+impl BeamIntrinsics {
+    /// The weights must live on the simplex; everything downstream assumes it.
+    pub fn is_normalized(&self) -> bool {
+        (self.z_hit + self.z_short + self.z_max + self.z_rand - 1.0).abs() < 1e-9
+    }
+}
+
+/// A range-bearing-signature detection, Thrun's f = (r, φ, s).
+#[derive(Clone, Copy, Debug)]
+pub struct Feature {
+    pub r: f64,
+    pub phi: f64,
+    pub s: f64,
+}
+
+/// The map's view of a landmark. `Q` is the feature noise covariance Q_t.
+#[derive(Clone, Copy, Debug)]
+pub struct Landmark {
+    pub xy: Point2<f64>,
+    pub signature: f64,
+}
+
+pub type FeatureNoise = Matrix3<f64>;
+```
+
+The beam model itself is a direct transcription of Table 6.1, with the two truncation normalizers
+spelled out because they are what a reader will otherwise skip.
+
+```rust title="crates/sensor/src/beam.rs" {23-33,58-75}
+use crate::{BeamIntrinsics, Scan, SensorModel};
+use pr_core::geom::se2::SE2;
+use sim::{ray_cast, World};
+use statrs::distribution::{ContinuousCDF, Normal};
+
+pub struct BeamModel {
+    pub intr: BeamIntrinsics,
+    /// Use every `stride`-th beam. See `tempering.rs` for why this is a lie
+    /// that is sometimes worth telling.
+    pub stride: usize,
+}
+
+/// Within this of `max_range`, a reading *is* a max-range reading. Floating
+/// point equality against a sensor's advertised limit is not a plan.
+const MAX_EPS: f64 = 1e-9;
+
+impl BeamModel {
+    /// p(z | x, m) for one beam — Table 6.1, lines 4–7.
+    pub fn beam_likelihood(&self, z: f64, z_star: f64) -> f64 {
+        let i = &self.intr;
+
+        // p_hit: a Gaussian truncated to [0, z_max]. η is the reciprocal of the
+        // mass that survives truncation; without it, hypotheses whose predicted
+        // range sits near a boundary are silently favoured.
+        let p_hit = if (0.0..=i.max_range).contains(&z) {
+            let n = Normal::new(z_star, i.sigma_hit).expect("sigma_hit > 0");
+            let mass = n.cdf(i.max_range) - n.cdf(0.0);
+            if mass > 1e-12 {
+                let d = (z - z_star) / i.sigma_hit;
+                (-0.5 * d * d).exp() / (i.sigma_hit * (2.0 * std::f64::consts::PI).sqrt()) / mass
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        // p_short: the nearest hit of a Poisson clutter field of rate λ along
+        // the ray, truncated at the wall.
+        let p_short = if z >= 0.0 && z <= z_star && z_star > 0.0 {
+            let eta = 1.0 / (1.0 - (-i.lambda_short * z_star).exp());
+            eta * i.lambda_short * (-i.lambda_short * z).exp()
+        } else {
+            0.0
+        };
+
+        // p_max is a point mass: it integrates to 1 on its own.
+        let p_max = if z >= i.max_range - MAX_EPS { 1.0 } else { 0.0 };
+        let p_rand = if z >= 0.0 && z < i.max_range { 1.0 / i.max_range } else { 0.0 };
+
+        i.z_hit * p_hit + i.z_short * p_short + i.z_max * p_max + i.z_rand * p_rand
+    }
+
+    /// The four *unweighted* component densities, for the EM E-step.
+    pub fn components(&self, z: f64, z_star: f64) -> [f64; 4] {
+        let one_hot = |c: usize| {
+            let mut i = self.intr;
+            i.z_hit = (c == 0) as u8 as f64;
+            i.z_short = (c == 1) as u8 as f64;
+            i.z_max = (c == 2) as u8 as f64;
+            i.z_rand = (c == 3) as u8 as f64;
+            BeamModel { intr: i, stride: 1 }.beam_likelihood(z, z_star)
+        };
+        [one_hot(0), one_hot(1), one_hot(2), one_hot(3)]
+    }
+}
+
+impl SensorModel for BeamModel {
+    /// `beam_range_finder_model` — Table 6.1, in log space.
+    fn log_likelihood(&self, scan: &Scan, x: &SE2, map: &World) -> f64 {
+        let mut q = 0.0;
+        for k in (0..scan.ranges.len()).step_by(self.stride.max(1)) {
+            let z_star = ray_cast(map, x.x(), x.y(), x.theta() + scan.bearings[k], scan.max_range);
+            q += self.beam_likelihood(scan.ranges[k], z_star).max(1e-300).ln();
+        }
+        q
+    }
+}
+
+/// `learn_intrinsic_parameters` — Table 6.2.
+///
+/// Takes ranges paired with the ray-cast range each *should* have had. Caching
+/// `z_star` outside the loop is what turns EM from "one ray cast per beam per
+/// iteration" into "one ray cast per beam, ever".
+pub fn learn_intrinsics(
+    z: &[f64],
+    z_star: &[f64],
+    init: BeamIntrinsics,
+    iters: usize,
+) -> (BeamIntrinsics, Vec<f64>) {
+    let mut intr = init;
+    let mut trace = Vec::with_capacity(iters);
+
+    for _ in 0..iters {
+        let model = BeamModel { intr, stride: 1 };
+        let (mut s_hit, mut s_short, mut s_max, mut s_rand) = (0.0, 0.0, 0.0, 0.0);
+        let (mut sq_hit, mut z_short_sum, mut ll) = (0.0, 0.0, 0.0);
+
+        for (&zi, &si) in z.iter().zip(z_star) {
+            let c = model.components(zi, si);
+            let w = [intr.z_hit * c[0], intr.z_short * c[1], intr.z_max * c[2], intr.z_rand * c[3]];
+            let total: f64 = w.iter().sum();
+            if total <= 0.0 {
+                continue; // no cause explains this reading; refuse to guess
+            }
+            let e = [w[0] / total, w[1] / total, w[2] / total, w[3] / total];
+
+            s_hit += e[0];
+            s_short += e[1];
+            s_max += e[2];
+            s_rand += e[3];
+            sq_hit += e[0] * (zi - si).powi(2);
+            z_short_sum += e[1] * zi;
+            ll += total.max(1e-300).ln();
+        }
+
+        trace.push(ll / z.len() as f64);
+        let n = z.len() as f64;
+        intr = BeamIntrinsics {
+            z_hit: s_hit / n,
+            z_short: s_short / n,
+            z_max: s_max / n,
+            z_rand: s_rand / n,
+            // A component with no responsibility keeps its shape parameter
+            // rather than recomputing it from an empty sum.
+            sigma_hit: if s_hit > 1e-9 { (sq_hit / s_hit).sqrt().max(1e-3) } else { intr.sigma_hit },
+            lambda_short: if z_short_sum > 1e-9 {
+                (s_short / z_short_sum).clamp(1e-3, 50.0)
+            } else {
+                intr.lambda_short
+            },
+            ..intr
+        };
+    }
+    (intr, trace)
+}
+```
+
+The likelihood field is two files' worth of idea in one: the distance transform, then the lookup.
+
+```rust title="crates/sensor/src/likelihood_field.rs" {17-46}
+use crate::{BeamIntrinsics, Scan, SensorModel};
+use pr_core::geom::se2::SE2;
+use sim::World;
+
+/// Distance to the nearest occupied cell, in metres, on a regular grid.
+pub struct DistanceField {
+    cells: Vec<f32>,
+    nx: usize,
+    ny: usize,
+    res: f64,
+    origin: (f64, f64),
+}
+
+/// Stands in for +∞ with a real number, so the envelope arithmetic below never
+/// evaluates ∞ − ∞.
+const INF: f64 = 1e20;
+
+/// Felzenszwalb–Huttenlocher, Figure 1: the lower envelope of the parabolas
+/// z ↦ (z − q)² + f(q). All parabolas share a curvature, so any two meet
+/// exactly once and the envelope can be built by one left-to-right sweep.
+fn dt_1d(f: &[f64], out: &mut [f64]) {
+    let n = f.len();
+    let mut v = vec![0usize; n]; // parabola indices currently on the envelope
+    let mut z = vec![0.0f64; n + 1]; // breakpoints between them
+    let mut k = 0;
+    v[0] = 0;
+    z[0] = -INF;
+    z[1] = INF;
+
+    for q in 1..n {
+        let mut s = intersect(f, q, v[k]);
+        while k > 0 && s <= z[k] {
+            k -= 1; // the top parabola is entirely above the new one: pop it
+            s = intersect(f, q, v[k]);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = INF;
+    }
+
+    let mut k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let d = q as f64 - v[k] as f64;
+        out[q] = d * d + f[v[k]];
+    }
+}
+
+fn intersect(f: &[f64], q: usize, p: usize) -> f64 {
+    ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64)) / (2 * q as f64 - 2 * p as f64)
+}
+
+impl DistanceField {
+    /// Rasterize the map, transform down the columns, transform along the rows,
+    /// take one square root per cell. O(N), and exact on the lattice.
+    ///
+    /// `rasterize` walks each wall at a third of a cell and returns the seed
+    /// grid: 0.0 at a cell a wall passes through, INF elsewhere. Indices are
+    /// clamped, not dropped — the Apartment's shell lies exactly on the
+    /// bounding box, and a wall that falls off the grid leaves the whole border
+    /// looking like open space.
+    pub fn from_map(map: &World, res: f64) -> Self {
+        let (nx, ny, mut f) = rasterize(map, res);
+        let mut buf = vec![0.0; nx.max(ny)];
+
+        for i in 0..nx {
+            let col: Vec<f64> = (0..ny).map(|j| f[j * nx + i]).collect();
+            dt_1d(&col, &mut buf[..ny]);
+            for j in 0..ny {
+                f[j * nx + i] = buf[j];
+            }
+        }
+        for j in 0..ny {
+            let row: Vec<f64> = (0..nx).map(|i| f[j * nx + i]).collect();
+            dt_1d(&row, &mut buf[..nx]);
+            f[j * nx..j * nx + nx].copy_from_slice(&buf[..nx]);
+        }
+
+        let cells = f.iter().map(|d| (d.sqrt() * res) as f32).collect();
+        Self { cells, nx, ny, res, origin: (map.bounds.min_x, map.bounds.min_y) }
+    }
+
+    /// Nearest-cell lookup, clamped at the border. Queries outside the map are
+    /// charged the extra Euclidean distance so an off-map endpoint reads as
+    /// *unlikely* rather than merely uninformative.
+    #[inline]
+    pub fn dist(&self, x: f64, y: f64) -> f64 {
+        let i = (((x - self.origin.0) / self.res - 0.5).round() as isize)
+            .clamp(0, self.nx as isize - 1) as usize;
+        let j = (((y - self.origin.1) / self.res - 0.5).round() as isize)
+            .clamp(0, self.ny as isize - 1) as usize;
+        self.cells[j * self.nx + i] as f64
+    }
+}
+
+pub struct LikelihoodField {
+    pub field: DistanceField,
+    pub intr: BeamIntrinsics,
+    /// Sensor pose in the robot frame — Thrun's (x_k,sens, y_k,sens).
+    pub sensor_offset: (f64, f64),
+}
+
+impl SensorModel for LikelihoodField {
+    /// `likelihood_field_range_finder_model` — Table 6.3. No ray casting, no
+    /// correspondence, and max-range readings are skipped outright: "I saw
+    /// nothing" is not evidence about where the nearest wall is.
+    fn log_likelihood(&self, scan: &Scan, x: &SE2, _map: &World) -> f64 {
+        let (c, s) = (x.theta().cos(), x.theta().sin());
+        let sx = x.x() + c * self.sensor_offset.0 - s * self.sensor_offset.1;
+        let sy = x.y() + s * self.sensor_offset.0 + c * self.sensor_offset.1;
+
+        let mut q = 0.0;
+        for (k, &z) in scan.ranges.iter().enumerate() {
+            if z >= scan.max_range - 1e-9 {
+                continue;
+            }
+            let a = x.theta() + scan.bearings[k];
+            let d = self.field.dist(sx + z * a.cos(), sy + z * a.sin());
+            let g = (-0.5 * (d / self.intr.sigma_hit).powi(2)).exp()
+                / (self.intr.sigma_hit * (2.0 * std::f64::consts::PI).sqrt());
+            q += (self.intr.z_hit * g + self.intr.z_rand / self.intr.max_range)
+                .max(1e-300)
+                .ln();
+        }
+        q
+    }
+
+    fn is_cheap(&self) -> bool {
+        true
+    }
+}
+```
+
+The landmark model and its inverse are short enough to show together, and the inverse is the one
+that will matter later.
+
+```rust title="crates/sensor/src/landmark.rs"
+use crate::{Feature, FeatureNoise, Landmark};
+use pr_core::geom::se2::{wrap_angle, SE2};
+use rand::distr::{Distribution, Uniform};
+use rand::Rng;
+use rand_distr::Normal;
+
+pub struct LandmarkModel {
+    /// Q_t = diag(σ_r², σ_φ², σ_s²).
+    pub q: FeatureNoise,
+}
+
+impl LandmarkModel {
+    /// `landmark_model_known_correspondence` — Table 6.4, in log space.
+    pub fn log_likelihood(&self, f: &Feature, j: &Landmark, x: &SE2) -> f64 {
+        let (dx, dy) = (j.xy.x - x.x(), j.xy.y - x.y());
+        let r_hat = dx.hypot(dy);
+        // The wrap is not optional: an unwrapped 2π error in the bearing
+        // residual rejects the correct landmark and accepts a wrong one.
+        let phi_hat = wrap_angle(dy.atan2(dx) - x.theta());
+
+        let e = [f.r - r_hat, wrap_angle(f.phi - phi_hat), f.s - j.signature];
+        (0..3)
+            .map(|i| {
+                let var = self.q[(i, i)];
+                -0.5 * (e[i] * e[i] / var + (2.0 * std::f64::consts::PI * var).ln())
+            })
+            .sum()
+    }
+
+    /// `sample_landmark_model_known_correspondence` — Table 6.5.
+    ///
+    /// Two constraints, three degrees of freedom: γ̂ is the one the reading
+    /// cannot see, so it is drawn uniformly. The result is a *proposal*, not a
+    /// belief — the pose prior it assumes (uniform over the plane) is wrong in
+    /// every building ever built.
+    pub fn sample_pose<R: Rng + ?Sized>(&self, f: &Feature, j: &Landmark, rng: &mut R) -> SE2 {
+        let gamma = Uniform::new(0.0, std::f64::consts::TAU).unwrap().sample(rng);
+        let r_hat = (f.r + Normal::new(0.0, self.q[(0, 0)].sqrt()).unwrap().sample(rng)).max(0.0);
+        let phi_hat = f.phi + Normal::new(0.0, self.q[(1, 1)].sqrt()).unwrap().sample(rng);
+
+        SE2::new(
+            j.xy.x + r_hat * gamma.cos(),
+            j.xy.y + r_hat * gamma.sin(),
+            wrap_angle(gamma - std::f64::consts::PI - phi_hat),
+        )
+    }
+}
+```
+
+Finally, the wrapper that makes honesty configurable. It takes any `SensorModel` and returns a
+weaker one — which is the whole content of Step 4 of the overconfidence derivation, as twelve lines
+of Rust.
+
+```rust title="crates/sensor/src/tempering.rs"
+use crate::{Scan, SensorModel};
+use pr_core::geom::se2::SE2;
+use sim::World;
+
+/// A sensor model that has been told to be less sure of itself.
+///
+/// `kappa` divides the log-likelihood — the p^{1/κ} of Thrun §6.3.4 and the
+/// scaled loss of generalized Bayesian updating. `stride` throws beams away
+/// instead. They are not interchangeable: tempering keeps the peak where the
+/// full scan puts it, subsampling moves it, so prefer κ and use `stride` only
+/// when the cost of the beams themselves is the problem.
+pub struct Tempered<S: SensorModel> {
+    pub inner: S,
+    pub kappa: f64,
+    pub stride: usize,
+}
+
+impl<S: SensorModel> SensorModel for Tempered<S> {
+    fn log_likelihood(&self, scan: &Scan, x: &SE2, map: &World) -> f64 {
+        let stride = self.stride.max(1);
+        let thinned = if stride == 1 {
+            scan.clone()
+        } else {
+            Scan {
+                ranges: scan.ranges.iter().step_by(stride).copied().collect(),
+                bearings: scan.bearings.iter().step_by(stride).copied().collect(),
+                max_range: scan.max_range,
+            }
+        };
+        self.inner.log_likelihood(&thinned, x, map) / self.kappa.max(1e-6)
+    }
+
+    fn is_cheap(&self) -> bool {
+        self.inner.is_cheap()
+    }
+}
+```
+
+### A worked example you can check by hand
+
+Five beams, one wall, one EM iteration. The wall is at $z^* = 5$ m for every beam, the sensor's
+limit is $z_{max} = 10$ m, and we start from maximal ignorance: all four weights at $0.25$,
+$\sigma_{hit} = 1$ m, $\lambda_{short} = 0.5\ \mathrm{m^{-1}}$.
+
+$$
+Z = \{4.5,\ \ 5.0,\ \ 3.0,\ \ 7.0,\ \ 10.0\}
+$$
+
+**The components.** With $z^* = 5$ and $\sigma_{hit} = 1$, the truncation normalizer for $p_{hit}$
+is $1/(\Phi(5) - \Phi(-5)) = 1.0000006$ — five sigma from both boundaries, so it may be treated as
+1, and the values are plain normal densities. For $p_{short}$,
+$\eta_s = 1/(1 - e^{-2.5}) = 1.089427$.
+
+| $z_i$ | $p_{hit}$ | $p_{short}$ | $p_{max}$ | $p_{rand}$ |
+|---|---|---|---|---|
+| 4.5 | 0.352065 | 0.057412 | 0 | 0.1 |
+| 5.0 | 0.398943 | 0.044713 | 0 | 0.1 |
+| 3.0 | 0.053991 | 0.121542 | 0 | 0.1 |
+| 7.0 | 0.053991 | 0 | 0 | 0.1 |
+| 10.0 | 0.0000015 | 0 | 1 | 0 |
+
+Two entries are worth pausing on. The readings at 3.0 and 7.0 have *identical* $p_{hit}$ — both are
+two metres from the wall — but only the short one can be explained by clutter, which is the entire
+asymmetry of the model in one row. And the reading at exactly $z_{max}$ has $p_{rand} = 0$, because
+$p_{rand}$ is defined on $[0, z_{max})$; the max-range spike belongs to $p_{max}$ alone.
+
+**The E-step.** All four weights are equal, so the responsibilities are just the components
+normalized:
+
+| $z_i$ | $e_{hit}$ | $e_{short}$ | $e_{max}$ | $e_{rand}$ |
+|---|---|---|---|---|
+| 4.5 | 0.691032 | 0.112689 | 0 | 0.196279 |
+| 5.0 | 0.733815 | 0.082245 | 0 | 0.183940 |
+| 3.0 | 0.195951 | 0.441116 | 0 | 0.362933 |
+| 7.0 | 0.350611 | 0 | 0 | 0.649389 |
+| 10.0 | 0.000001 | 0 | 0.999999 | 0 |
+
+Check the first row by hand: $0.352065 + 0.057412 + 0 + 0.1 = 0.509477$, and
+$0.352065 / 0.509477 = 0.691032$. The mixture likelihood of that reading is
+$0.25 \times 0.509477 = 0.127369$.
+
+**The M-step.** Average the columns for the weights, and take the responsibility-weighted moments
+for the shapes:
+
+$$
+z_{hit} = \frac{1.971411}{5} = 0.394282,\quad
+z_{short} = \frac{0.636050}{5} = 0.127210,\quad
+z_{max} = 0.200000,\quad
+z_{rand} = 0.278508
+$$
+
+$$
+\sigma_{hit}^2 = \frac{0.691032(0.25) + 0 + 0.195951(4) + 0.350611(4) + \ldots}{1.971411} = 1.196628
+\;\Rightarrow\;
+\sigma_{hit} = 1.093905
+$$
+
+$$
+\lambda_{short} = \frac{0.636050}{0.112689(4.5) + 0.082245(5) + 0.441116(3)} = \frac{0.636050}{2.241674} = 0.283737
+$$
+
+The mean log-likelihood per beam before this step is $-2.275038$; after it, it has risen. Notice
+what one iteration did: the hit weight went from 0.25 to 0.39 because most readings *are* hits, the
+max weight went to exactly $1/5$ because exactly one of five beams maxed out, and $\sigma_{hit}$
+grew, because with a fat starting $\sigma$ the model claims the reading at 7.0 as a hit and pays
+for it in variance. Ten more iterations and it will have sorted that out.
+
+```rust title="crates/sensor/src/beam.rs (tests)"
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    const Z: [f64; 5] = [4.5, 5.0, 3.0, 7.0, 10.0];
+    const Z_STAR: [f64; 5] = [5.0, 5.0, 5.0, 5.0, 5.0];
+
+    fn start() -> BeamIntrinsics {
+        BeamIntrinsics {
+            z_hit: 0.25,
+            z_short: 0.25,
+            z_max: 0.25,
+            z_rand: 0.25,
+            sigma_hit: 1.0,
+            lambda_short: 0.5,
+            max_range: 10.0,
+        }
+    }
+
+    /// The worked example in the text, to six decimals.
+    #[test]
+    fn toy_em_step() {
+        let model = BeamModel { intr: start(), stride: 1 };
+        let c = model.components(4.5, 5.0);
+        assert_relative_eq!(c[0], 0.352065, epsilon = 1e-6);
+        assert_relative_eq!(c[1], 0.057412, epsilon = 1e-6);
+        assert_relative_eq!(model.beam_likelihood(4.5, 5.0), 0.127369, epsilon = 1e-6);
+
+        let (fitted, trace) = learn_intrinsics(&Z, &Z_STAR, start(), 1);
+        assert_relative_eq!(trace[0], -2.275038, epsilon = 1e-6);
+        assert_relative_eq!(fitted.z_hit, 0.394282, epsilon = 1e-6);
+        assert_relative_eq!(fitted.z_short, 0.127210, epsilon = 1e-6);
+        assert_relative_eq!(fitted.z_max, 0.200000, epsilon = 1e-6);
+        assert_relative_eq!(fitted.z_rand, 0.278508, epsilon = 1e-6);
+        assert_relative_eq!(fitted.sigma_hit, 1.093905, epsilon = 1e-6);
+        assert_relative_eq!(fitted.lambda_short, 0.283737, epsilon = 1e-6);
+        assert!(fitted.is_normalized());
+    }
+
+    /// EM's defining property. A dip here is a bug, not a local optimum.
+    #[test]
+    fn em_log_likelihood_is_monotone() {
+        let (_, trace) = learn_intrinsics(&Z, &Z_STAR, start(), 40);
+        for w in trace.windows(2) {
+            assert!(w[1] >= w[0] - 1e-12, "log-likelihood decreased: {w:?}");
+        }
+    }
+
+    /// The exact transform must equal the O(N²) definition, bit for bit.
+    #[test]
+    fn distance_transform_is_exact() {
+        let map = sim::apartment();
+        let field = DistanceField::from_map(&map, 0.4);
+        let brute = brute_force_distance(&map, 0.4);
+        for (a, b) in field.cells.iter().zip(&brute) {
+            assert_eq!(a, b);
+        }
+    }
+}
+```
+
+<Callout type="info">
+Both implementations exist and are checked against each other: `crates/sensor` is the canonical
+Rust, and `web/lib/models/beam-em.ts`, `web/lib/models/landmark-sampling.ts` and
+`web/lib/mapping/edt.ts` are the TypeScript port that runs the widgets on this page. The worked
+example above is an assertion in both, and the exact distance transform is checked against its own
+$O(N^2)$ definition in both — on the Apartment at a 40 cm cell, they agree to the last bit.
+</Callout>
+
+## Putting it together
+
+### The race
+
+The two range-finder models, head to head on one map and one scan — the other two are not
+commensurable with them and get a paragraph instead. The numbers below are what the Likelihood
+Field Explorer above computes: the same code, the same 40-beam scan in the Apartment's room B, the
+same 68 × 50 grid of hypotheses, run headless on a laptop. The widget prints its own throughput
+live, so you can check them against the machine you are reading this on.
+
+| | evaluations / ms | evaluations / ms, cluttered | largest step in the profile | largest step, cluttered |
+|---|---|---|---|---|
+| beam model | 203 | 104 | 11.5 nats | 56.1 nats |
+| likelihood field | 329 | 330 | 5.7 nats | 4.7 nats |
+
+Read the columns as two independent arguments. **Cost:** the beam model's price is set by the
+complexity of the map, because every evaluation ray-casts against every wall; adding 26 chair legs
+halves its throughput and does not touch the field's, which pays a fixed $O(K)$ of lookups no
+matter how baroque the room. **Smoothness:** the beam model's profile takes a 56-nat step between
+neighbouring hypotheses 14 mm apart, which is a factor of $e^{56}$ in likelihood — a cliff that
+will strand any optimizer and starve any particle that lands on the wrong side. The field's
+residual roughness is not geometry at all but its own grid: halve the cell size and it halves too,
+which is exactly the behaviour you want from an approximation.
+
+Two other results belong here, from the sections above. The **correlation** model is the most
+robust to a map that is partly wrong and the least defensible as a probability. The **landmark**
+model costs $O(1)$ per feature instead of $O(K)$ per scan and throws away almost everything —
+which is fine when the features are distinctive, and catastrophic when they are not, because
+$c_t^i$ then becomes a discrete search that no amount of Gaussian machinery will save you from.
+
+### Which model, when
+
+Use the **likelihood field** for localization in a known static map. It is what AMCL runs by
+default, it is smooth enough for a particle filter with a few thousand particles, and its
+weaknesses — no notion of occlusion, no penalty for seeing through walls — do not bite when the map
+is right and the environment is mostly static.
+
+Use the **beam model** when the environment is dynamic enough that $z_{short}$ is doing real work,
+or when you need a *generative* model — to simulate a sensor, to detect that a reading is
+surprising, or to reason about what the robot would see from a hypothetical pose, as
+[Chapter 24](/chapters/ch24-exploration) does when it evaluates where to go next.
+
+Use **correlation** when the map is known to be partly wrong. Use **features** when the front end
+gives you features and the world gives you distinctive ones.
+
+And in every case, temper. The configuration this book carries forward is
+`Tempered<LikelihoodField>` with $\kappa$ chosen by calibration on logged data — the exact object
+[Chapter 12](/chapters/ch12-localization-global) constructs when it builds its MCL theater, and the
+reason its particle cloud stays honest for long enough to converge.
+
+### What comes next
+
+[Chapter 11](/chapters/ch11-localization-gaussian) takes the landmark model and the correspondence
+variable and builds EKF localization on them, at which point $c_t^i$ stops being notation and
+starts being the hardest part of the problem.
+[Chapter 12](/chapters/ch12-localization-global) takes the range-finder models and makes them
+particle weights, where the smoothness argument above turns into the difference between converging
+and not. [Chapter 13](/chapters/ch13-occupancy-grids) inverts the question entirely — instead of
+$p(z \mid x, m)$ with the map known, it asks for $p(m \mid z, x)$ with the pose known — and
+[Chapter 25](/chapters/ch25-learning) replaces the whole mixture with a network that is calibrated
+against exactly the diagnostics this chapter built.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="The normalizer you were tempted to drop">
+    Derive the truncation normalizer $\eta$ of $p_{hit}$ on $[0, z_{max}]$ in terms of the standard
+    normal CDF, and show it equals $\big[\Phi\big((z_{max} - z^*)/\sigma_{hit}\big) -
+    \Phi\big(-z^*/\sigma_{hit}\big)\big]^{-1}$. Then answer the engineering question: for
+    $z_{max} = 8$ m and $\sigma_{hit} = 0.12$ m, for which values of $z^*$ does $\eta$ differ from
+    1 by more than 1%? Finally, argue about EM: if you omit $\eta$ entirely, which of the four
+    components absorbs the missing mass, and in which direction does $\sigma_{hit}$ move?
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Fix the biased λ update">
+    Step 6 of the EM derivation shows that Table 6.2's $\lambda_{short}$ update is the estimator for
+    an untruncated exponential. Write the log-likelihood of the *truncated* exponential on
+    $[0, z^*]$, differentiate it, and show that the maximum-likelihood $\lambda$ solves
+    $1/\lambda - z^*/(e^{\lambda z^*} - 1) = \bar z$, where $\bar z$ is the responsibility-weighted
+    mean. Implement one Newton step on this equation, and verify against the measured numbers in
+    the text: for $\lambda = 1.0$, $z^* = 2$ m, the uncorrected estimator lands near 1.46 while the
+    corrected one should land near 1.0.
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Why the exponential, exactly">
+    The text derives $p_{short}$ from a homogeneous Poisson clutter field along the ray. Redo it for
+    a *non-homogeneous* field whose rate $\lambda(d)$ grows with distance — a decent model of a
+    corridor that gets busier further from the robot. Show that the nearest-hit density becomes
+    $\lambda(d)\exp(-\int_0^d \lambda(u)\,du)$, and explain what fitting a single-rate exponential
+    to data generated this way will do to the estimated $\lambda_{short}$.
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict, then check: who moves when the corridor fills">
+    In the Beam Mixture Mixer, before you touch anything: write down which two of the six parameters
+    you expect to move when "people in the corridor" is switched on, and in which direction. Now
+    switch it on, press <strong>Fit (EM)</strong>, and compare. Explain any parameter that moved
+    which you did not predict — in particular, why some of the extra short mass ends up in
+    $z_{rand}$ rather than $z_{short}$, and what that tells you about how identifiable the four
+    components really are.
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the tempering that buys back honesty">
+    In the Overconfidence Meter with the map error on and $K = 180$, find the smallest integer
+    $\kappa$ for which the truth is back inside the 95% set. Then set $K = 18$ with $\kappa = 1$ —
+    roughly the same amount of "evidence discarded" — and observe that it does not achieve the same
+    thing. Explain the difference in terms of what each operation does to the peak versus the width,
+    and say which one you would deploy on a robot whose map error you cannot measure directly.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Implement map correlation and race it">
+    Implement `map_correlation_model` against the `SensorModel` trait: rasterize the scan into a
+    local grid, correlate with the global map, clip at zero, take the log. Add it to the race table.
+    Find a map error under which it beats the likelihood field, and explain why. Then answer the
+    uncomfortable question: since $\max\{\rho, 0\}$ is not a density in $z$, what exactly goes wrong
+    if you use it as an importance weight in [Chapter 12](/chapters/ch12-localization-global)'s
+    particle filter — and why does it work anyway?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="A field that knows the doors can open">
+    Extend `DistanceField` to take a *set* of maps — doors open, doors closed — and store the
+    per-cell minimum distance over the set. Show that this is still one distance transform if you
+    rasterize all variants into a single seed grid, and one transform per variant plus a pointwise
+    min if you want to know *which* variant explained the scan. Wire it into the Likelihood Field
+    Explorer and measure what it costs in peak sharpness at the correct pose. Then relate it to the
+    dynamic-environment handling of [Chapter 12](/chapters/ch12-localization-global): when is
+    "assume the most convenient world" a better model than "estimate which world you are in"?
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Thrun, S., Burgard, W., and Fox, D."
+    year={2005}
+    title="Probabilistic Robotics"
+    venue="MIT Press"
+    url="https://mitpress.mit.edu/9780262201629/probabilistic-robotics/"
+    note="Chapter 6 is the source of every algorithm in this chapter — Tables 6.1 through 6.5 — and of the epigraph. The EM derivation here follows §6.3.2–6.3.3 with the truncation bias of Step 6 added."
+  />
+  <Reference
+    authors="Felzenszwalb, P. F. and Huttenlocher, D. P."
+    year={2012}
+    title="Distance Transforms of Sampled Functions"
+    venue="Theory of Computing 8(19), 415–428"
+    doi="10.4086/toc.2012.v008a019"
+    note="The exact O(N) transform that makes likelihood fields effectively free to build. The lower-envelope-of-parabolas argument in this chapter's second derivation is theirs, and the same routine reappears as a max-product message pass in Chapter 22."
+  />
+  <Reference
+    authors="Plagemann, C., Kersting, K., Pfaff, P., and Burgard, W."
+    year={2007}
+    title="Gaussian Beam Processes: A Nonparametric Bayesian Measurement Model for Range Finders"
+    venue="Proceedings of Robotics: Science and Systems III"
+    doi="10.15607/RSS.2007.III.018"
+    note="What happens when you refuse to pick between the beam model and the endpoint model: a Gaussian process over the whole scan that learns the correlations this chapter's independence assumption denies. The right next step if the overconfidence section bothered you."
+  />
+  <Reference
+    authors="Olson, E. B."
+    year={2009}
+    title="Real-Time Correlative Scan Matching"
+    venue="Proceedings of the IEEE International Conference on Robotics and Automation (ICRA), 4387–4393"
+    url="https://april.eecs.umich.edu/pdfs/olson2009icra.pdf"
+    note="The correlation model of §6.5 grown into a practical algorithm, with the multi-resolution trick that makes an exhaustive pose search real-time. Chapter 16 builds on it directly."
+  />
+  <Reference
+    authors="Bissiri, P. G., Holmes, C. C., and Walker, S. G."
+    year={2016}
+    title="A General Framework for Updating Belief Distributions"
+    venue="Journal of the Royal Statistical Society: Series B 78(5), 1103–1130"
+    doi="10.1111/rssb.12158"
+    note="The statistical justification for tempering. A posterior built from a scaled loss rather than a likelihood is a coherent belief update, which is what turns the 1/κ hack of §6.3.4 into something you can defend."
+  />
+  <Reference
+    authors="Zhu, D., Wang, C., Wang, W., Garg, R., Scherer, S., and Meng, M. Q.-H."
+    year={2021}
+    title="VDB-EDT: An Efficient Euclidean Distance Transform Algorithm Based on VDB Data Structure"
+    venue="arXiv:2105.04419"
+    url="https://arxiv.org/abs/2105.04419"
+    note="Where distance fields went after 2012: sparse hierarchical storage and incremental updates, so the field can be maintained online in 3-D at map scale rather than rebuilt. The modern answer to 'what if the map changes?'"
+  />
+  <Reference
+    authors="Kuang, H., Chen, X., Guadagnino, T., Zimmerman, N., Behley, J., and Stachniss, C."
+    year={2023}
+    title="IR-MCL: Implicit Representation-Based Online Global Localization"
+    venue="IEEE Robotics and Automation Letters"
+    doi="10.1109/LRA.2023.3239318"
+    note="This chapter's mixture, replaced by a neural occupancy field that synthesizes the scan it expects. It is the clearest modern demonstration that the observation model — not the filter — is what limits localization accuracy, and it is where Chapter 25 picks up."
+  />
+  <Reference
+    authors="Macenski, S., Martín, F., White, R., and Ginés Clavero, J."
+    year={2020}
+    title="The Marathon 2: A Navigation System"
+    venue="Proceedings of the IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)"
+    doi="10.1109/IROS45743.2020.9341207"
+    note="Evidence that this chapter is current practice: Nav2's AMCL exposes exactly these models as `laser_model_type` (beam versus likelihood_field), and `laser_max_beams` is the subsampling knob of the overconfidence section."
+  />
+</References>

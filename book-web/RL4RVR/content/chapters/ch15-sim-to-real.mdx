@@ -1,0 +1,345 @@
+---
+title: Simulation & the Sim-to-Real Bridge
+chapter: 15
+quote:
+  text: More mature solutions have often followed the zero-shot sim-to-real transfer scheme, which works particularly well for locomotion and navigation — the dynamics involved are relatively stable and easy to simulate.
+  author: Chen Tang and colleagues
+  affiliation: UT Austin · University of Virginia · Sony AI
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Chapter 14 named two curses that pull against each other: real samples are expensive, and simulation is wrong. This chapter is about the resolution that produced nearly every L4 result in the field — train in a simulator you know to be wrong, but train across a distribution of wrong simulators wide enough that reality is one of them. We derive why that works, build the system identification that narrows the distribution, and construct the teacher–student scheme that lets a policy use information at training time it will never have at deployment. Ferris arrives."
+  outcomes={[
+    'Explain why explicit integrators go unstable and how the step size bound relates to system stiffness',
+    'Describe what a contact solver actually computes and why contact is where simulators diverge from reality',
+    'Formulate domain randomization as a distributionally-robust objective and explain the peak/robustness trade',
+    'Use system identification to fit simulator parameters to logged real data',
+    'Explain the asymmetric actor–critic and why privileged information is safe for the critic but not the actor',
+    'Construct a teacher–student pipeline and say why distillation beats training the student directly',
+  ]}
+  foundation="Integrator stability bounds, the contact LCP with friction cones, domain randomization as distributional robustness, CMA-ES system identification, asymmetric actor–critic unbiasedness, and the teacher–student KL objective."
+  conceptual="The randomization wall: watch a narrow policy's perfect peak collapse into a broad, lower, shippable competence curve."
+  practical="rl-sim's parameterized rapier environments with randomization hooks, a rayon rollout farm, and CMA-ES parameter fitting."
+/>
+
+## 15.1 What a physics engine actually does
+
+A simulator advances rigid-body state by integrating Newton–Euler dynamics subject to constraints. Three components decide its fidelity, and each is a place where reality departs.
+
+**The integrator.** Chapter 2 showed explicit Euler manufacturing energy on Pendle. The stability condition for an explicit scheme is roughly $\Delta t \le 2/|\lambda_{\max}|$, where $\lambda_{\max}$ is the fastest eigenvalue of the linearized dynamics. Stiff systems — high-gain contacts, rigid transmissions — have enormous $\lambda_{\max}$, forcing tiny steps. Simulators therefore use semi-implicit or fully implicit schemes, which add artificial damping: stable, and systematically wrong in a direction that makes simulated robots feel more sluggish than real ones.
+
+**The constraint solver.** Joints and contacts are constraints, resolved by solving a system each step. Most engines use iterative solvers with a fixed iteration budget, so constraints are satisfied *approximately*. Insufficient iterations produce visible artifacts: joints that stretch, stacked objects that sink.
+
+**Contact.** This is the hard one. Non-penetration and Coulomb friction together form a complementarity problem: either the bodies are separated and the normal force is zero, or they touch and the force is non-negative — and the friction force lies inside a cone whose size depends on the normal force. Written as an LCP,
+
+$$0 \le \lambda_n \perp \big(J_n v^+ + b\big) \ge 0, \qquad \|\lambda_t\| \le \mu \lambda_n,$$
+
+where $\lambda_n, \lambda_t$ are normal and tangential impulses. Exact solutions are expensive, so engines approximate — linearizing the friction cone into a pyramid, softening the complementarity with regularization parameters (`erp`, `cfm` and their relatives).
+
+<Callout variant="warning" title="Solver parameters are not physics">
+Those regularization parameters have no physical counterpart. They exist to make the numerics converge, and their values change how a simulated robot behaves — how much a foot slips, how a grasp settles, whether a peg jams.
+
+This is the mechanism behind the curse of under-modelling. Locomotion and navigation transfer well because their dominant dynamics are rigid-body motion under gravity, which simulators get right. Contact-rich manipulation transfers poorly because its dominant dynamics are exactly the part simulators fudge. That is not a coincidence, and it explains Chapter 1's maturity ladder better than any algorithmic difference.
+</Callout>
+
+## 15.2 Meet Ferris
+
+**Ferris** is a quadruped: four legs, three actuated joints each, twelve degrees of freedom. His state includes base position and orientation, base linear and angular velocity, joint positions and velocities — 36 numbers before any terrain sensing.
+
+Ferris is the right robot for this chapter because he is the archetype of the field's clearest success. Quadruped locomotion reached commercial deployment through exactly the pipeline built here, and the reasons are worth naming: his dynamics are dominated by rigid-body motion, his contacts are intermittent and roughly point-like (much easier than the sustained sliding contact of manipulation), and a fall is recoverable rather than catastrophic.
+
+His low-level control is a PD controller at each joint, following position targets:
+
+$$\tau_j = K_p (q_j^{\text{des}} - q_j) - K_d\, \dot q_j.$$
+
+The policy outputs $q^{\text{des}}$ at 50 Hz; the PD loop runs at 1 kHz. That choice is itself a piece of design — Chapter 17 examines why almost everyone makes it — and it means the policy commands *positions*, not torques, with the PD gains absorbing a great deal of high-frequency dynamics the policy would otherwise have to learn.
+
+## 15.3 Domain randomization
+
+Here is the central idea, and it is counterintuitive at first: **do not try to build one accurate simulator. Build a distribution of inaccurate ones, and train a policy that works across all of them.**
+
+Formally, let $\xi$ parameterize the simulator — masses, friction coefficients, motor gains, latencies, sensor noise — with $\xi \sim p(\xi)$. Train
+
+$$\max_\theta\; \mathbb{E}_{\xi \sim p(\xi)}\left[ J_\xi(\pi_\theta) \right].$$
+
+If the real robot's parameters $\xi^*$ lie within the support of $p$, a policy that performs well in expectation over $p$ should perform acceptably at $\xi^*$ — without ever having seen it. That is **zero-shot transfer**.
+
+<DomainRandomization />
+
+The trade is visible in the widget and worth stating plainly: **you buy robustness by giving up peak performance**. A policy trained at one friction value is superb at exactly that value and useless a little away from it. A broadly randomized policy is merely good everywhere. Since you cannot measure the real value precisely, merely-good-everywhere is what ships.
+
+<Callout variant="insight" title="Why randomization works, mathematically">
+Two framings, both useful.
+
+**Distributional robustness.** Optimizing the expectation over $p(\xi)$ approximates optimizing the worst case over a set — and the connection is exact for particular choices: a soft-min over $\xi$ with a KL penalty of radius $\rho$ is equivalent to maximizing the expectation under an exponentially tilted distribution. Wide randomization is soft worst-case optimization.
+
+**Implicit system identification.** With a recurrent policy, randomization does something more interesting than robustness. The policy cannot know $\xi$, but the recent history of states and actions is informative about it — a heavier robot accelerates less for the same command. A recurrent policy trained across $\xi$ learns to *infer* the dynamics from its own recent experience and adapt.
+
+This is the mechanism behind rapid motor adaptation, and it is why the same architecture can handle payload changes it never saw explicitly. The policy has learned to be a system identifier as a side effect of being asked to perform under uncertainty.
+</Callout>
+
+**What to randomize** on Ferris: link masses and inertias (±20%), friction coefficients (0.4–1.2), motor gains and strength (±30%), actuation latency (0–30 ms), sensor noise and bias, external pushes, and terrain geometry. **What not to randomize**: things you can measure precisely, like link lengths from CAD. Randomizing those wastes capacity on uncertainty you do not have.
+
+## 15.4 System identification: narrow the distribution
+
+Randomization is expensive in policy capacity — the wider $p(\xi)$, the more conservative the policy. So narrow it where you can, by fitting simulator parameters to real data.
+
+Collect trajectories from the real robot, then solve
+
+$$\xi^* = \arg\min_\xi \sum_t \left\| s_t^{\text{real}} - s_t^{\text{sim}}(\xi) \right\|^2$$
+
+over the parameters you care about. The objective is non-convex, non-differentiable through the simulator, and low-dimensional — which makes it ideal for **CMA-ES**, an evolutionary strategy that maintains a Gaussian over parameters and adapts its covariance to the local landscape.
+
+<Callout variant="warning" title="Excitation decides what you can identify">
+A crucial and easily-missed point: you can only identify parameters that the data actually excites. Trajectories where the robot stands still tell you nothing about friction. Slow motion tells you nothing about inertia, because inertial forces scale with acceleration.
+
+Design identification experiments deliberately: fast motions for inertia, sliding motions under varying normal load for friction, step commands for motor gains and latency. If a parameter's gradient is flat across your dataset, no optimizer will recover it, and the fit will report a confident wrong answer.
+</Callout>
+
+The practical pipeline is: identify what you can, randomize around the residual uncertainty, and use the identification's own uncertainty to set the randomization width. That is more principled than choosing ±20% because it sounds reasonable.
+
+<RustSnippet title="rl-sim/src/randomize.rs" caption="Parameterized environments and a rayon rollout farm. Note the per-worker seeded RNG: reproducibility survives parallelism only if each worker's stream is derived deterministically from the run seed.">
+
+```rust
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
+
+/// Everything the simulator lets us vary — one draw per episode.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DomainParams {
+    pub mass_scale: [f64; 13],   // base + 12 links
+    pub friction: f64,
+    pub motor_kp: f64,
+    pub motor_kd: f64,
+    pub latency_steps: usize,
+    pub terrain_roughness: f64,
+}
+
+#[derive(Clone)]
+pub struct RandomizationRanges {
+    pub mass_scale: (f64, f64),
+    pub friction: (f64, f64),
+    pub motor_kp: (f64, f64),
+    pub latency_steps: (usize, usize),
+    pub terrain_roughness: (f64, f64),
+}
+
+impl RandomizationRanges {
+    pub fn sample<R: Rng>(&self, rng: &mut R) -> DomainParams {
+        DomainParams {
+            mass_scale: std::array::from_fn(|_| {
+                rng.gen_range(self.mass_scale.0..=self.mass_scale.1)
+            }),
+            friction: rng.gen_range(self.friction.0..=self.friction.1),
+            motor_kp: rng.gen_range(self.motor_kp.0..=self.motor_kp.1),
+            motor_kd: rng.gen_range(0.5..=2.0),
+            latency_steps: rng.gen_range(self.latency_steps.0..=self.latency_steps.1),
+            terrain_roughness: rng.gen_range(
+                self.terrain_roughness.0..=self.terrain_roughness.1
+            ),
+        }
+    }
+}
+
+/// Collect rollouts across many randomized worlds in parallel.
+/// Each worker derives its stream from the run seed, so results reproduce
+/// exactly regardless of how many cores are available.
+pub fn parallel_rollouts(
+    policy: &Policy,
+    ranges: &RandomizationRanges,
+    n_envs: usize,
+    horizon: usize,
+    seed: u64,
+) -> Vec<Episode> {
+    (0..n_envs)
+        .into_par_iter()
+        .map(|i| {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed.wrapping_add(i as u64));
+            let params = ranges.sample(&mut rng);
+            let mut env = FerrisEnv::with_params(params);
+            env.rollout(policy, horizon, &mut rng)
+        })
+        .collect()
+}
+```
+
+</RustSnippet>
+
+## 15.5 Privileged information: asymmetric actors and teacher–student
+
+Here is the observation that unlocked rough-terrain locomotion.
+
+In simulation you know everything: exact contact forces, the true friction coefficient, terrain height beneath every foot, the robot's precise velocity. On hardware you know almost none of it. The naive response is to train only on what the robot will have, which throws away information that would make training far easier.
+
+**Asymmetric actor–critic** exploits the asymmetry. The critic sees privileged state $s^{\text{priv}}$; the actor sees only deployable observations $o$. This is legitimate: the critic is a training-time device that is discarded at deployment, and giving it privileged information reduces its variance without biasing the policy gradient — the gradient's correctness depends on the *actor's* conditioning, not the critic's.
+
+**Teacher–student distillation** goes further, and is the ANYmal recipe:
+
+1. **Train a teacher** with full privileged access — terrain map, friction, contact states. This policy learns quickly because the problem is nearly fully observed.
+2. **Train a student** that sees only real sensors (joint encoders, IMU, and a short history), by supervised imitation of the teacher's actions:
+
+$$\min_\phi\; \mathbb{E}_{\tau \sim \pi_\phi}\left[ D_{\text{KL}}\big(\pi_{\text{teacher}}(\cdot \mid s^{\text{priv}}) \,\big\|\, \pi_\phi(\cdot \mid o_{t-H:t})\big) \right].$$
+
+3. **Deploy the student.**
+
+<Callout variant="insight" title="Why two stages beat one">
+Training the student directly from scratch is hard: it must simultaneously discover *what* to do and *how* to infer the hidden state that determines what to do. Those are two credit-assignment problems entangled.
+
+Distillation separates them. The teacher solves the control problem under full observation. The student solves an inference problem — recover enough of the hidden state from history to reproduce the teacher's actions — and that is supervised learning, which is far better behaved.
+
+Note the expectation in the objective: it is over the **student's** trajectory distribution, not the teacher's. That detail matters enormously, and Chapter 16 explains why — it is exactly DAgger, and training on the teacher's states instead produces the compounding error that plain behaviour cloning suffers.
+</Callout>
+
+## 15.6 Zero-shot or few-shot? A decision procedure
+
+Tang's survey gives an empirical answer, and it is worth stating as a procedure.
+
+**Zero-shot transfer** — train entirely in simulation, deploy without adaptation — works when the dominant dynamics simulate faithfully. That means locomotion, navigation, and flight. These are the L4 results.
+
+**Few-shot adaptation** — fine-tune with a small amount of real data — is needed when simulation captures the structure but not the details: contact-rich assembly, deformable objects, anything where friction and compliance decide the outcome.
+
+**Real-world learning without simulation** is necessary when there is no usable simulator at all: physical human–robot interaction, where the human is the unmodelable part. These results sit at L1–L2, and Chapter 16's offline methods are the main tool.
+
+The decision rule: ask what fraction of your task's difficulty lies in phenomena your simulator represents faithfully. Locomotion is mostly rigid-body dynamics — simulate it. Cloth manipulation is mostly deformation — do not expect zero-shot to work.
+
+## 15.7 Chapter bridge
+
+The sim-to-real bridge is built. Randomize what you cannot measure, identify what you can, use privileged information at training time and distill it away for deployment, and choose zero-shot or few-shot by asking what your simulator actually gets right.
+
+But some tasks have no usable simulator, and some have no writable reward. When the human is part of the environment, or when the task is easier to *show* than to *specify*, a different source of information is needed.
+
+Chapter 16 turns to demonstrations. We prove why naive imitation fails in a way supervised learning does not — errors compound quadratically in the horizon — build the correction, and then develop offline RL: learning good policies from a fixed dataset without any environment interaction at all. It is the closest thing robot learning has to the pretraining paradigm that transformed the rest of machine learning.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Integrator stability',
+    difficulty: 2,
+    body: 'Derive the stability bound Δt ≤ 2/|λ| for explicit Euler on the linear system ẋ = λx. Then estimate λ_max for a joint with PD gains Kp = 100, Kd = 5 and inertia 0.1, and state the maximum stable step size.',
+  },
+  {
+    layer: 'F',
+    title: 'The friction cone',
+    difficulty: 3,
+    body: 'Write the contact complementarity conditions for a single point contact with Coulomb friction. Explain what is lost when the friction cone is linearized into a pyramid, and in which direction the approximation errs.',
+  },
+  {
+    layer: 'F',
+    title: 'Randomization as robust optimization',
+    difficulty: 3,
+    body: 'Show that maximizing E_ξ[J_ξ] under an exponentially tilted distribution corresponds to a soft-min over ξ with a KL penalty. What does the tilting temperature correspond to in the robust-optimization picture?',
+  },
+  {
+    layer: 'F',
+    title: 'Why the critic may cheat',
+    difficulty: 2,
+    body: 'Prove that the policy gradient remains unbiased when the critic is conditioned on privileged state unavailable to the actor. Then explain precisely why the same is not true if the ACTOR is conditioned on it.',
+  },
+  {
+    layer: 'C',
+    title: 'The randomization frontier',
+    difficulty: 2,
+    body: 'In the randomization widget, find the range that maximizes worst-case performance over friction ∈ [0.7, 1.6]. Compare against the range that maximizes performance at the nominal value. They will differ — explain which one you would deploy.',
+  },
+  {
+    layer: 'C',
+    title: 'Crank the step size',
+    difficulty: 1,
+    body: 'Return to Chapter 2’s integrator playground and find the Δt at which each integrator destabilizes. Then argue what the equivalent failure looks like for a quadruped’s contact solver.',
+  },
+  {
+    layer: 'P',
+    title: 'System identification with CMA-ES',
+    difficulty: 3,
+    body: 'Generate "real" trajectories from a Ferris simulation with hidden parameters, then recover them with CMA-ES from logged data. Investigate which parameters are identifiable from a standing trajectory versus a trotting one, and explain the difference in terms of excitation.',
+  },
+  {
+    layer: 'P',
+    title: 'Measure the transfer gap',
+    difficulty: 3,
+    body: 'Train two Reacher policies — one at nominal parameters, one with ±25% randomization — then evaluate both across a grid of held-out "real" parameter values. Plot both surfaces and report the worst case for each. The narrow policy should win at nominal and lose everywhere else.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§6.1 core issues in mental rehearsal, and §7.5 on the use of simulation in robot RL — the pre-deep-learning statement of this chapter’s problem.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.3 simulator-usage axis, and §5 — the empirical basis for the zero-shot/few-shot decision procedure in §15.6.',
+  },
+  {
+    key: 'tobin2017',
+    authors: 'Tobin, J., Fong, R., Ray, A., Schneider, J., Zaremba, W. & Abbeel, P.',
+    year: 2017,
+    title: 'Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real World',
+    venue: 'IROS 2017',
+    note: 'The visual randomization result that named the technique.',
+  },
+  {
+    key: 'peng2018',
+    authors: 'Peng, X. B., Andrychowicz, M., Zaremba, W. & Abbeel, P.',
+    year: 2018,
+    title: 'Sim-to-Real Transfer of Robotic Control with Dynamics Randomization',
+    venue: 'ICRA 2018',
+    note: 'Dynamics randomization with recurrent policies — the implicit system identification of §15.3.',
+  },
+  {
+    key: 'hwangbo2019',
+    authors: 'Hwangbo, J. et al.',
+    year: 2019,
+    title: 'Learning agile and dynamic motor skills for legged robots',
+    venue: 'Science Robotics 4(26)',
+    note: 'Learned actuator models — identifying the part of the robot the rigid-body simulator gets most wrong.',
+  },
+  {
+    key: 'lee2020',
+    authors: 'Lee, J., Hwangbo, J., Wellhausen, L., Koltun, V. & Hutter, M.',
+    year: 2020,
+    title: 'Learning quadrupedal locomotion over challenging terrain',
+    venue: 'Science Robotics 5(47)',
+    note: 'The teacher–student pipeline of §15.5, in the form this chapter reconstructs.',
+  },
+  {
+    key: 'kumar2021',
+    authors: 'Kumar, A., Fu, Z., Pathak, D. & Malik, J.',
+    year: 2021,
+    title: 'RMA: Rapid Motor Adaptation for Legged Robots',
+    venue: 'RSS 2021',
+    note: 'Explicit latent estimation of the dynamics parameters — making implicit system identification a designed component.',
+  },
+  {
+    key: 'pinto2018',
+    authors: 'Pinto, L., Andrychowicz, M., Welinder, P., Zaremba, W. & Abbeel, P.',
+    year: 2018,
+    title: 'Asymmetric Actor Critic for Image-Based Robot Learning',
+    venue: 'RSS 2018',
+    note: 'The privileged-critic construction and its unbiasedness argument.',
+  },
+  {
+    key: 'hansen2016',
+    authors: 'Hansen, N.',
+    year: 2016,
+    title: 'The CMA Evolution Strategy: A Tutorial',
+    venue: 'arXiv:1604.00772',
+    url: 'https://arxiv.org/abs/1604.00772',
+    note: 'CMA-ES, used here for system identification and in Chapter 17 for policy search over movement-primitive weights.',
+  },
+]} />

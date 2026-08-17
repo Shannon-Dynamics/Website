@@ -1,0 +1,341 @@
+---
+title: 'Frontiers: HRI, Multi-Robot & Foundation Models'
+chapter: 21
+quote:
+  text: For competencies where both accurate simulation and real-world rollouts are prohibitive, or where stable scalable algorithms are missing, successful real-world examples are much sparser.
+  author: Chen Tang and colleagues
+  affiliation: On the frontier that remains
+  source: Deep Reinforcement Learning for Robotics — A Survey of Real-World Successes, 2024
+---
+
+<ChapterOverview
+  summary="Three competencies remain, and they share one property: the environment contains other agents. Humans cannot be simulated, which removes the technique that made locomotion work. Multiple robots turn a single decision problem into one whose complexity class is genuinely worse. And the frontier that has moved fastest — foundation models — offers to supply the priors, goals and rewards this book has so far asked engineers to write by hand. We close by comparing Kober's 2013 open problems against Tang's 2024 list, which is the most honest way to see what a decade actually bought."
+  outcomes={[
+    'Explain why HRI is simulation-starved and what follows for algorithm choice',
+    'Formulate shared autonomy as inference over a latent human goal',
+    'State the Dec-POMDP formalism and its complexity, and explain what CTDE buys',
+    'Derive the RLHF objective and identify its closed-form optimal policy',
+    'Describe how vision-language-action models change the priors available to a robot',
+    'Compare the 2013 and 2024 open-problem lists and say what genuinely changed',
+  ]}
+  foundation="Latent-goal shared autonomy, the Dec-POMDP formalism with NEXP-completeness, CTDE and the MAPPO gradient, and the KL-regularized RLHF objective with its Boltzmann solution."
+  conceptual="A shared-autonomy blend you control directly, and the 2013-versus-2024 open-problem diff."
+  practical="Multi-agent gridworld with CTDE PPO, a shared-autonomy Reacher blending your input with a trained policy, and a VLM reward-labelling feasibility sketch."
+/>
+
+## 21.1 Humans are the unmodelable part
+
+Every technique in Part III depended on simulation. Domain randomization needs a simulator to randomize; teacher–student needs privileged simulator state; massively parallel PPO needs thousands of simulated worlds.
+
+None of that is available when a human is in the loop. There is no physics engine for a person deciding to reach for the same object you were reaching for. You can model human motion kinematically, but you cannot simulate the reaction to the robot's behaviour — and that reaction is precisely what physical human–robot interaction consists of.
+
+The consequences follow directly. Zero-shot sim-to-real is unavailable, so real-world learning is mandatory. Real-world learning with humans is slow, supervised, and safety-critical, so data is scarce. Scarce data means Chapter 16's offline methods rather than Chapter 10's on-policy ones. And the safety case means Chapter 14's constrained formulation rather than a scalar penalty.
+
+That chain of reasoning — not any algorithmic gap — is why HRI sits at L1–L2 on Chapter 1's ladder.
+
+<Callout variant="insight" title="Collaborative, non-collaborative, and shared">
+Three distinct problems get filed under HRI, and conflating them causes confusion.
+
+**Collaborative physical interaction** — human and robot manipulate the same object, with aligned goals. The difficulty is inferring intent from force cues in real time.
+
+**Non-collaborative** — human and robot share space with different objectives, as in a robot crossing a busy corridor. Nobody is helping anybody; the robot must predict and not obstruct.
+
+**Shared autonomy** — no physical contact, but control is blended. The human indicates intent through an interface and the robot supplies competence. This is the most deployed of the three, in assistive robotics and teleoperation.
+</Callout>
+
+## 21.2 Shared autonomy as goal inference
+
+Shared autonomy has the cleanest formulation, so it is worth doing properly.
+
+The human has a goal $g$ the robot cannot observe. The robot receives human input $u_t$ — joystick, gaze, muscle signal — which is noisy evidence about $g$. Maintain a belief over goals and update it with each input:
+
+$$b_{t+1}(g) \propto P(u_t \mid g,\, s_t)\; b_t(g).$$
+
+Then act to maximize expected value under that belief:
+
+$$a_t = \arg\max_a \sum_g b_t(g)\, Q_g(s_t, a).$$
+
+This is Chapter 4's belief-MDP machinery with the hidden variable being *the human's intention* rather than the robot's location. Everything transfers, including the honest observation that the belief space is continuous and exact solutions are out of reach.
+
+<SharedAutonomy />
+
+<Callout variant="warning" title="Assistance that is correct and unwelcome">
+The formulation above optimizes task success. Users frequently dislike the result.
+
+An assistant confident about your goal takes over, and the loss of agency is experienced as the system fighting you — especially when the inference is wrong, which it periodically is. The standard mitigations are to blend rather than replace, $a = (1-\alpha) a_{\text{human}} + \alpha\, a_{\text{robot}}$ with $\alpha$ tied to belief confidence; to apply a **Q-filter**, intervening only where the human's action is clearly suboptimal; and to preserve a predictable manual mode the user can always fall back to.
+
+The deeper point is that the objective is not task success alone. It includes the human's sense of control, which is real, measurable by user study, and absent from every reward function in this book. That gap is itself a research frontier.
+</Callout>
+
+## 21.3 Multi-robot systems
+
+Two robots in a warehouse are not two independent problems. Each is part of the other's environment, and since both are learning, each faces a **non-stationary** environment — the thing every convergence proof in Part I assumed away.
+
+The formalism is the **decentralized POMDP**: a shared state and transition function, but each agent $i$ has its own observation function $O_i$ and must act on its own observation alone. The team shares one reward.
+
+<Theorem kind="Theorem" n="21.1" title="Dec-POMDPs are NEXP-complete (Bernstein et al., 2002)">
+Deciding whether a finite-horizon Dec-POMDP has a joint policy achieving expected value at least $V$ is NEXP-complete.
+</Theorem>
+
+That is worse than the PSPACE-hardness of single-agent POMDPs, and it is not an artifact of a bad formulation. The difficulty is intrinsic: agents must reason about what other agents know, which requires reasoning about what they observe, recursively.
+
+**Centralized training with decentralized execution** is the practical response, and it is exactly Chapter 15's asymmetric actor–critic applied to a team. During training the critic sees the joint state and all agents' observations, which makes its estimates stationary and low-variance. At execution each agent runs a policy conditioned only on its own observation. MAPPO is PPO with this structure and is a strong baseline despite its simplicity.
+
+The residual difficulty is **credit assignment**: the team reward does not say who contributed. The standard fix is a counterfactual baseline — compare the achieved return against what would have happened had agent $i$ acted differently, holding others fixed — which is Chapter 10's baseline argument, extended to teams.
+
+<Callout variant="note" title="Where multi-robot RL actually works">
+Tang's survey finds the successes concentrated where coordination is *implicit*: decentralized collision avoidance, where each robot has a local policy and coordination emerges from everyone following compatible rules; and robot soccer, where full-body control on physical platforms reached L4 through a combination of learned low-level skills and structured high-level play.
+
+Where it does not work is anything requiring explicit negotiated coordination at scale. The complexity result is not merely theoretical — it shows up as training instability that grows with the number of agents.
+</Callout>
+
+## 21.4 Foundation models
+
+The fastest-moving frontier, and the one most likely to date this chapter.
+
+Large vision-language models bring something robot RL has always lacked: **priors about the world that nobody had to encode**. Four ways they are being used, in increasing order of ambition.
+
+**Reward specification.** Ask a VLM whether an image shows the task completed. This attacks Chapter 14's fourth curse directly — instead of engineering a reward, describe the goal in language. It works for visually-checkable goals and fails where success is a matter of forces or internal state.
+
+**Goal and plan generation.** An LLM decomposes "clear the table" into a sequence of skills the robot already has. This is Chapter 19's skill-composition problem with the composer supplied by a language model rather than learned, and it partially answers the open question of where high-level structure comes from.
+
+**Vision-language-action models.** Train a single large policy on diverse robot data with language conditioning, so it maps instruction plus image to action. The bet is that scale and diversity produce generalization to novel objects and phrasings — a bet that has paid off in other domains.
+
+**RL fine-tuning of large policies.** Pretrain on diverse data, then improve with RL on the specific robot. The objective is the RLHF one:
+
+$$\max_\theta\; \mathbb{E}_{a\sim\pi_\theta}\left[r_\psi(s,a)\right] - \beta\, D_{\text{KL}}\!\left(\pi_\theta \,\|\, \pi_{\text{ref}}\right),$$
+
+whose optimal solution is available in closed form,
+
+$$\pi^*(a\mid s) \propto \pi_{\text{ref}}(a\mid s)\,\exp\!\left(r_\psi(s,a)/\beta\right).$$
+
+<Callout variant="insight" title="You have seen that solution before">
+That is a Boltzmann distribution over the reward, tilted by a reference policy — structurally identical to Chapter 11's maximum-entropy optimal policy $\pi^* \propto \exp(Q/\alpha)$, with the KL to a reference playing the role entropy played there.
+
+The connection is not superficial. Both are instances of regularized policy optimization, where a divergence penalty keeps the solution near something trusted: a uniform policy in the entropy case, a pretrained policy here. Chapter 10's trust region is the same idea with a hard constraint.
+
+Recognizing this saves effort. The same intuitions about temperature, the same failure modes when the penalty is too weak, and the same closed-form structure all carry over.
+</Callout>
+
+<RustSnippet title="rl-deep/src/multiagent/ctde.rs" caption="Centralized training with decentralized execution. The critic sees everything; each actor sees only its own observation — which is what makes the learned policies deployable on robots that cannot share state at runtime.">
+
+```rust
+use burn::prelude::*;
+
+pub struct CtdePpo<B: Backend> {
+    /// One actor per agent, each conditioned on that agent's observation only.
+    actors: Vec<GaussianPolicy<B>>,
+    /// A single centralized critic over the JOINT observation. Training-time
+    /// only — it is discarded before deployment.
+    critic: Critic<B>,
+    n_agents: usize,
+}
+
+impl<B: AutodiffBackend> CtdePpo<B> {
+    /// Execution: each agent acts on what it can actually see.
+    pub fn act(&self, obs: &[Tensor<B, 2>]) -> Vec<Tensor<B, 2>> {
+        obs.iter()
+            .zip(&self.actors)
+            .map(|(o, actor)| actor.sample(o.clone()).0)
+            .collect()
+    }
+
+    /// Training: the value estimate may use the joint state, which makes it
+    /// stationary from each agent's perspective even while the others learn.
+    pub fn value(&self, joint_obs: Tensor<B, 2>) -> Tensor<B, 1> {
+        self.critic.forward(joint_obs).squeeze(1)
+    }
+
+    /// Counterfactual advantage: how much better was agent i's action than its
+    /// average alternative, holding the other agents fixed? This is Chapter 10's
+    /// baseline argument, extended to assign team credit.
+    pub fn counterfactual_advantage(
+        &self,
+        agent: usize,
+        joint_obs: Tensor<B, 2>,
+        joint_actions: &[Tensor<B, 2>],
+        n_samples: usize,
+    ) -> Tensor<B, 1> {
+        let q_actual = self.joint_q(joint_obs.clone(), joint_actions);
+
+        // Marginalize agent `agent` out by resampling its action.
+        let mut baseline = q_actual.zeros_like();
+        for _ in 0..n_samples {
+            let mut counterfactual = joint_actions.to_vec();
+            counterfactual[agent] = self.actors[agent]
+                .sample(self.agent_obs(&joint_obs, agent))
+                .0;
+            baseline = baseline + self.joint_q(joint_obs.clone(), &counterfactual);
+        }
+        q_actual - baseline.div_scalar(n_samples as f64)
+    }
+}
+```
+
+</RustSnippet>
+
+## 21.5 What a decade actually bought
+
+The most useful thing this chapter can do is compare the open problems Kober's survey listed in 2013 against those Tang's listed in 2024.
+
+| 2013 open problem | Status in 2024 |
+|---|---|
+| **Sample efficiency on real robots** | **Partly solved by avoidance.** Sim-to-real made real samples largely unnecessary for locomotion and navigation. For contact-rich manipulation and HRI it remains open, and the honest summary is that we routed around the problem rather than solving it. |
+| **Reward/goal specification** | **Open, with new tools.** Potential-based shaping was known in 1999. What is new is demonstrations at scale, preference learning, and language-model reward specification. Reward hacking remains a live hazard. |
+| **Model learning and mental rehearsal** | **Advanced substantially.** Ensembles with calibrated uncertainty, latent world models, and short branched rollouts are real progress on 2013's forward-model methods. Still a minority of deployed systems. |
+| **Prior knowledge and structure** | **Transformed.** In 2013 priors were hand-designed primitives. Now they also come from internet-scale pretraining — a source that did not exist. |
+| **Safe exploration** | **Open.** Constrained RL matured, but the field mostly avoids the problem by exploring in simulation. Real-robot safe exploration is still largely human supervision. |
+| **Tractable representations** | **Solved differently than expected.** 2013 sought compact hand-designed representations; deep networks made high-dimensional representations tractable instead. DMPs remain the right answer for some problems. |
+
+And the genuinely new problems, absent from the 2013 list:
+
+**Long-horizon tasks and skill discovery.** Not prominent in 2013 because short-horizon tasks were still hard. Now the main obstacle to general-purpose robots, and Chapter 19 stated why.
+
+**Principled system design.** Tang's survey is pointed about this: action spaces, reward terms and architectures are chosen by heuristic and expert taste, with few controlled comparisons. This book's insistence on classical baselines and reported units is a small response to that complaint.
+
+**Scaling multi-robot learning.** Barely addressed in 2013; now blocked by the complexity result of §21.3.
+
+<Callout variant="insight" title="The honest summary">
+A decade of extraordinary progress, and the four curses are all still there.
+
+Dimensionality is handled by generalization rather than removed. Sample cost is routed around by simulation rather than reduced, for the tasks where simulation works. Under-modelling is managed by randomization rather than fixed. Goal specification has more tools and no solution.
+
+That is not a pessimistic reading. It is what mature engineering fields look like — the fundamentals persist, and the craft consists of knowing which technique to apply to which manifestation. A reader who finishes this book knowing the four curses, the techniques that manage each, and how to tell which one is biting is equipped for the frontier as it actually is.
+</Callout>
+
+## 21.6 Chapter bridge
+
+The frontier is where other agents enter: humans who cannot be simulated, teams whose complexity is provably worse, and foundation models supplying priors nobody wrote.
+
+One thing remains. This book has built twenty-one chapters of machinery and demonstrated each piece separately. Chapter 22 assembles all of it into a single project: specify a task, formalize the MDP with every choice justified against the evidence in Parts III and IV, build a randomized simulation, train teacher–student PPO, evaluate against the L0–L5 rubric with honest statistics, and ship a native binary alongside a browser demo. It is the chapter that turns a book into a template you can fork.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Shared-autonomy belief update',
+    difficulty: 2,
+    body: 'Write the belief update over human goals given joystick input, specifying an observation model P(u | g, s). Then show how the blending coefficient should depend on belief entropy, and what happens at maximum entropy.',
+  },
+  {
+    layer: 'F',
+    title: 'Why Dec-POMDPs are worse',
+    difficulty: 3,
+    body: 'Explain intuitively why decentralized execution raises complexity from PSPACE to NEXP. What must each agent reason about that a single agent need not?',
+  },
+  {
+    layer: 'F',
+    title: 'The CTDE gradient',
+    difficulty: 3,
+    body: 'Write the policy gradient for agent i under CTDE with a centralized critic. Prove it is unbiased despite the critic seeing information the actor does not — and connect the argument to Chapter 15’s asymmetric actor–critic.',
+  },
+  {
+    layer: 'F',
+    title: 'The RLHF solution',
+    difficulty: 3,
+    body: 'Derive the closed-form optimal policy for the KL-regularized objective. Then show it reduces to Chapter 11’s maximum-entropy policy when the reference policy is uniform.',
+  },
+  {
+    layer: 'C',
+    title: 'Assistance that helps',
+    difficulty: 2,
+    body: 'In the shared-autonomy widget, find the blending level at which task performance is best. Then find the level at which YOU feel in control. Report the gap — it is the research problem.',
+  },
+  {
+    layer: 'C',
+    title: 'Read the diff',
+    difficulty: 2,
+    body: 'Using the 2013-versus-2024 table, pick the problem you judge to have advanced least and argue why, citing specific obstacles from Chapters 14–20 rather than general difficulty.',
+  },
+  {
+    layer: 'P',
+    title: 'Two Rustys',
+    difficulty: 3,
+    body: 'Build a two-agent delivery gridworld and train CTDE PPO. Then train independent PPO with no centralized critic. Compare stability across five seeds — the independent version should be visibly worse, and you should be able to say why.',
+  },
+  {
+    layer: 'P',
+    title: 'VLM reward labelling',
+    difficulty: 3,
+    body: 'Take 100 Reacher end-states, label success with a small vision model, and compare against ground truth. Measure precision and recall, then estimate how much reward noise a policy can tolerate before training degrades.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§4.5 human–robot interaction, §4.6 multi-robot interaction, §5 general trends and open challenges, §6 conclusion — the 2024 column of §21.5.',
+  },
+  {
+    key: 'kober2013',
+    authors: 'Kober, J., Bagnell, J. A. & Peters, J.',
+    year: 2013,
+    title: 'Reinforcement Learning in Robotics: A Survey',
+    venue: 'International Journal of Robotics Research 32(11)',
+    baseline: true,
+    note: '§8 discussion — open questions and practical challenges, the 2013 column of §21.5.',
+  },
+  {
+    key: 'bernstein2002',
+    authors: 'Bernstein, D. S., Givan, R., Immerman, N. & Zilberstein, S.',
+    year: 2002,
+    title: 'The Complexity of Decentralized Control of Markov Decision Processes',
+    venue: 'Mathematics of Operations Research 27(4)',
+    note: 'Theorem 21.1.',
+  },
+  {
+    key: 'javdani2018',
+    authors: 'Javdani, S., Admoni, H., Pellegrinelli, S., Srinivasa, S. S. & Bagnell, J. A.',
+    year: 2018,
+    title: 'Shared autonomy via hindsight optimization for teleoperation and teaming',
+    venue: 'International Journal of Robotics Research 37(7)',
+    note: 'The latent-goal formulation of §21.2.',
+  },
+  {
+    key: 'yu2022',
+    authors: 'Yu, C., Velu, A., Vinitsky, E., Gao, J., Wang, Y., Bayen, A. & Wu, Y.',
+    year: 2022,
+    title: 'The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games',
+    venue: 'NeurIPS 35',
+    note: 'MAPPO — CTDE with PPO, and why it is hard to beat.',
+  },
+  {
+    key: 'foerster2018',
+    authors: 'Foerster, J., Farquhar, G., Afouras, T., Nardelli, N. & Whiteson, S.',
+    year: 2018,
+    title: 'Counterfactual Multi-Agent Policy Gradients',
+    venue: 'AAAI 2018',
+    note: 'The counterfactual baseline for multi-agent credit assignment.',
+  },
+  {
+    key: 'haarnoja2024',
+    authors: 'Haarnoja, T. et al.',
+    year: 2024,
+    title: 'Learning agile soccer skills for a bipedal robot with deep reinforcement learning',
+    venue: 'Science Robotics 9(89)',
+    note: 'The robot-soccer result cited in §21.3.',
+  },
+  {
+    key: 'brohan2023',
+    authors: 'Brohan, A. et al.',
+    year: 2023,
+    title: 'RT-2: Vision-Language-Action Models Transfer Web Knowledge to Robotic Control',
+    venue: 'CoRL 2023',
+    note: 'The VLA approach of §21.4.',
+  },
+  {
+    key: 'ouyang2022',
+    authors: 'Ouyang, L. et al.',
+    year: 2022,
+    title: 'Training language models to follow instructions with human feedback',
+    venue: 'NeurIPS 35',
+    note: 'The KL-regularized RLHF objective whose closed form appears in §21.4.',
+  },
+]} />

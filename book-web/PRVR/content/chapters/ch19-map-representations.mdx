@@ -1,0 +1,1210 @@
+---
+title: Modern Map Representations
+description: Octrees, TSDFs, distance fields, meshes, and radiance fields — five ways to store what the robot saw, and one recursive estimator hiding inside every one of them.
+chapter: 19
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Intermediate
+readingTime: 55 min
+quote: We show that under certain assumptions, this isosurface is optimal in the least squares sense.
+quoteAuthor: Brian Curless and Marc Levoy
+quoteSource: A Volumetric Method for Building Complex Models from Range Images, SIGGRAPH 1996
+---
+
+import { TsdfSculptor } from '@/components/ch/ch19/tsdf-sculptor';
+import { RepresentationGallery } from '@/components/ch/ch19/representation-gallery';
+import { Wavefront } from '@/components/ch/ch19/wavefront';
+import { PhotometricDescent } from '@/components/ch/ch19/photometric-descent';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'Read every modern map representation as a recursive estimator with a different state, not as a different idea',
+    'Derive TSDF fusion as a per-voxel information filter, and identify its Kalman gain, its accumulated precision, and its forgetting factor',
+    'Extract a surface from a distance field with marching squares, and a planning field with an O(n) distance transform',
+    'Predict which representation wins a given query workload — and measure it, on one log, in the browser',
+    'Explain radiance-field mapping as MAP estimation under a differentiable measurement model, without hand-waving and without a system zoo',
+  ]}
+  prerequisites={[
+    'Occupancy grid mapping and the log-odds recursion (Chapter 13)',
+    'The binary Bayes filter for a static state (Chapter 8)',
+    'The Kalman gain as precision-weighted trust, and the information form (Chapter 6)',
+    'Ray casting and beam geometry (Chapters 4 and 10); optimized poses from a pose graph (Chapter 16)',
+  ]}
+>
+[Chapter 13](/chapters/ch13-occupancy-grids) built a map that answers exactly one question — *is this
+cell occupied?* — at exactly one resolution, in memory proportional to the floor area whether or not
+anything interesting is there. That map got us through localization, SLAM, and loop closure. It is
+about to fail us.
+
+The planner in [Chapter 20](/chapters/ch20-motion-planning) does not want to know whether a cell is
+occupied. It wants to know *how far away the nearest obstacle is, and which direction is away from
+it*, at a hundred thousand query points per second. The controller in
+[Chapter 23](/chapters/ch23-mppi) wants the same thing, differentiated. A renderer wants a surface.
+An operator wants a picture. Each of these is a different question, and a representation is nothing
+more than a decision about which question gets to be $O(1)$.
+
+This chapter walks the modern menagerie — octrees, truncated signed distance fields, Euclidean
+distance fields, meshes, radiance fields — and lands one punchline: **every serious map
+representation is a recursive estimator wearing a costume.** The octree runs Chapter 13's log-odds
+filter per node. TSDF fusion's "weighted running average" is a scalar information filter for a
+static state, with a Kalman gain you can read off the code. Even NeRF-style mapping is
+$\arg\max_\theta p(z \mid \theta, x)$ with a differentiable renderer standing in for the measurement
+model. Learn the costumes; the actor underneath has not changed since
+[Chapter 5](/chapters/ch05-bayes-filter).
+</Overview>
+
+## The map that cannot answer the question
+
+Here is the concrete failure. Rusty has a 5 cm occupancy grid of the Apartment — 43,200 cells,
+43 kB, every one of them a well-calibrated posterior over occupancy. A planner asks: *what is the
+clearance at $(7.3, 4.1)$?*
+
+The grid cannot answer. It can tell you about the cell containing that point, and about any other
+cell you name, but "distance to the nearest occupied cell" is not stored anywhere — it has to be
+*searched* for, ring by expanding ring, until an occupied cell turns up. Measured on this
+chapter's Apartment log, that search costs about **16 µs** per query against **0.3 µs** for an
+occupancy lookup: a factor of fifty, paid on every one of the millions of collision checks a
+sampling planner performs.
+
+So store the distance instead of the bit. That single decision is what the rest of the chapter
+falls out of.
+
+<Deferred>
+  <TsdfSculptor />
+</Deferred>
+
+Watch one lap before reading on. Three things are happening, and each is a section of this chapter.
+
+**The field is signed, and truncated.** Blue is positive — free space in front of a surface — and
+orange is negative, behind it. Neither extends far: past $\tau = 15$ cm from the nearest observed
+surface the field simply stops being maintained, because a projective range measurement stops being
+a good estimate of true distance out there. Truncation is not a memory optimization. It is an
+honesty policy.
+
+**The surface is not stored; it is extracted.** The purple contour is the zero level set
+$\{\mathbf{x} : D(\mathbf{x}) = 0\}$, pulled out of the numbers by marching squares every few frames
+at sub-cell accuracy. Nothing in the field is "a wall". Walls are where the estimate changes sign.
+
+**Every cell is running a filter.** Click any cell and the inspector shows three numbers: the prior
+$D_{t-1}$, the projective sample $d_t$ this scan delivered, and the fused posterior $D_t$ — with the
+gain $K_t$ that produced it. That gain is Chapter 6's Kalman gain, and the weight $W$ beside it is
+Chapter 6's information $\Omega$. This is the chapter's thesis, and it is visible before we prove
+it.
+
+Now press **move the chair** and watch the ghost. At $W_{\max} = 64$ the abandoned chair loses half
+its error only every 45 re-observations, so it is still there most of a lap later; drag the slider
+to 4 and the half-life falls to three, the ghost evaporates — and the rest of the map turns visibly
+noisy. That trade has a closed form, derived in §3.3, and it is the same trade Chapter 6 called the
+noise ratio.
+
+## Building intuition: four maps, one log
+
+Before any mathematics, the comparison the whole chapter exists to make. The same 200-scan lap,
+with the same poses (optimized by [Chapter 16](/chapters/ch16-scan-matching)'s pose graph, so this
+is a *mapping* chapter and not a SLAM chapter), fused into four representations at once, with
+meters underneath measuring what each one actually costs.
+
+<Deferred>
+  <RepresentationGallery />
+</Deferred>
+
+The ranking is not stable. That is the point.
+
+- **Occupancy probes** — "is this point occupied?" The flat grid wins: one multiply, one array
+  index. The quadtree pays for eight pointer hops down its levels and comes second by a hair. Both
+  are so cheap that the difference rarely decides an architecture.
+- **Distance probes** — "how far to the nearest obstacle?" The ESDF wins by *sixty times* over the
+  grid's ring search and *a hundred and seventy times* over brute-force distance to the extracted
+  segments. This is the query workload that reorganizes modern mapping stacks.
+- **Surface extraction** — "give me the boundary as a polyline." The mesh wins trivially: it is
+  already the answer. Everything else has to run marching squares first, which costs 15 ms on this
+  grid.
+
+And memory tells a third story that contradicts the first two. The quadtree, the representation
+whose entire pitch is compression, uses **five times more memory than the flat grid it was supposed
+to beat**. That is not a bug in the implementation, and §3.1 derives exactly when it is true.
+
+<KeyIdea title="The one sentence version">
+A map representation is a choice of which query is $O(1)$. Choose it from the workload — occupancy,
+distance, surface, appearance — because no representation is best at all four, and the estimator
+running underneath is the same one in every case.
+</KeyIdea>
+
+### Notation for this chapter
+
+<NotationTable
+  rows={[
+    { sym: '\\phi(\\mathbf{x})', meaning: 'Signed distance to the nearest surface. Negative inside obstacles, positive in free space, zero on the surface.' },
+    { sym: '\\tau', meaning: 'Truncation distance. The field is only maintained where |φ| ≤ τ.' },
+    { sym: '\\Phi(\\mathbf{x})', meaning: 'The truncated signed distance, clamp(φ(x), −τ, +τ) — the quantity a TSDF actually estimates.' },
+    { sym: 'D_t(v),\\; W_t(v)', meaning: 'Fused distance estimate and accumulated weight of voxel v after t scans. The filter state.' },
+    { sym: 'd_t(v),\\; w_t(v)', meaning: 'One scan\'s projective distance observation of voxel v, and the weight (inverse variance) it carries.' },
+    { sym: 'W_{\\max}', meaning: 'Weight clamp. The fading-memory knob: bounds how much evidence a voxel may bank.' },
+    { sym: 'K_t = w_t / (W_{t-1} + w_t)', meaning: 'The fusion gain. Identical in form and in content to Chapter 6\'s Kalman gain.' },
+    { sym: '\\mathrm{esdf}(\\mathbf{x})', meaning: 'True Euclidean distance from x to the extracted surface — defined everywhere, not just near it.' },
+    { sym: '\\ell_{\\min},\\; \\ell_{\\max}', meaning: 'OctoMap\'s clamping bounds on log odds. Without them nothing in a tree ever merges.' },
+    { sym: '\\sigma(\\mathbf{x}),\\; T(s),\\; \\alpha_i', meaning: 'Volume density, transmittance along a ray, and the alpha of one sample — the radiance-field vocabulary.' },
+  ]}
+/>
+
+One deliberate exception to the book's color code lives in this chapter, as it did in Chapter 13.
+The signed distance field is drawn with a **diverging** ramp — orange for negative (behind a
+surface), through transparent at zero, to blue for positive (free) — because the sign *is* the
+meaning, and a sequential ramp would hide the only feature the reader is meant to look for. Every
+other element keeps its role: measurements <span style={{ color: 'var(--pr-measurement)' }}>green</span>,
+extracted posterior surfaces <span style={{ color: 'var(--pr-posterior)' }}>purple</span>, ground
+truth <span style={{ color: 'var(--pr-truth)' }}>gray dashed</span>.
+
+## The mathematics
+
+### 3.1 Hierarchy: the octree is Chapter 13's filter plus a compression theorem
+
+Start with the representation that changes the least. An octree (in 2-D, a quadtree) subdivides
+space recursively; each leaf stores exactly what a grid cell stored, the log odds $\ell_i$ of
+occupancy, and each leaf runs exactly the recursion of
+[Chapter 13](/chapters/ch13-occupancy-grids), with one addition:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\ell_{t,i}} = \mathrm{clamp}\Bigl(
+  \htmlClass{term-prior}{\ell_{t-1,i}}
+  + \htmlClass{term-measurement}{\mathrm{inverse\_sensor\_model}(m_i, x_t, z_t)}
+  - \ell_0,\;
+  \ell_{\min},\, \ell_{\max}\Bigr)
+$$
+</LinkedMath>
+
+The clamp came into Chapter 13 as a patch for the "stubborn map" problem: an unclamped cell that has
+seen forty consistent readings needs forty contradicting ones to change its mind. Hornung et al.
+(2013) noticed that the same patch is what makes the *tree* work, and that observation is the whole
+of OctoMap.
+
+<Derivation
+  title="D1 — clamping makes pruning lossless, and pruning makes the tree worth having"
+  result="prune when four siblings agree; memory ratio = b·c_d·S·r / V"
+>
+**Statement.** With clamped log odds, four sibling leaves holding identical values may be replaced
+by their parent with no change to any query the tree can answer. The resulting node count is
+proportional to the *surface measure* of the environment rather than its volume, and the memory
+ratio against a dense array of $b$-byte cells is
+
+$$
+\frac{\text{octree bytes}}{\text{dense bytes}}
+\;=\; \frac{b_{\text{node}}\, c_d\, S\, r}{V},
+\qquad c_d = \frac{2^{d-1}}{2^{d-1}-1},
+$$
+
+for surface measure $S$ (length in 2-D, area in 3-D), resolution $r$, bounded volume $V$, and
+$b_{\text{node}}$ bytes per node.
+
+**Step 1 — the merge is information-preserving.** A query descends to a leaf and returns its value.
+If all four children of a node hold the same $\ell$, then every point in the parent's region returns
+the same number whether the children exist or not, and the parent stores that number. Nothing that
+can be asked can distinguish the two trees. If a later scan touches one child, the node splits again
+and *copies the parent's value into all four children* — which restores exactly the state the merge
+discarded, because that state was four copies of one number.
+
+**Step 2 — clamping is what makes agreement common.** Without a clamp, two neighboring free cells
+observed a different number of times hold different log odds forever, and four siblings essentially
+never agree. With the clamp, free space saturates at $\ell_{\min}$ after a handful of misses —
+OctoMap's published defaults are $p_{\text{miss}} = 0.4$ with $p \in [0.12, 0.97]$, so
+$\lceil \ln(0.12/0.88) / \ln(0.4/0.6) \rceil = 5$ misses saturate a cell — and from then on entire
+subtrees hold one identical number. Saturation is not a rounding artifact here; it is the
+compression mechanism.
+
+**Step 3 — count the nodes.** At leaf resolution, the cells the tree must keep refined are those
+straddling a surface: roughly $S / r^{d-1}$ of them. One level up, the surface still needs refining
+but each node is $2^{d}$ times larger and covers $2^{d-1}$ times more surface, so the count falls by
+$2^{d-1}$. Summing the geometric series gives $c_d \, S / r^{d-1}$ total nodes with
+$c_d = 2^{d-1}/(2^{d-1}-1)$: $c_2 = 2$ in the plane, $c_3 = 4/3$ in space. The dense baseline is
+$V/r^d$ cells. Divide, multiply by bytes, and Step 1's ratio follows. $\blacksquare$
+
+**Where the crossover is.** Set the ratio to 1 and solve for the resolution:
+
+$$
+r^\star = \frac{V}{b_{\text{node}}\, c_d\, S}
+$$
+
+Rusty's Apartment is $V = 108$ m² of floor with $S = 180.6$ m of (two-sided, 30 cm thick) wall
+surface, and this book's quadtree node is 20 bytes — one `f32` value plus four `u32` child indices.
+So $r^\star = 108 / (20 \cdot 2 \cdot 180.6) = 1.5$ cm. **Above 1.5 cm resolution the quadtree loses
+to a byte-per-cell array**, which is why w19.2's memory meter reads 239 kB against the grid's 43 kB
+at 5 cm. (The tree is built on a 16 m power-of-two root, so its leaves are actually 6.25 cm — a
+detail that makes this comparison *kinder* to the tree, not harsher, and one the formula handles:
+$r = 0.0625$ predicts a ratio of 4.2.) The measured 5.5 is worse still, for a reason worth knowing:
+the tree also refines along the boundary between free and *unknown* space — the frontier that
+[Chapter 24](/chapters/ch24-exploration) will hunt for — and that boundary is a surface too.
+
+The formula also says exactly when octrees do win: $r^\star$ grows with $V/S$, and in three
+dimensions volume grows as the cube of scale while surface grows only as the square. Take a drone
+mapping a 200 × 200 × 60 m block of airspace at 10 cm — $V = 2.4 \times 10^6$ m³ against maybe
+$S = 6 \times 10^4$ m² of ground and façades, with a 36-byte node (a value plus eight child
+indices). Then $r^\star = 83$ cm, the working resolution is eight times finer than that, and the
+octree wins by roughly $8\times$: 288 MB against a dense array's 2.4 GB, which is not a saving so
+much as the difference between running and not running.
+
+There is a second effect the formula does not capture, and in practice it is the larger one. A
+dense array must allocate its whole bounding box before it knows anything; a tree stores never-
+observed space as a *single node* and grows only where scans arrive. A robot inside a building
+observes a shell, and the box around that shell is mostly nothing. The Apartment at 5 cm in the
+plane — small, fully traversed, coarse relative to $r^\star$ — is precisely the regime where
+neither effect pays. This book shows you a quadtree that loses because a chapter that only showed
+you the wins would not be teaching you how to choose.
+</Derivation>
+
+<Algorithm
+  name="octree_insert_scan(tree, x_t, z_t)"
+  inputs="the tree, the (known) pose, the scan"
+  outputs="the updated, pruned tree"
+  complexity="O(B · L/r · log(L/r)) for B beams of range L; the prune pass is amortized O(nodes)"
+>
+1. for each beam $k$ in $z_t$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$\mathcal{C} \leftarrow$ cells traversed from $x_t$ to the return, by integer ray traversal
+3. &nbsp;&nbsp;&nbsp;&nbsp;for each cell $i \in \mathcal{C}$ not yet touched by this scan do
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\delta \leftarrow \ell_{occ}$ if $\lvert r_i - z_t^k \rvert \lt \alpha/2$, else $\ell_{free}$ if $r_i \lt z_t^k$, else skip
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;descend to depth $d_{\max}$, splitting nodes on the way, and set $\ell \leftarrow \mathrm{clamp}(\ell + \delta - \ell_0)$
+6. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+7. endfor
+8. `prune(tree)`: bottom-up, merge any four leaves holding identical $\ell$
+9. return tree
+</Algorithm>
+
+Line 8 is the only line Chapter 13 did not already have. Line 3's "not yet touched by this scan"
+is not an optimization either: cells near the sensor lie on many beams, and counting them once per
+beam would fabricate evidence the scan does not contain — the same per-beam independence lie the
+[Chapter 10](/chapters/ch10-sensor-models) beam model told, arriving here in a new outfit.
+
+### 3.2 Distance, not occupancy
+
+Now change the state. Instead of a bit per cell, store a number: the signed distance to the nearest
+surface,
+
+$$
+\phi(\mathbf{x}) = \begin{cases}
+  +\min_{\mathbf{s} \in \mathcal{S}} \norm{\mathbf{x} - \mathbf{s}} & \mathbf{x} \text{ outside} \\
+  -\min_{\mathbf{s} \in \mathcal{S}} \norm{\mathbf{x} - \mathbf{s}} & \mathbf{x} \text{ inside}
+\end{cases}
+$$
+
+with the surface recovered as the zero level set $\mathcal{S} = \{\mathbf{x} : \phi(\mathbf{x}) = 0\}$.
+This buys sub-cell surface accuracy for free — a cell holding $\phi = 0.017$ m says the wall is
+1.7 cm away, information a binary cell cannot express at any resolution — and it makes surface
+extraction a root-finding problem instead of a segmentation problem.
+
+It also creates a problem. A range sensor does not measure $\phi$. Standing at $x_t$ and firing a
+beam that returns at range $z$, the natural estimate for a point at arc length $s$ along that beam
+is the **projective distance** $d = z - s$, which equals the true signed distance only where the
+beam meets the surface head-on. If the surface normal makes an angle $\theta$ with the beam, then
+$\phi = (z - s)\cos\theta$, so the projective estimate is too large by $1/\cos\theta$ and diverges
+at grazing incidence.
+
+<Callout type="info">
+The bias vanishes exactly where we use the field. At $s = z$ the projective observation is zero
+whatever $\theta$ is, so the *root* of the linear model is right even when its *slope* is wrong.
+That is why TSDF reconstructions are sharper than the projective approximation deserves — and why
+everything else about the field needs fixing before a planner can use it (§3.4).
+</Callout>
+
+The standard fix for the divergence is to define the estimand as the *truncated* signed distance
+$\Phi(\mathbf{x}) = \mathrm{clamp}(\phi(\mathbf{x}), -\tau, +\tau)$ and to fit it only where
+$\lvert d \rvert \le \tau$: near the surface, where the approximation holds. Everything else is
+declared out of scope. Choose $\tau$ at two to four cells and never smaller than the thinnest
+structure you must reconstruct — a wall thinner than $2\tau$ gets observed from both sides, and the
+two negative claims cancel into nothing.
+
+### 3.3 The centerpiece: TSDF fusion is a per-voxel information filter
+
+Curless and Levoy's fusion rule, written the way graphics writes it, is a running weighted average:
+
+$$
+D_t = \frac{W_{t-1} D_{t-1} + w_t d_t}{W_{t-1} + w_t},
+\qquad
+W_t = \min(W_{t-1} + w_t,\; W_{\max})
+$$
+
+Two lines of code, no probability anywhere in sight. It is a Bayes filter, and here is the proof.
+
+<Derivation
+  title="D2 — the weighted average is the scalar information filter for a static state"
+  result="D_t = D_{t−1} + K_t (d_t − D_{t−1}),  K_t = w_t/(W_{t−1}+w_t),  Ω_t = W_t/σ²"
+  defaultOpen
+>
+**Model.** Voxel $v$ has an unknown, *static* truncated signed distance $\Phi(v)$. Scan $t$ delivers
+a noisy projective observation of it,
+
+<LinkedMath>
+$$
+\htmlClass{term-measurement}{d_t(v)} = \Phi(v) + \varepsilon_t,
+\qquad \varepsilon_t \sim \Normal\!\left(0,\; \frac{\sigma^2}{w_t(v)}\right)
+$$
+</LinkedMath>
+
+so the weight $w_t$ is an inverse variance: a beam we trust twice as much gets twice the weight. The
+prior is flat.
+
+**Step 1 — Gaussian likelihoods multiply into weighted least squares.** With independent
+observations,
+
+$$
+-\log p(d_{1:t} \mid \Phi) = \sum_{k=1}^{t} \frac{w_k \, (d_k - \Phi)^2}{2\sigma^2} + \text{const}
+$$
+
+Differentiate, set to zero, and the MAP estimate is the weighted mean — the same argument
+[Chapter 15](/chapters/ch15-factor-graphs) used to turn a factor graph into least squares, here with
+a one-dimensional state and no Jacobians to compute:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\hat{\Phi}_t} = \frac{\sum_k w_k d_k}{\sum_k w_k},
+\qquad
+\htmlClass{term-posterior}{\Omega_t} = \frac{\sum_k w_k}{\sigma^2} = \frac{W_t}{\sigma^2}
+$$
+</LinkedMath>
+
+The posterior precision is the accumulated weight, up to the constant $\sigma^2$. That is
+[Chapter 6](/chapters/ch06-kalman-filters)'s information matrix $\Omega$, in one dimension, and its
+additivity — $\Omega_t = \Omega_{t-1} + w_t/\sigma^2$ — is the information filter's update rule
+verbatim.
+
+**Step 2 — make it recursive.** Split the newest term out of both sums:
+
+<LinkedMath>
+$$
+\hat{\Phi}_t
+= \frac{W_{t-1}\hat{\Phi}_{t-1} + w_t d_t}{W_{t-1} + w_t}
+= \htmlClass{term-prior}{\hat{\Phi}_{t-1}}
++ \underbrace{\frac{w_t}{W_{t-1}+w_t}}_{K_t}
+\bigl(\htmlClass{term-measurement}{d_t} - \htmlClass{term-prior}{\hat{\Phi}_{t-1}}\bigr)
+$$
+</LinkedMath>
+
+Prior, plus gain times innovation. This is line for line the scalar Kalman correction.
+
+**Step 3 — check the gain against Chapter 6.** For a static state the prediction step is the
+identity, so $\Sigma_t^- = \Sigma_{t-1} = \sigma^2/W_{t-1}$, and the measurement variance is
+$R_t = \sigma^2/w_t$. Then
+
+$$
+K_t = \frac{\Sigma_t^-}{\Sigma_t^- + R_t}
+= \frac{\sigma^2/W_{t-1}}{\sigma^2/W_{t-1} + \sigma^2/w_t}
+= \frac{w_t}{W_{t-1} + w_t} \;\checkmark
+$$
+
+Two consequences fall straight out. A voxel with $W_{t-1} = 0$ has infinite variance, so $K = 1$ and
+the first observation *replaces* the prior entirely — which is why an unobserved voxel needs no
+special case in the code. And as $W \to \infty$, $K \to 0$: the estimate stops listening, exactly
+like a Kalman filter whose covariance has collapsed.
+
+**Step 4 — the clamp is exponential forgetting.** Once $W_{t-1} = W_{\max}$ the gain freezes at
+$K = w/(W_{\max}+w)$ and the recursion becomes an exponentially weighted moving average. Writing
+$e_t = D_t - \Phi^{\text{new}}$ for the error after the world changes,
+
+$$
+e_t = (1-K)\,e_{t-1} = \lambda\, e_{t-1},
+\qquad
+\lambda = \frac{W_{\max}}{W_{\max} + w}
+$$
+
+with half-life $n_{1/2} = \ln 2 / \ln(1 + w/W_{\max}) \approx 0.69\, W_{\max}/w$. At $W_{\max} = 16$
+and unit weights a stale observation is half-forgotten after 11 scans; at $W_{\max} = 128$, after 89.
+That is the chair's ghost in w19.1, and it is now a number you can predict before you drag the
+slider.
+
+**Step 5 — what the model hides.** Three lies, stated rather than buried.
+
+1. *Per-voxel independence.* Each voxel is estimated alone, exactly as in Chapter 13. Neighboring
+   voxels observe the same wall through the same beam and their errors are anything but independent.
+   The consequence is the same as it was there: the field is overconfident, and the extracted
+   surface is smoother than the evidence justifies.
+2. *The observation is biased.* $d_t = z - s$ is projective, not Euclidean (§3.2). The truncation
+   $\tau$ is what keeps the bias bounded, and Voxblox's weighting — $w \propto 1/z^2$ for range
+   noise, times a $\cos\theta$ term for incidence — is variance modeling in exactly the sense of
+   [Chapter 10](/chapters/ch10-sensor-models), not a heuristic.
+3. *Gaussian noise.* A beam that hits glass, or a person walking past, is not $\Normal(0,\sigma^2/w)$
+   about the wall behind them. Nothing in this recursion is robust; production systems add
+   space-carving and dynamic-object filters on top, and this book adds none of them here.
+</Derivation>
+
+<Algorithm
+  name="tsdf_integrate(D, W, x_t, z_t)"
+  inputs="the field (D, W), the pose, the range scan"
+  outputs="the updated field"
+  complexity="O(B · τ/r) with carving off — only the truncation band is touched; O(B · L/r) with carving on"
+>
+1. for each beam $k$ with range $z$ and bearing $\theta_k$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;for $s = s_{\text{start}}$ to $z + \tau$ step $r/2$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$v \leftarrow$ voxel at $x_t + s\,(\cos\theta_k, \sin\theta_k)$; skip if already visited this scan
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$d \leftarrow z - s$; if $d \lt -\tau$ then continue
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$w \leftarrow w_{\text{beam}}$ in front of the surface, tapering linearly to 0 at $d = -\tau$
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$K \leftarrow w / (W(v) + w)$
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$D(v) \leftarrow D(v) + K\,\bigl(\mathrm{clamp}(d, -\tau, \tau) - D(v)\bigr)$
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$W(v) \leftarrow \min(W(v) + w,\; W_{\max})$
+9. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+10. endfor
+</Algorithm>
+
+Line 2's $s_{\text{start}}$ is the one real decision. Start at $z - \tau$ and the cost is
+$O(B\tau/r)$ — measured at **0.11 ms per scan** on this chapter's log — but the field never learns
+that the corridor is empty, only that the walls are where they are. Start at the sensor and you
+also *carve* free space, at $O(B L/r)$ and a measured **0.54 ms per scan**, five times dearer for a
+contour that is identical to within five segments out of 2,236. You pay that factor of five for one
+thing only: knowing the difference between free and unknown. [Chapter 24](/chapters/ch24-exploration)
+needs it; a pure reconstruction pipeline does not.
+
+### A worked example you can check by hand
+
+One voxel, $\tau = 0.20$ m, $W_{\max} = 4$, unit-weight scans except where noted. The voxel starts
+unobserved: $W_0 = 0$.
+
+| scan | $d_t$ | $w_t$ | $K_t = w_t/(W_{t-1}+w_t)$ | $D_t$ | $W_t$ |
+|---|---|---|---|---|---|
+| 1 | $0.10$ | 1 | $1/1 = 1$ | $0.100$ | 1 |
+| 2 | $0.06$ | 1 | $1/2 = 0.5$ | $0.080$ | 2 |
+| 3 | $0.00$ | 2 | $2/4 = 0.5$ | $0.040$ | 4 |
+| 4 | $0.00$ | 1 | $1/5 = 0.2$ | $0.032$ | 4 (clamped) |
+| 5 | $0.00$ | 1 | $0.2$ | $0.0256$ | 4 |
+| 6 | $0.00$ | 1 | $0.2$ | $0.02048$ | 4 |
+
+Four things are checkable with a pencil, and each one is a claim from D2.
+
+**Row 1: the gain is exactly one.** No prior information means no reason to keep the prior. The
+$+\tau$ that unobserved cells are initialized to never enters the answer.
+
+**Row 3: the recursion equals the batch estimate.** The weighted mean of everything so far is
+$(1 \cdot 0.10 + 1 \cdot 0.06 + 2 \cdot 0.00)/4 = 0.16/4 = 0.040$, which is what the recursion
+produced. Up to the clamp, the filter is not approximating the batch solution — it *is* the batch
+solution.
+
+**Row 4: the clamp breaks that equality on purpose.** The batch mean would now be $0.16/5 = 0.032$…
+which is also what the table says, coincidentally, because $W$ saturated on this exact step. Row 5
+is where they part: batch says $0.16/6 = 0.0267$, the clamped filter says $0.0256$.
+
+**Rows 4–6: geometric decay at rate $\lambda = 0.8$.** $0.040 \to 0.032 \to 0.0256 \to 0.02048$,
+each $0.8\times$ the last, and $\lambda = W_{\max}/(W_{\max}+w) = 4/5$ as D2's Step 4 promised.
+The half-life is $\ln 2/\ln 1.25 = 3.1$ scans.
+
+```rust title="crates/ch19_maps/tests/worked_example.rs"
+use approx::assert_relative_eq;
+use ch19_maps::tsdf::{Tsdf2, Tsdf2Config};
+
+/// The chapter's worked table, pinned. If this test fails the book is wrong.
+#[test]
+fn worked_example_ch19_voxel_filter() {
+    let mut f = Tsdf2::new(Tsdf2Config {
+        cells: (1, 1),
+        resolution: 1.0,
+        origin: nalgebra::Point2::origin(),
+        truncation: 0.20,
+        w_max: 4.0,
+    });
+
+    // (observation, weight, expected gain, expected D, expected W)
+    let script = [
+        (0.10, 1.0, 1.0, 0.100_00, 1.0),
+        (0.06, 1.0, 0.5, 0.080_00, 2.0),
+        (0.00, 2.0, 0.5, 0.040_00, 4.0),
+        (0.00, 1.0, 0.2, 0.032_00, 4.0), // clamp engages: W stays at W_max
+        (0.00, 1.0, 0.2, 0.025_60, 4.0),
+        (0.00, 1.0, 0.2, 0.020_48, 4.0),
+    ];
+
+    for (d, w, want_k, want_d, want_w) in script {
+        let ev = f.fuse((0, 0), d, w);
+        assert_relative_eq!(ev.gain, want_k, epsilon = 1e-9);
+        assert_relative_eq!(ev.after, want_d, epsilon = 1e-9);
+        assert_relative_eq!(ev.weight_after, want_w, epsilon = 1e-9);
+    }
+
+    // Up to the clamp, recursive == batch. This is D2 Step 1 and Step 2 agreeing.
+    let batch = (1.0 * 0.10 + 1.0 * 0.06 + 2.0 * 0.00) / 4.0;
+    assert_relative_eq!(batch, 0.040, epsilon = 1e-12);
+
+    // After the clamp, the error decays geometrically at λ = W_max/(W_max + w).
+    let lambda = 4.0 / 5.0;
+    assert_relative_eq!(0.032 * lambda, 0.025_60, epsilon = 1e-9);
+    assert_relative_eq!(0.025_60 * lambda, 0.020_48, epsilon = 1e-9);
+}
+```
+
+The TypeScript port in `lib/mapping/tsdf.ts` runs the identical arithmetic, which is why the voxel
+inspector in w19.1 prints these gains when you click a cell: the table, the Rust test, and the
+number under your cursor are the same computation three times.
+
+### 3.4 From the field to a surface, and from the field to a plan
+
+A TSDF is not directly usable by anything. Two extraction steps make it so, and they answer two
+different questions.
+
+**Marching squares** answers *where is the boundary?* Walk the dual grid; at each cell, the signs of
+the four corner samples select one of 16 cases; on every edge whose endpoints disagree, place a
+crossing by linear interpolation,
+
+$$
+t = \frac{D_a}{D_a - D_b},
+\qquad
+\mathbf{p} = \mathbf{c}_a + t\,(\mathbf{c}_b - \mathbf{c}_a)
+$$
+
+which is *exact* for the piecewise-linear field the samples define — not an approximation of it. Two
+of the sixteen cases (the diagonal ones, 0101 and 1010) are genuinely ambiguous: two crossings on
+four edges are consistent with two different topologies, and the table must simply pick one. In
+three dimensions that same ambiguity is what puts holes in a naive marching-cubes mesh, and the
+literature since Lorensen and Cline (1987) is largely about disambiguating it.
+
+<Algorithm
+  name="marching_squares(D, W)"
+  inputs="the fused field and its weights"
+  outputs="a set of line segments approximating {D = 0}"
+  complexity="O(cells), embarrassingly parallel — no cell needs any other cell's result"
+>
+1. for each cell $(i,j)$ of the dual grid do
+2. &nbsp;&nbsp;&nbsp;&nbsp;if any of the four corners has $W \lt W_{\min}$ then continue &nbsp;&nbsp;*(never observed: no opinion)*
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\text{code} \leftarrow \sum_{n=0}^{3} 2^n \,[\,D_n \lt 0\,]$
+4. &nbsp;&nbsp;&nbsp;&nbsp;for each edge pair in $\texttt{TABLE}[\text{code}]$ do
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;emit the segment joining the two interpolated crossings
+6. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+7. endfor
+</Algorithm>
+
+Line 2 is the honest line. A cell with no evidence has no sign, and extracting a surface from it is
+inventing geometry — the failure mode that makes unvalidated reconstructions look confident in
+exactly the places they are guessing.
+
+**The distance transform** answers *how far to the boundary, from anywhere?* This is the query the
+TSDF conspicuously cannot serve: past $\tau$ its value is a constant, and a constant has no gradient.
+
+<Deferred>
+  <Wavefront />
+</Deferred>
+
+That widget is the section in one image. Toggle it off and the rings stop at 30 cm, the arrows
+vanish, and the probe freezes: a truncated field is not a distance field with smaller numbers in it,
+it is a distance field with a *hole where the planner lives*.
+
+<Derivation
+  title="D3 — the exact Euclidean distance transform in two linear passes"
+  result="DT(q) = min_p [(q−p)² + f(p)] — a lower envelope of parabolas, Θ(n) per row"
+>
+**Statement.** For samples $f : \{0,\dots,n-1\} \to \R \cup \{\infty\}$, the sampled distance
+transform
+
+$$
+\mathrm{DT}_f(q) = \min_{p} \bigl[\, (q - p)^2 + f(p) \,\bigr]
+$$
+
+can be computed for all $q$ in $\Theta(n)$ time, and the two-dimensional transform in
+$\Theta(\text{width} \cdot \text{height})$ by running the one-dimensional version once per row and
+once per column.
+
+**Step 1 — the definition is a lower envelope.** Each sample $p$ contributes an upward parabola
+$y = (q-p)^2 + f(p)$, rooted at $q = p$ and shifted up by $f(p)$. All parabolas have the same
+curvature, so any two intersect exactly once, at
+
+$$
+s = \frac{\bigl(f(p) + p^2\bigr) - \bigl(f(p') + p'^2\bigr)}{2p - 2p'}
+$$
+
+$\mathrm{DT}_f$ is their pointwise minimum: the lower envelope.
+
+**Step 2 — build the envelope in one sweep.** Scan $p$ left to right maintaining a stack of the
+parabolas currently on the envelope and the abscissae where consecutive ones cross. Adding a new
+parabola: compute where it crosses the top of the stack; if that crossing lies left of the previous
+one, the stack's top parabola is now entirely hidden — pop it and retry. Each index is pushed once
+and popped at most once, so the whole pass is $\Theta(n)$, not $O(n\log n)$ and certainly not the
+$O(n^2)$ the definition suggests. A second left-to-right sweep evaluates the envelope at each $q$.
+
+**Step 3 — separability.** In two dimensions the squared Euclidean distance splits:
+
+$$
+(q_x - p_x)^2 + (q_y - p_y)^2 + f(p)
+= (q_x - p_x)^2 + \Bigl[\underbrace{(q_y - p_y)^2 + f(p)}_{\text{a 1-D transform down a column}}\Bigr]
+$$
+
+so transforming every row and then every column of the result is exact, not an approximation.
+$\blacksquare$
+
+**Step 4 — seeding it from a TSDF instead of from a mask.** The classical transform starts from a
+binary mask: $f = 0$ on obstacles, $\infty$ elsewhere, giving distances quantized to whole cells.
+A TSDF can do better. A cell holding $D = 0.017$ m is $0.017$ m from the surface, so seed it with
+$f = (D/r)^2$ in squared-cell units and the transform starts from the sub-cell offset. The result is
+accurate to a fraction of a cell where a mask-seeded transform is accurate to a whole one — the
+same trick Voxblox uses, and the reason the ESDF's median error against brute-force
+distance-to-contour on this chapter's map is **0.6 of a cell**.
+</Derivation>
+
+<Algorithm
+  name="esdf_from_tsdf(D, W)"
+  inputs="the fused field, its weights, seed band and minimum weight"
+  outputs="esdf: signed Euclidean distance to the extracted surface, plus O(1) query and gradient"
+  complexity="Θ(n) for n cells — two sweeps per row, two per column"
+>
+1. for each cell $v$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$f(v) \leftarrow (D(v)/r)^2$ if $W(v) \ge W_{\min}$ and $\lvert D(v)\rvert \le$ band, else $\infty$
+3. endfor
+4. $g \leftarrow$ `distance_transform_1d` over each row of $f$
+5. $g \leftarrow$ `distance_transform_1d` over each column of $g$
+6. $\mathrm{esdf}(v) \leftarrow \mathrm{sign}(v)\,\sqrt{g(v)}\;r$, with the sign taken from $D(v)$ where the TSDF has an opinion
+7. return esdf
+</Algorithm>
+
+Two properties make the result worth its 173 kB. Away from the medial axis a true distance field
+satisfies the **eikonal equation** $\norm{\nabla\,\mathrm{esdf}} = 1$, so its gradient is a pure
+direction — "this way is away from the nearest obstacle" — with no magnitude to tune. The widget's
+meter reads a median $\norm{\nabla d} = 0.93$ over a grid of probes, against $0.01$ for the raw
+TSDF: the shortfall from 1 is discretization plus the medial-axis points where the gradient
+genuinely does vanish. And both the value and the gradient are $O(1)$ bilinear reads. That pair,
+$(d, \nabla d)$ in constant time, is the contract
+[Chapter 20](/chapters/ch20-motion-planning) and [Chapter 23](/chapters/ch23-mppi) are written
+against.
+
+The honesty note this field deserves: the transform measures distance to the *extracted contour*,
+and marching squares refuses to emit a contour where a cell has unobserved corners. Where those two
+disagree — the lip of a doorway seen from one side only — the ESDF reports a distance that is too
+*small*. Measured on the Apartment at 5 cm: median error 3.0 cm, 99th percentile 7.5 cm, worst case
+28 cm, and the worst case is conservative. For a collision cost, being wrong in the safe direction
+is the correct way to be wrong; for a reconstruction metric it would be a bug. The representation
+is not neutral about what it is for.
+
+## Implementation in Rust
+
+Three types, one trait, and a benchmark harness that is also the chapter's argument.
+
+The trait first, because it is the thesis in code: four representations, four different answers to
+the same four questions, and a `None` where a representation genuinely cannot answer in constant
+time. Nothing is faked — a grid returning a searched distance would hide the whole point.
+
+```rust title="crates/ch19_maps/src/gallery.rs"
+use nalgebra::Point2;
+use crate::{Scan, Se2};
+
+/// The chapter's thesis as an interface: a map is what it can answer cheaply.
+pub trait MapRepr {
+    /// Fold one scan in, with a known pose (Chapter 16's optimized graph).
+    fn integrate_scan(&mut self, pose: &Se2, scan: &Scan);
+
+    /// P(occupied) at a point. `None` = never observed, which is *not* 0.5.
+    fn occupancy(&self, p: Point2<f64>) -> Option<f64>;
+
+    /// Distance to the nearest surface, in O(1). `None` = this representation
+    /// cannot answer without a search, and saying so is the honest API.
+    fn distance(&self, p: Point2<f64>) -> Option<f64>;
+
+    /// Measured, not estimated: what the harness reports in w19.2.
+    fn memory_bytes(&self) -> usize;
+}
+```
+
+Then the field itself. Two `f32` planes — one for the estimate, one for its accumulated precision —
+and a `fuse` that is six lines because D2 says it should be six lines.
+
+```rust title="crates/ch19_maps/src/tsdf.rs" {43-55}
+use nalgebra::{Point2, Vector2};
+use ndarray::Array2;
+
+/// A 2-D truncated signed distance field: Curless & Levoy (1996), read as a
+/// per-voxel information filter (Chapter 19, D2).
+pub struct Tsdf2 {
+    /// D_t(v): fused signed distance in metres. Unobserved cells hold +τ.
+    d: Array2<f32>,
+    /// W_t(v): accumulated weight = accumulated precision, up to σ².
+    w: Array2<f32>,
+    resolution: f64,
+    origin: Point2<f64>,
+    truncation: f64,
+    /// The fading-memory knob. `f32::INFINITY` recovers the batch estimator.
+    w_max: f32,
+}
+
+/// One fusion event, returned so a widget (or a test) can inspect the filter.
+#[derive(Copy, Clone, Debug)]
+pub struct FusionEvent {
+    pub before: f64,
+    pub weight_before: f64,
+    pub observation: f64,
+    pub after: f64,
+    pub weight_after: f64,
+    /// K_t = w_t / (W_{t−1} + w_t) — Chapter 6's Kalman gain, verbatim.
+    pub gain: f64,
+}
+
+impl Tsdf2 {
+    #[inline]
+    fn cell_center(&self, ij: (usize, usize)) -> Point2<f64> {
+        Point2::new(
+            self.origin.x + (ij.0 as f64 + 0.5) * self.resolution,
+            self.origin.y + (ij.1 as f64 + 0.5) * self.resolution,
+        )
+    }
+
+    /// The whole chapter in six lines: precision-weighted averaging, clamped.
+    ///
+    /// W = 0 gives K = 1, so an unobserved voxel adopts its first observation
+    /// outright — no special case, just infinite prior variance doing its job.
+    pub fn fuse(&mut self, ij: (usize, usize), d_obs: f64, w_obs: f64) -> FusionEvent {
+        let before = self.d[ij] as f64;
+        let weight_before = self.w[ij] as f64;
+        let denom = weight_before + w_obs;
+        let gain = if denom > 0.0 { w_obs / denom } else { 1.0 };
+        let after = before + gain * (d_obs - before);
+
+        self.d[ij] = after as f32;
+        self.w[ij] = denom.min(self.w_max as f64) as f32;
+
+        FusionEvent { before, weight_before, observation: d_obs,
+                      after, weight_after: self.w[ij] as f64, gain }
+    }
+
+    /// `tsdf_integrate`: march each beam through the truncation band.
+    ///
+    /// The visited set is per *scan*, not per beam. Cells near the sensor sit on
+    /// many beams' paths, and fusing them once per beam would manufacture
+    /// evidence the scan does not contain.
+    pub fn integrate(&mut self, pose: &Se2, scan: &Scan, carve: bool) {
+        let tau = self.truncation;
+        let step = self.resolution * 0.5;
+        let mut visited = std::collections::HashSet::new();
+
+        for (&z, &bearing) in scan.ranges.iter().zip(scan.bearings.iter()) {
+            let hit = z < scan.max_range;
+            let dir = Vector2::new((pose.theta + bearing).cos(), (pose.theta + bearing).sin());
+            let s0 = if carve { step * 0.5 } else { (z - tau).max(step * 0.5) };
+            let s1 = if hit { z + tau } else { scan.max_range };
+
+            let mut s = s0;
+            while s <= s1 {
+                let p = pose.translation() + s * dir;
+                let Some(ij) = self.world_to_cell(p) else { s += step; continue };
+                if !visited.insert(ij) { s += step; continue }
+
+                let sdf = if hit { z - s } else { tau };
+                if sdf >= -tau {
+                    // Weight tapers to zero behind the surface: a beam says
+                    // progressively less about what lies past what it hit.
+                    let w = if sdf >= 0.0 { 1.0 } else { 1.0 + sdf / tau };
+                    if w > 0.0 {
+                        self.fuse(ij, sdf.clamp(-tau, tau), w);
+                    }
+                }
+                s += step;
+            }
+        }
+    }
+}
+```
+
+Then the distance transform. The inner loop is the one piece of this chapter that looks like nothing
+else in the book — no probability, no geometry, just a stack of parabolas — and it is worth typing
+out once in your life.
+
+```rust title="crates/ch19_maps/src/esdf.rs" {9-37}
+use ndarray::{Array2, Axis};
+
+const BIG: f64 = 1e12;
+
+/// `dt_1d` — Felzenszwalb & Huttenlocher's lower envelope of parabolas.
+///
+/// Every index is pushed once and popped at most once, so this is Θ(n). The
+/// arithmetic is exact in f64 for grids far larger than any robot needs.
+fn distance_transform_1d(f: &[f64], out: &mut [f64]) {
+    let n = f.len();
+    let mut v = vec![0usize; n];     // parabolas currently on the envelope
+    let mut z = vec![0.0f64; n + 1]; // where consecutive ones cross
+    let mut k = 0usize;
+    v[0] = 0;
+    // The sentinel −∞ is not decoration: it is what stops `k` underflowing in
+    // the pop loop below, since no finite crossing can be left of it.
+    z[0] = -BIG;
+    z[1] = BIG;
+
+    for q in 1..n {
+        let mut s = intersect(f, q, v[k]);
+        while s <= z[k] {
+            k -= 1;                   // the top parabola is now fully hidden
+            s = intersect(f, q, v[k]);
+        }
+        k += 1;
+        v[k] = q;
+        z[k] = s;
+        z[k + 1] = BIG;
+    }
+
+    k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let dq = q as f64 - v[k] as f64;
+        out[q] = dq * dq + f[v[k]];
+    }
+}
+
+#[inline]
+fn intersect(f: &[f64], p: usize, q: usize) -> f64 {
+    let (pf, qf) = (p as f64, q as f64);
+    ((f[p] + pf * pf) - (f[q] + qf * qf)) / (2.0 * pf - 2.0 * qf)
+}
+
+/// `esdf_from_tsdf` — seed with the TSDF's own sub-cell offsets, then sweep.
+///
+/// Seeding with (D/r)² rather than with a binary mask is what buys sub-cell
+/// accuracy: a cell holding D = 1.7 cm is 1.7 cm from the surface, not 0.
+pub fn esdf_from_tsdf(tsdf: &Tsdf2, min_weight: f32, band_cells: f64) -> Esdf2 {
+    let r = tsdf.resolution();
+    let band = band_cells * r;
+    let mut f = Array2::from_elem(tsdf.dim(), BIG);
+
+    for (ij, &d) in tsdf.values().indexed_iter() {
+        if tsdf.weight(ij) < min_weight || (d as f64).abs() > band {
+            continue;
+        }
+        let sub = d as f64 / r;
+        f[ij] = sub * sub;
+    }
+
+    sweep(&mut f, Axis(0));  // rows …
+    sweep(&mut f, Axis(1));  // … then columns: separability makes this exact
+    Esdf2::from_squared(f, tsdf, r)
+}
+
+impl Esdf2 {
+    /// The Chapter 20 / 23 contract: distance and gradient, both O(1).
+    pub fn distance(&self, p: Point2<f64>) -> f64 { self.bilinear(p) }
+
+    /// Away from the medial axis ‖∇d‖ = 1, so this is a pure direction.
+    pub fn gradient(&self, p: Point2<f64>) -> Vector2<f64> {
+        let h = self.resolution;
+        Vector2::new(
+            (self.bilinear(p + Vector2::x() * h) - self.bilinear(p - Vector2::x() * h)) / (2.0 * h),
+            (self.bilinear(p + Vector2::y() * h) - self.bilinear(p - Vector2::y() * h)) / (2.0 * h),
+        )
+    }
+}
+```
+
+Finally the cross-check, because a distance field that is subtly wrong is worse than no distance
+field at all. `parry2d` will compute exact point-to-polyline distance with a BVH; the ESDF must
+agree with it.
+
+```rust title="crates/ch19_maps/tests/esdf_vs_parry.rs"
+use parry2d::query::PointQuery;
+use parry2d::shape::Polyline;
+
+/// The ESDF approximates distance-to-contour. `parry2d` computes it exactly.
+/// Where they disagree by more than a cell, the ESDF must be *conservative* —
+/// too small — because a planner that overestimates clearance kills robots.
+#[test]
+fn esdf_matches_parry_within_a_cell_and_errs_safe() {
+    let (tsdf, contour) = crate::fixtures::apartment_5cm();     // 200 scans, seed 0xC0FFEE
+    let esdf = ch19_maps::esdf::esdf_from_tsdf(&tsdf, 0.5, 1.5);
+    let mesh = Polyline::new(contour.vertices, Some(contour.indices));
+
+    let mut worst = 0.0f32;
+    for p in crate::fixtures::observed_free_probes(4_000) {
+        let ours = esdf.distance(p.cast::<f64>()) as f32;
+        let truth = mesh.distance_to_local_point(&p, /* solid = */ false);
+        let err = ours - truth;
+        assert!(err < 0.05, "ESDF overestimated clearance by {err} m at {p}");
+        worst = worst.max(err.abs());
+    }
+    // Measured: median 0.030 m, p99 0.075 m, max 0.282 m at one doorway lip.
+    assert!(worst < 0.30);
+}
+```
+
+## The frontier: rendering as a measurement model
+
+Everything so far estimates *geometry* from *ranges*. The last five years of mapping research have
+been about estimating geometry **and appearance** from *images*, using neural radiance fields
+(Mildenhall et al., ECCV 2020) and 3D Gaussian splatting (Kerbl et al., SIGGRAPH 2023). The
+literature reads like a different subject. It is not.
+
+<Derivation
+  title="D4 — a differentiable renderer is a measurement model, so fitting one is MAP estimation"
+  result="−log p(I | θ, T_cw) ∝ ‖I − Î(θ, T_cw)‖²"
+>
+**Step 1 — the forward model.** A radiance field is a function
+$F_\theta(\mathbf{x}, \mathbf{d}) \to (\mathbf{c}, \sigma)$ giving color and volume density at a
+point. Along a camera ray $\mathbf{r}(s)$ the rendered color is the volume rendering integral
+
+$$
+\hat{C}(\mathbf{r}) = \int_0^\infty T(s)\, \sigma(\mathbf{r}(s))\, \mathbf{c}(\mathbf{r}(s), \mathbf{d})\, ds,
+\qquad
+T(s) = \exp\left(-\int_0^s \sigma(\mathbf{r}(u))\,du\right)
+$$
+
+$T(s)$ is transmittance: the probability that a photon reaches $s$ without being absorbed. Read that
+way, the integral is an expectation over "where the ray terminates" — the same object a LiDAR beam
+model integrates over in [Chapter 10](/chapters/ch10-sensor-models).
+
+**Step 2 — discretize.** With piecewise-constant density on samples of width $\delta_i$,
+
+$$
+\alpha_i = 1 - e^{-\sigma_i \delta_i},
+\qquad
+T_i = \prod_{j<i}(1 - \alpha_j),
+\qquad
+\hat{C} = \sum_i T_i\, \alpha_i\, \mathbf{c}_i
+$$
+
+which is exactly alpha compositing. The depth version, which the 1-D toy below renders, replaces
+$\mathbf{c}_i$ by the sample distance $t_i$ and adds a background term for rays that get through:
+$\hat{z} = \sum_i T_i \alpha_i t_i + T_n\, t_{\text{far}}$.
+
+**Step 3 — put noise on it and it becomes a likelihood.** Assume Gaussian photometric noise on each
+pixel. Then
+
+<LinkedMath>
+$$
+-\log \htmlClass{term-measurement}{p(I_t \mid \theta, T_{cw,t})}
+\;\propto\; \bigl\lVert I_t - \hat{I}(\theta, T_{cw,t}) \bigr\rVert^2
+$$
+</LinkedMath>
+
+and the map is
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\hat{\theta}}
+= \arg\max_\theta \prod_t p(I_t \mid \theta, T_{cw,t})\; \htmlClass{term-prior}{p(\theta)}
+$$
+</LinkedMath>
+
+— MAP estimation with a rendering measurement model. Same $\eta\,p(z \mid m, x)\,p(m)$ as Chapter 13.
+The difference is entirely in *how* it is optimized: no closed-form inverse sensor model exists, so
+the gradient is taken through the renderer instead. **The inverse sensor model is computed by
+autodiff.**
+
+**Step 4 — the same residual, optimized over poses, is tracking.** Freeze $\theta$ and minimize the
+photometric residual over $T_{cw,t}$ and you have scan-to-map matching with images instead of
+scans — [Chapter 16](/chapters/ch16-scan-matching)'s ICP objective with a different sensor. Every
+NeRF-SLAM and 3DGS-SLAM system is some interleaving of these two minimizations.
+
+**Step 5 — read the gradient and the failure modes fall out.** For the 1-D depth renderer the
+derivative is available in closed form,
+
+$$
+\frac{\partial \hat{z}}{\partial \sigma_k}
+= \delta \Bigl[\, T_{k+1} t_k - \Bigl(\textstyle\sum_{i>k} T_i \alpha_i t_i + T_n t_{\text{far}}\Bigr) \Bigr]
+$$
+
+"adding density here pulls the predicted depth toward $t_k$ and away from everything behind it."
+Two facts follow immediately. Behind an opaque region $T \approx 0$, so **occluded geometry receives
+no gradient at all** — these optimizers refine geometry they roughly have and cannot invent geometry
+they do not. And the derivative peaks at the current surface, which is why initialization and
+coarse-to-fine scheduling matter so much in practice.
+</Derivation>
+
+<Callout type="warn">
+A quick number for how non-opaque "opaque" is. Take one bin at $t = 3$ m with $\sigma\delta = 5$, so
+$\alpha = 1 - e^{-5} = 0.9933$, and a far plane at 10 m. The rendered depth is
+$0.9933 \cdot 3 + 0.0067 \cdot 10 = 3.047$ m — 4.7 cm too far, from a wall the model considers
+solid. Depth from a radiance field is biased by construction, and the bias shrinks only
+exponentially in $\sigma\delta$. This is why NeRF-SLAM systems that need metric geometry add depth
+supervision rather than trusting rendered depth.
+</Callout>
+
+<Deferred>
+  <PhotometricDescent />
+</Deferred>
+
+The toy is 80 bins, ten rays, and plain gradient descent — no network, no rasterizer, a couple of
+hundred lines — and it reproduces the three behaviors that dominate the literature. Density sharpens
+only where transmittance survives. The fitted residual falls to the noise floor while the *held-out*
+rays sometimes do not, which is the geometry–appearance ambiguity in its simplest possible form. And
+on an unlucky initialization the field parks density in the wrong place and stays there, because
+Step 5's gradient cannot see past an opaque bin it invented.
+
+<Callout type="info">
+**Why this book does not canonize a system.** Between 2023 and 2026 the NeRF/3DGS-SLAM field
+produced dozens of systems, each state of the art for about a quarter. The *mechanism* — D4 — is
+stable; the systems are not. Tosi et al.'s survey (arXiv:2402.13255) is the map of that territory
+and is updated; this chapter teaches the mechanism and points there. What is genuinely open, and
+worth knowing you are choosing when you adopt one of these maps: there is no closed-form posterior
+uncertainty, so nothing downstream can weight the map's own error the way an ESDF's weight field
+lets you.
+</Callout>
+
+## Putting it together: the artifact Part VI consumes
+
+Everything above, measured on one log — Rusty's 200-scan lap of the Apartment at 5 cm, seed
+`0xC0FFEE`, poses from Chapter 16's optimized graph — with the port that runs the widgets on this
+page.
+
+| representation | memory | update / scan | occupancy probe | distance probe |
+|---|---|---|---|---|
+| flat occupancy grid, 1 B/cell | 43.2 kB | 2.03 ms | **317 ns** | 15.9 µs (ring search) |
+| log-odds quadtree, 20 B/node, 6.25 cm leaves | 239 kB (11,957 nodes) | **0.45 ms** | 429 ns | same search, tree-shaped |
+| TSDF, `f32` $D$ and $W$ | 346 kB | 0.52 ms (0.11 without carving) | 422 ns (sign of $D$) | — truncated at $\tau$ |
+| ESDF, `f32` | +173 kB | +13.4 ms (full rebuild) | — | **254 ns** |
+| extracted contour, 2,236 segments | **35.8 kB** | 15.5 ms (marching squares) | $O(F)$ crossing count | 45 µs brute force |
+
+Read the bold entries: **four different winners in four columns.** The cheapest map on the page is
+the extracted contour, which cannot answer either probe cheaply. The fastest to update is the
+quadtree, which costs five times the memory of the flat grid it was supposed to compress. The
+fastest occupancy lookup is the flat grid, which cannot answer a distance query without searching.
+And the query that actually runs a planner belongs to the distance field, which costs twelve times
+the grid's memory to buy a sixtyfold speedup on it. There is no row that dominates, and there was
+never going to be.
+
+**The handoff.** What Part VI receives from this chapter is one file — `esdf.bin`, 173 kB, a `f32`
+plane plus an origin and a resolution — and one guarantee: $(d, \nabla d)$ in $O(1)$, eikonal to
+within about 7% away from the medial axis, and conservative where it is wrong.
+[Chapter 20](/chapters/ch20-motion-planning) uses it as a collision oracle,
+[Chapter 23](/chapters/ch23-mppi) differentiates it as an obstacle cost, and
+[Chapter 24](/chapters/ch24-exploration) uses the *weight* plane $W$ — the thing that makes this a
+filter rather than a picture — to find frontiers.
+
+<KeyIdea title="The costumes, and the actor underneath">
+**Octree**: Chapter 13's clamped log-odds filter, plus a lossless merge rule. **TSDF**: a scalar
+information filter per voxel, gain $K = w/(W+w)$, forgetting factor $\lambda = W_{\max}/(W_{\max}+w)$.
+**ESDF**: not an estimator at all — a deterministic $\Theta(n)$ transform of one. **Mesh**: a root
+find on the estimate. **Radiance field**: MAP estimation with a differentiable measurement model.
+Four state spaces, one recursion.
+</KeyIdea>
+
+**The honesty note this chapter owes you.** Per-voxel independence is Chapter 13's structural lie,
+and every representation here inherits it: OctoMap estimates each node alone, TSDF fusion estimates
+each voxel alone, and neither has a way to say "these two cells are both wrong in the same
+direction because the pose was off." The principled alternative is a *correlated* field — Gaussian
+process implicit surfaces, and in particular the log-GP formulation of Wu et al. (2021), which
+recovers a genuine Euclidean distance field with calibrated uncertainty by solving the eikonal
+equation in the transformed space. It costs a dense covariance and is currently practical at room
+scale rather than building scale. When someone makes it cheap, this chapter changes.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Finish D2: the steady-state variance of a clamped voxel">
+    D2 stops after showing that the clamp turns fusion into an exponentially weighted average with
+    forgetting factor $\lambda = W_{\max}/(W_{\max}+w)$. Complete it. (a) Show that the fused
+    estimate under repeated unit-weight observations of a static truth has steady-state variance
+    $\Var[D_\infty] = \sigma^2 / (2W_{\max} + w)$. (b) Compare with the unclamped filter's
+    $\sigma^2/W_t$ and state, in one sentence, what the clamp costs you and what it buys.
+    (c) At which $W_{\max}$ does a $W_{\max}$-clamped voxel have the same variance as an unclamped
+    voxel after 50 unit-weight scans?
+    <details>
+      <summary>Hint</summary>
+      Write the recursion as $D_t = (1-K)D_{t-1} + K d_t$ with $K$ constant, take variances of both
+      sides assuming independent observations, and solve the resulting fixed point
+      $V = (1-K)^2 V + K^2 \sigma^2/w$.
+    </details>
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="Where hierarchy pays">
+    Using D1's ratio $b_{\text{node}} c_d S r / V$: (a) reproduce the Apartment's crossover
+    $r^\star = 1.5$ cm from $S = 180.6$ m, $V = 108$ m², $b_{\text{node}} = 20$ B; (b) redo it in
+    three dimensions for a 3 m ceiling, where a node needs eight child indices; (c) find the
+    environment shape (as a ratio $V/S$) at which a 5 cm octree first beats a dense byte array, and
+    name a real robot workspace that qualifies.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Why the zero crossing survives a biased observation">
+    §3.2 claims the projective observation $d = z - s$ is biased by $1/\cos\theta$ away from the
+    surface but unbiased *at* it. (a) Prove the claim for a single planar surface and a single beam.
+    (b) Now fuse two beams meeting the same plane at $\theta_1 = 0$ and $\theta_2 = 60°$ with equal
+    weights, and find the zero crossing of the fused linear field along a line perpendicular to the
+    surface. Is it still exact? (c) What does your answer predict about reconstruction error on
+    walls seen only at a grazing angle — and how does Voxblox's $\cos\theta$ weight term address it?
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict the ghost, then watch it">
+    Using $\lambda = W_{\max}/(W_{\max}+w)$ from D2, predict how many re-observations it takes for
+    the teleported chair's ghost to lose half its distance error at $W_{\max} \in \{4, 24, 64\}$.
+    Now open w19.1, click the chair's cell to inspect it, press <em>move the chair</em>, and count.
+    Where does your prediction fail, and why? (The weight a carving update contributes is not 1.)
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Make each representation win">
+    In w19.2, find a query workload under which each of the four panes is the winner at some point,
+    and write a one-sentence description of a real robot task with that workload. One pane never
+    takes the green frame under any of the three workloads: name it, and say — using D1, and the
+    cost of descending a tree instead of indexing an array — exactly what it is paying for and what
+    it would take to make that payment worthwhile.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="A fifth representation">
+    Implement `MapRepr` for a k-d tree over raw scan endpoints and add it to the gallery harness.
+    It should win the distance query at low point counts and lose it as the cloud grows. Report the
+    crossover against the ESDF, and then answer the real question: why do production systems keep
+    point clouds as the *log* and never as the primary map?
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Two channels beat one">
+    Extend the 1-D renderer from depth-only to depth plus reflectance. Show that on the seed where
+    the depth-only fit parks density in the wrong place (w19.4, re-roll until the held-out error
+    stays high while the training residual collapses), the two-channel version escapes — and explain
+    which term of D4 Step 5's gradient the extra channel repaired. Then find a seed where two
+    channels are still not enough, and say what a third would have to measure.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    authors="Curless, B. and Levoy, M."
+    year={1996}
+    title="A Volumetric Method for Building Complex Models from Range Images"
+    venue="SIGGRAPH '96, 303–312"
+    doi="10.1145/237170.237269"
+    note="The origin of TSDF fusion, and the source of this chapter's epigraph. Appendix A sketches the least-squares optimality that D2 turns into a recursive filter."
+  />
+  <Reference
+    authors="Lorensen, W. E. and Cline, H. E."
+    year={1987}
+    title="Marching Cubes: A High Resolution 3D Surface Construction Algorithm"
+    venue="SIGGRAPH '87, Computer Graphics 21(4), 163–169"
+    doi="10.1145/37401.37422"
+    note="The extraction step of §3.4, in three dimensions. The ambiguous cases this chapter dodges in 2-D are the reason the follow-up literature exists."
+  />
+  <Reference
+    authors="Felzenszwalb, P. F. and Huttenlocher, D. P."
+    year={2012}
+    title="Distance Transforms of Sampled Functions"
+    venue="Theory of Computing 8(19), 415–428"
+    url="https://theoryofcomputing.org/articles/v008a019/"
+    note="D3's lower-envelope algorithm, with the amortized Θ(n) argument. The clearest exposition of the trick that makes ESDFs affordable."
+  />
+  <Reference
+    authors="Hornung, A., Wurm, K. M., Bennewitz, M., Stachniss, C., and Burgard, W."
+    year={2013}
+    title="OctoMap: An Efficient Probabilistic 3D Mapping Framework Based on Octrees"
+    venue="Autonomous Robots 34(3), 189–206"
+    doi="10.1007/s10514-012-9321-0"
+    note="The hierarchical representation of §3.1, including the clamping-and-pruning argument D1 formalizes and the node layout the memory bound counts."
+  />
+  <Reference
+    authors="Oleynikova, H., Taylor, Z., Fehr, M., Siegwart, R., and Nieto, J."
+    year={2017}
+    title="Voxblox: Incremental 3D Euclidean Signed Distance Fields for On-Board MAV Planning"
+    venue="IEEE/RSJ IROS 2017, 1366–1373"
+    doi="10.1109/IROS.2017.8202315"
+    note="The system that made ESDF-from-TSDF standard practice in robotics, and the source of the weighting choices (inverse-square range, incidence angle) that D2 Step 5 reads as variance modeling."
+  />
+  <Reference
+    authors="Reijgwart, V., Cadena, C., Siegwart, R., and Ott, L."
+    year={2023}
+    title="Efficient Volumetric Mapping of Multi-Scale Environments Using Wavelet-Based Compression"
+    venue="Robotics: Science and Systems XIX"
+    doi="10.15607/RSS.2023.XIX.065"
+    note="Where §3.1 goes next: wavelets instead of a plain octree, keeping multi-resolution queries while fixing the memory constant that makes this chapter's quadtree lose."
+  />
+  <Reference
+    authors="Millane, A., Oleynikova, H., Wirbel, E., Steiner, R., Ramasamy, V., Tingdahl, D., and Siegwart, R."
+    year={2024}
+    title="nvblox: GPU-Accelerated Incremental Signed Distance Field Mapping"
+    venue="IEEE ICRA 2024"
+    url="https://arxiv.org/abs/2311.00626"
+    note="The production path for everything in §3.3 and §3.4: the same recursion, moved to the GPU, with measured speedups of two orders of magnitude on ESDF construction."
+  />
+  <Reference
+    authors="Tosi, F., Zhang, Y., Gong, Z., Sandström, E., Mattoccia, S., Oswald, M. R., and Poggi, M."
+    year={2024}
+    title="How NeRFs and 3D Gaussian Splatting are Reshaping SLAM: a Survey"
+    venue="arXiv:2402.13255"
+    url="https://arxiv.org/abs/2402.13255"
+    note="The frontier map for this chapter's last section. Read it instead of any single system paper: it is maintained, and it states each system's assumptions in the terms D4 uses."
+  />
+</References>

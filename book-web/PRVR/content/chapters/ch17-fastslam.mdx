@@ -1,0 +1,1264 @@
+---
+title: FastSLAM and Rao-Blackwellization
+description: Don't estimate the joint. Sample the trajectory, solve every map in closed form, and let loop closure be natural selection among competing universes.
+chapter: 17
+part: PART V
+partTitle: Mapping and SLAM
+difficulty: Advanced
+readingTime: 55 min
+quote: This algorithm is based on an exact factorization of the posterior into a product of conditional landmark distributions and a distribution over robot paths.
+quoteAuthor: Michael Montemerlo, Sebastian Thrun, Daphne Koller, and Ben Wegbreit
+quoteSource: "FastSLAM: A Factored Solution to the Simultaneous Localization and Mapping Problem (AAAI-02)"
+---
+
+import { ParallelUniverses } from '@/components/ch/ch17/parallel-universes';
+import { FactorizationDiagram } from '@/components/ch/ch17/factorization-diagram';
+import { ProposalQuality } from '@/components/ch/ch17/proposal-quality';
+import { DepletionMeter } from '@/components/ch/ch17/depletion-meter';
+import { LinkedMath } from '@/components/book/linked-math';
+import { Deferred } from '@/components/sim/deferred';
+
+<Overview
+  goals={[
+    'State and prove the SLAM factorization theorem, and say exactly which assumption each step consumes',
+    'Explain Rao-Blackwellization as a variance theorem rather than an implementation trick',
+    'Derive FastSLAM 1.0’s importance weight as a marginal measurement likelihood',
+    'Derive FastSLAM 2.0’s measurement-aware proposal, and measure what it buys in particles',
+    'Build a grid-based Rao-Blackwellized particle filter — the gmapping recipe — with scan-matched proposals and selective resampling',
+    'Say honestly what died with gmapping and what is permanent',
+  ]}
+  prerequisites={[
+    'Particle filters, importance weights, and the low-variance resampler (Chapter 8)',
+    'The odometry motion model and its sampler (Chapter 9)',
+    'Landmark and likelihood-field measurement models (Chapter 10)',
+    'Occupancy grids in log odds (Chapter 13)',
+    'Why EKF SLAM is O(N²) and unimodal (Chapter 14)',
+  ]}
+  builds="Chapter 8’s particle machinery, run once per hypothesis, with Chapter 13’s mapper living inside each one."
+>
+[Chapter 14](/chapters/ch14-ekf-slam) attacked the joint pose–map posterior with one big Gaussian.
+[Chapter 15](/chapters/ch15-factor-graphs) and [Chapter 16](/chapters/ch16-scan-matching) attacked
+it with one big least-squares problem. This chapter takes the third road, which is to refuse the
+joint entirely.
+
+The observation is almost too simple to be worth a theorem: **if the robot's path were known,
+mapping would be easy** — that is literally what Chapter 13 assumed. And if the path were known,
+landmarks would not just be easy, they would be *independent of each other*, because the only thing
+that ever correlated them was uncertainty about where the robot was standing. So sample the path
+with particles, and let every particle solve its own map exactly.
+
+What makes this more than a hack is that the variance never goes up. Rao-Blackwellization is a
+theorem, and it says that integrating a variable out analytically instead of sampling it can only
+help. The result turns an intractable $(3 + 2N)$-dimensional particle filter into $M$ cheap
+trajectory hypotheses, each towing a bank of tiny EKFs — or an occupancy grid.
+</Overview>
+
+## The map that never existed
+
+Here is the naive thing, stated precisely enough to see it fail. The SLAM state is the pose plus
+the map, $(x_t, m)$. A particle filter represents a belief by samples. So: sample the whole state.
+Each particle is a pose *and a complete map*, weighted by how well it explains the scan.
+
+Count the dimensions. Rusty's pose is 3. Twenty-four landmarks in the plane are 48 more. That is a
+51-dimensional space, and the number of samples needed to cover a space to fixed resolution grows
+exponentially in its dimension — the curse of dimensionality from
+[Chapter 8](/chapters/ch08-nonparametric-filters), arriving on schedule. Ten samples per axis would
+require $10^{51}$ particles. At a billion particles per second, drawing that population once takes
+about $10^{42}$ seconds, which is some $10^{24}$ times the current age of the universe. You get to
+do it at 10 Hz.
+
+Worse, it is wasteful in a way that has nothing to do with dimension. Conditioned on a trajectory,
+the map has a *closed-form* posterior — it is a product of Gaussians, or a grid of log-odds counters.
+Sampling something you could have computed is throwing away accuracy for nothing, and there is a
+theorem later in this chapter that says exactly how much.
+
+So here is the trade. Sample only the part that is genuinely hard — the path — and compute
+everything else. What the reader sees below is $M$ separate universes, each of which took a
+different guess about where Rusty went, and each of which built the map that guess implies.
+
+<Deferred>
+  <ParallelUniverses />
+</Deferred>
+
+Watch it for a lap before reading on. Three things are worth your attention, and each one is a
+section of this chapter.
+
+**There is no map.** There are sixteen maps. They disagree, and the disagreement is the belief. Any
+"the map" you extract — the highest-weight tile, the weighted average, whatever — is a summary you
+chose, not a thing the filter holds. The reader who has been waiting since
+[Chapter 13](/chapters/ch13-occupancy-grids) for mapping and localization to be solved *together*
+should notice that this is what together actually looks like.
+
+**Weights are the referee, and the map is the referee's rulebook.** Each universe scores the new
+scan against *its own* walls. A universe that drifted left builds walls that are shifted left, and
+its future scans keep agreeing with it — until the robot comes back to somewhere it has been, at
+which point the accumulated inconsistency has nowhere to hide, and the green border fades.
+
+**Loop closure is an extinction event, not an optimization step.** In
+[Chapter 16](/chapters/ch16-scan-matching) closing a loop meant adding a constraint and running
+Gauss–Newton until the graph relaxed. Here it means some universes stop being paid and get deleted.
+No optimizer runs. Nothing is refined. The filter simply stops simulating the futures that turned
+out to be wrong.
+
+## If you knew the path
+
+The intuition that unlocks all of this was already said out loud, twice, in earlier chapters.
+
+Chapter 13 assumed known poses and built a map by counting. Chapter 11 assumed a known map and
+tracked a pose with an EKF. Each was easy; SLAM is hard because neither assumption holds. The
+Rao-Blackwellized move is to *make one of them hold* — not by knowing the path, but by conditioning
+on a guess about it, and then keeping many guesses around so that the conditioning is honest.
+
+Formally, conditioning on the path does something stronger than making mapping convenient. It makes
+the landmarks **independent of one another**.
+
+<Deferred>
+  <FactorizationDiagram />
+</Deferred>
+
+Look at the graphical model with the path marginalized out. Landmark $m_1$ was seen from poses
+$x_0, x_1, x_2$; landmark $m_3$ was seen from $x_3, x_4, x_5$. They were never observed together,
+and yet integrating over the trajectory makes them correlated: any evidence that shifts your belief
+about $x_2$ shifts $x_3$ through the motion model, which shifts $m_3$. Those induced couplings are
+precisely the off-diagonal blocks that made Chapter 14's covariance dense and its update $O(N^2)$.
+
+Now condition on the path — click the toggle. The pose nodes become observed, the induced arcs
+vanish, and what is left is three separate little estimation problems that cannot talk to each
+other. Each is a $2 \times 2$ Gaussian updated by its own sightings.
+
+<KeyIdea title="The one sentence version">
+Landmarks are correlated only through the robot's trajectory. A particle that carries a whole
+trajectory therefore carries a map that factors — so sample paths, and solve each landmark exactly.
+</KeyIdea>
+
+Two consequences follow immediately, and both are worth stating before the algebra.
+
+The first is a cost argument. Chapter 14's update touched every entry of a $(3+2N) \times (3+2N)$
+covariance. Here, observing one landmark updates one $2 \times 2$ matrix inside one particle, and
+touches nothing else — $O(M)$ per observation regardless of how large the map has grown.
+
+The second is a *representational* argument, and it is the one that survived into 2026. Because
+each particle owns its map, each particle may also own its **data association**. Universe 3 can
+believe the doorway it just saw is landmark 7 while universe 9 believes it is a new landmark, and
+neither has to commit for everyone. The correspondence variable $c_t$, which Chapter 11 had to
+guess once and live with forever, becomes a sampled variable like any other.
+
+## The mathematics
+
+### Notation
+
+<NotationTable
+  rows={[
+    { sym: 'x_{0:t}^{[i]}', meaning: 'The path hypothesis of particle i. A particle is a trajectory, not a pose — the whole chapter turns on this.' },
+    { sym: 'm^{[i]}', meaning: 'Particle i’s private map: a set of landmark Gaussians, or an occupancy grid.' },
+    { sym: '\\mu_{j,t}^{[i]},\\ \\Sigma_{j,t}^{[i]}', meaning: 'Mean and 2×2 covariance of landmark j’s EKF inside particle i.' },
+    { sym: 'c_t', meaning: 'Correspondence: which landmark measurement z_t came from. Given for the factorization theorem; sampled per particle once associations are unknown.' },
+    { sym: '\\pi(x_t \\mid \\cdot)', meaning: 'The proposal distribution the new pose is drawn from. Choosing it well is what separates FastSLAM 1.0 from 2.0.' },
+    { sym: '\\hat{x}_t^{[i]}', meaning: 'The scan-match optimum: the mode of the observation likelihood against particle i’s own map.' },
+    { sym: 'N_{\\mathrm{eff}}', meaning: 'Effective sample size, 1/Σ(w̃)². Chapter 8 called it M_eff; the gmapping literature writes N_eff, and so do we here.' },
+    { sym: '\\eta^{[i]}', meaning: 'The weight increment of the improved proposal — the marginal likelihood of the scan under particle i.' },
+  ]}
+/>
+
+### The SLAM factorization theorem
+
+Everything rests on one identity. With known correspondences $c_{1:t}$,
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{p(x_{0:t}, m \mid z_{1:t}, u_{1:t}, c_{1:t})}
+\;=\;
+\htmlClass{term-prior}{p(x_{0:t} \mid z_{1:t}, u_{1:t}, c_{1:t})}
+\;\prod_{j=1}^{N} \htmlClass{term-measurement}{p(m_j \mid x_{0:t}, z_{1:t}, c_{1:t})}
+$$
+</LinkedMath>
+
+Read it right to left. The product on the right is $N$ independent two-dimensional Gaussians, each
+of which a Kalman filter can maintain in closed form. The factor on the left is a distribution over
+*trajectories*, which is exactly the kind of thing a particle filter is good at. The theorem says
+this split is **exact** — no approximation has been made yet.
+
+<Derivation title="Proving the factorization by induction on t" result="p(m \mid x_{0:t}, d_t) = \prod_j p(m_j \mid x_{0:t}, d_t)">
+Write $d_t = (z_{1:t}, u_{1:t}, c_{1:t})$ for the data. The claim is that the map factors over
+landmarks once the path is fixed. Since $p(x_{0:t}, m \mid d_t) = p(x_{0:t} \mid d_t)\,p(m \mid x_{0:t}, d_t)$
+is just the chain rule, the whole content of the theorem is:
+
+$$
+p(m \mid x_{0:t}, d_t) = \prod_{j=1}^{N} p(m_j \mid x_{0:t}, z_{1:t}, c_{1:t})
+$$
+
+**Base case.** At $t = 0$ no measurement has arrived, so the map posterior is the prior, which we
+take to be independent across landmarks — an honest assumption, since before seeing anything there
+is no reason to believe two unobserved landmarks are related.
+
+**Inductive step.** Assume the factorization holds at $t-1$. Apply Bayes rule to the newest
+measurement, conditioning throughout on the full path:
+
+$$
+p(m \mid x_{0:t}, d_t) = \eta\; p(z_t \mid m, x_t, c_t)\; p(m \mid x_{0:t-1}, d_{t-1})
+$$
+
+The second factor lost its dependence on $x_t$ and $u_t$: a control tells you nothing about where
+landmarks are, and the current pose adds nothing beyond the path that led to it.
+
+**Now the key step.** With $c_t = j$ given, the measurement $z_t$ depends on exactly one landmark:
+
+$$
+p(z_t \mid m, x_t, c_t = j) = p(z_t \mid m_j, x_t)
+$$
+
+This is where the theorem is really won or lost. It is a statement about the *sensor*: one reading
+touches one landmark. Substituting and using the inductive hypothesis,
+
+$$
+p(m \mid x_{0:t}, d_t)
+= \eta\; p(z_t \mid m_j, x_t) \prod_{k=1}^{N} p(m_k \mid x_{0:t-1}, d_{t-1})
+$$
+
+Every factor with $k \neq j$ is untouched. The factor with $k = j$ is multiplied by a likelihood
+that involves only $m_j$, and the normalizer $\eta$ splits across the product because it depends on
+neither. So the posterior at $t$ is again a product over landmarks, with only the observed one
+having changed:
+
+$$
+p(m_k \mid x_{0:t}, d_t) =
+\begin{cases}
+\eta_j\, p(z_t \mid m_j, x_t)\, p(m_j \mid x_{0:t-1}, d_{t-1}) & k = j \\
+p(m_k \mid x_{0:t-1}, d_{t-1}) & k \neq j
+\end{cases}
+$$
+
+which closes the induction. $\blacksquare$
+
+**Where the proof breaks.** Suppose one measurement observed two landmarks at once — a stereo pair,
+a scan segment spanning a corner, any front end that emits a joint constraint. Then
+$p(z_t \mid m, x_t, c_t)$ does not collapse to a single factor, the two landmarks acquire a shared
+likelihood term, and the product structure is gone for that pair. This is not hypothetical: it is
+exactly what a laser *scan* is. When the grid-based filter later in this chapter integrates a whole scan into one
+map it is quietly assuming the cells are conditionally independent given the path — the same
+assumption Chapter 13 made, with the same known-false status.
+
+**Where the online version breaks.** Note the conditioning: $p(m_j \mid x_{0:t}, \cdot)$, on the
+*whole path*. The corresponding statement for the marginal $p(x_t, m \mid \cdot)$ — the thing an
+ordinary filter tracks — is **false**. Landmarks are not conditionally independent given the current
+pose alone; a robot that returns to an old room correlates what it sees now with what it saw then
+through everywhere it went in between. That is why a particle here must carry its whole trajectory,
+and why FastSLAM's memory grows with time even when its map does not.
+</Derivation>
+
+### Rao-Blackwellization is a theorem, not a trick
+
+Why should sampling paths and computing maps beat sampling both? Because of a variance inequality
+that predates robotics by fifty years.
+
+Let $\varphi(X, Y)$ be any estimator of a quantity of interest, where $X$ is what we sample and $Y$
+is what we could integrate out. The **Rao–Blackwell** estimator is the conditional expectation
+$\E[\varphi \mid X]$, and it satisfies
+
+<LinkedMath>
+$$
+\Var\big[\htmlClass{term-posterior}{\E[\varphi \mid X]}\big] \;\le\; \Var\big[\htmlClass{term-prediction}{\varphi(X, Y)}\big]
+$$
+</LinkedMath>
+
+Identify $X$ with the path and $Y$ with the map, and the statement becomes: a filter that samples
+trajectories and computes map posteriors is *never worse*, in variance, than one that samples both
+— and is strictly better whenever the map genuinely varies given the path.
+
+<Derivation title="The variance inequality, and what it means for SMC" result="\Var[\varphi] = \E[\Var[\varphi \mid X]] + \Var[\E[\varphi \mid X]]">
+**Step 1 — the law of total variance.** For any two random variables,
+
+$$
+\Var[\varphi] \;=\; \underbrace{\E\big[\Var[\varphi \mid X]\big]}_{\ge\, 0} \;+\; \Var\big[\E[\varphi \mid X]\big]
+$$
+
+Both terms on the right are non-negative, so dropping the first gives the inequality directly. The
+dropped term is the variance *contributed by sampling $Y$* — which is precisely what
+Rao-Blackwellization deletes by computing $Y$'s posterior instead of drawing from it.
+
+**Step 2 — unbiasedness is preserved.** By the tower rule
+$\E\big[\E[\varphi \mid X]\big] = \E[\varphi]$, so nothing is traded away: the conditional
+estimator estimates the same quantity, with no more variance.
+
+**Step 3 — the SMC version.** In sequential Monte Carlo the estimator of interest is the importance
+weight itself. Doucet et al. (2000) show that when the state factors as $(X, Y)$ with $Y$
+analytically tractable given $X_{0:t}$, the correct weight for a sample of $X_{0:t}$ alone is the
+*marginalized* weight
+
+$$
+w_t \;\propto\; \frac{p(x_{0:t} \mid z_{1:t})}{\pi(x_{0:t} \mid z_{1:t})}
+\qquad\text{with}\qquad
+p(z_t \mid x_{0:t}, z_{1:t-1}) = \int p(z_t \mid x_t, y)\, p(y \mid x_{0:t-1}, z_{1:t-1})\, dy
+$$
+
+That integral is the whole game: it is what the FastSLAM 1.0 weight evaluates in closed form for a
+Gaussian landmark, and what the gmapping recipe approximates by summing over $K$ probe poses when
+the map is a grid.
+
+**Step 4 — the practical reading.** Fewer particles for the same accuracy. How many fewer depends
+on how much of the state's variance lived in $Y$; for SLAM, where $Y$ is a $2N$-dimensional map and
+$X$ is a 3-dimensional pose per step, the answer is *nearly all of it*. That is why a 51-dimensional
+problem can be attacked with sixteen particles.
+</Derivation>
+
+<Callout type="info">
+Rao-Blackwellization is not specific to SLAM. Anywhere your state splits into a hard nonlinear part
+and a conditionally-linear-Gaussian part — a maneuvering target with linear dynamics and an unknown
+mode, a robot with an unknown sensor bias — the same theorem applies, and the same architecture
+follows. [Chapter 22](/chapters/ch22-pomdps) meets it again as the reason POMCP's particles carry
+world states rather than full belief distributions.
+</Callout>
+
+### The FastSLAM 1.0 weight
+
+Now make it concrete. Particle $i$ holds a pose $x_{t-1}^{[i]}$ and, for each landmark, a Gaussian
+$\Normal(\mu_{j}^{[i]}, \Sigma_{j}^{[i]})$. It draws a new pose from the motion model,
+
+<LinkedMath>
+$$
+x_t^{[i]} \sim \htmlClass{term-prediction}{p(x_t \mid x_{t-1}^{[i]}, u_t)}
+$$
+</LinkedMath>
+
+using `sample_motion_model_odometry` from [Chapter 9](/chapters/ch09-motion-models) — the proposal
+is the motion prior, which is the same choice Monte Carlo localization made in
+[Chapter 12](/chapters/ch12-localization-global), for the same reason: everything cancels except the
+measurement likelihood. Here that likelihood must be *marginal over the landmark*, and the result is
+
+<LinkedMath>
+$$
+w_t^{[i]} \;=\; \big|2\pi \mat{S}_t^{[i]}\big|^{-1/2}
+\exp\!\left(-\tfrac{1}{2}\, \boldsymbol{\nu}\T (\mat{S}_t^{[i]})^{-1} \boldsymbol{\nu}\right),
+\qquad
+\htmlClass{term-measurement}{\boldsymbol{\nu} = z_t - \hat z_t^{[i]}},
+\quad
+\mat{S}_t^{[i]} = \mat{H}_m \Sigma_{c_t}^{[i]} \mat{H}_m\T + \mat{Q}_t
+$$
+</LinkedMath>
+
+That $\mat{S}_t$ should look familiar: it is the innovation covariance from
+[Chapter 11](/chapters/ch11-localization-gaussian), the same matrix that defines the Mahalanobis
+gate. Here it does double duty — it weights the particle *and* gates its data association.
+
+<Derivation title="Where the weight comes from, and why the landmark integrates out" result="w_t^{[i]} = \Normal(z_t;\, \hat z_t^{[i]},\, \mat{H}_m \Sigma \mat{H}_m^{\mathsf{T}} + \mat{Q}_t)">
+**Step 1 — weight = target / proposal.** From Chapter 8, importance sampling assigns
+$w \propto \text{target}/\text{proposal}$. The target at time $t$ is the path posterior; the
+proposal is the path posterior at $t-1$ extended by the motion model. Telescoping the recursion,
+everything cancels except the newest measurement's *predictive* likelihood:
+
+$$
+w_t^{[i]} \;\propto\; p\big(z_t \mid x_{0:t}^{[i]},\, z_{1:t-1},\, c_{1:t}\big)
+$$
+
+This is the step where Rao-Blackwellization enters: the weight is a likelihood with the map
+marginalized out, not evaluated at some sampled map.
+
+**Step 2 — marginalize the landmark.** Insert the landmark and integrate it back out:
+
+<LinkedMath>
+$$
+p(z_t \mid x_{0:t}^{[i]}, z_{1:t-1}, c_t = j)
+= \int \htmlClass{term-measurement}{p(z_t \mid x_t^{[i]}, m_j)}\;
+       \htmlClass{term-prior}{p(m_j \mid x_{0:t-1}^{[i]}, z_{1:t-1})}\; dm_j
+$$
+</LinkedMath>
+
+**Step 3 — linearize and use the Gaussian identity.** The measurement model
+$h(x_t, m_j)$ is nonlinear (a range and a bearing), so expand it about the landmark mean:
+
+$$
+h(x_t^{[i]}, m_j) \approx \hat z_t^{[i]} + \mat{H}_m\,(m_j - \mu_j^{[i]}),
+\qquad
+\mat{H}_m = \frac{\partial h}{\partial m}\bigg|_{x_t^{[i]},\, \mu_j^{[i]}}
+$$
+
+Now both factors are Gaussian in $m_j$, and Appendix B's marginal identity applies: if
+$m_j \sim \Normal(\mu, \Sigma)$ and $z \mid m_j \sim \Normal(\hat z + \mat{H}_m(m_j - \mu), \mat{Q})$
+then
+
+$$
+z \sim \Normal\big(\hat z,\; \mat{H}_m \Sigma \mat{H}_m\T + \mat{Q}\big)
+$$
+
+which is the stated weight. Note what the two terms mean: $\mat{Q}$ is what the *sensor* does not
+know, $\mat{H}_m \Sigma \mat{H}_m\T$ is what the *map* does not know, and a landmark seen for the
+hundredth time contributes almost nothing to the second.
+
+**Step 4 — then update the landmark.** Having weighted the particle, correct the observed
+landmark's EKF at the sampled pose, with $\mat{K} = \Sigma \mat{H}_m\T \mat{S}^{-1}$ and the usual
+Kalman update. Landmarks that were not observed are not touched at all — no loop over the map, no
+covariance propagation. That is the $O(1)$-per-observation claim, made good.
+
+**Step 5 — initialization.** A landmark seen for the first time has no prior to marginalize. Invert
+the measurement instead: put $\mu_j = g(x_t, z_t)$ (project range and bearing out from the pose) and
+$\Sigma_j = \mat{H}_m^{-1} \mat{Q}_t \mat{H}_m^{-\mathsf{T}}$. Notice this covariance contains *no*
+pose uncertainty — inside this particle, the pose is known exactly. That is Rao-Blackwellization
+paying out in the most visible possible way.
+</Derivation>
+
+### Why 1.0 wastes particles, and what 2.0 does about it
+
+FastSLAM 1.0 proposes from the motion model and then judges the result with the measurement. When
+the wheels are vague and the sensor is precise — which describes every robot built since about 1995
+— this is a bad plan. The proposal spreads samples over a region tens of centimetres wide; the
+likelihood concentrates them in a region a few centimetres wide; and almost every particle lands
+somewhere the measurement considers absurd.
+
+<Deferred>
+  <ProposalQuality />
+</Deferred>
+
+The counters underneath make the cost quantitative. At the default $\sigma_r = 5$ cm the
+motion-prior proposal puts about 43% of its samples inside the posterior's 90% region and lands an
+effective sample size of $N_{\mathrm{eff}}/M \approx 0.18$; the measurement-aware proposal puts
+exactly 90% of them there — as it must, since it *is* the posterior — with
+$N_{\mathrm{eff}}/M = 1.00$. In round numbers, one FastSLAM 2.0 particle is doing the work of five
+of FastSLAM 1.0's, and the ratio widens as the sensor sharpens: at $\sigma_r = 2$ cm it is six, at
+$\sigma_r = 40$ cm it is under two.
+
+The fix is to fold $z_t$ into the proposal itself:
+
+<LinkedMath>
+$$
+\htmlClass{term-posterior}{\pi(x_t)} \;=\; p\big(x_t \mid x_{1:t-1}^{[i]},\, u_{1:t},\, z_{1:t},\, c_{1:t}\big)
+\;\propto\; \htmlClass{term-measurement}{p(z_t \mid x_t, m^{[i]})}\;\htmlClass{term-prediction}{p(x_t \mid x_{t-1}^{[i]}, u_t)}
+$$
+</LinkedMath>
+
+This is the *optimal* proposal in Doucet's sense — among proposals that use the information
+available at time $t$, it minimizes the variance of the importance weights. Linearizing the
+measurement in the pose makes it a Gaussian you can compute with one EKF-shaped step.
+
+<Derivation title="FastSLAM 2.0’s proposal, by completing the square" result="\Sigma_x = [\mat{H}_x^{\mathsf{T}} \mat{Q}_j^{-1} \mat{H}_x + \mat{R}_t^{-1}]^{-1}">
+**Step 1 — name the two factors.** The motion prior, linearized about the odometry-predicted pose
+$\hat x_t = g(u_t, x_{t-1}^{[i]})$, is $\Normal(\hat x_t, \mat{R}_t)$, where $\mat{R}_t$ is the
+$\alpha$-model covariance of [Chapter 9](/chapters/ch09-motion-models) pushed into pose coordinates
+by the Jacobian of the rotate–translate–rotate composition — the same $\mat{V}\mat{M}\mat{V}\T$
+construction Chapter 11 used.
+
+The measurement factor, with the landmark already marginalized as in Derivation 3, is
+$\Normal(z_t;\, h(x_t, \mu_j),\, \mat{Q}_j)$ with
+$\mat{Q}_j = \mat{Q}_t + \mat{H}_m \Sigma_j \mat{H}_m\T$.
+
+**Step 2 — linearize in the pose.** Expand $h$ about $\hat x_t$ this time, not about the landmark:
+
+$$
+h(x_t, \mu_j) \approx \hat z_t + \mat{H}_x (x_t - \hat x_t),
+\qquad
+\mat{H}_x = \frac{\partial h}{\partial x}\bigg|_{\hat x_t,\, \mu_j}
+$$
+
+For a range–bearing sensor $\mat{H}_x$ is the $2 \times 3$ matrix
+$\big[\!-\!\delta_x/r,\; -\delta_y/r,\; 0;\;\; \delta_y/q,\; -\delta_x/q,\; -1\big]$ with
+$\delta = \mu_j - x_t$, $q = \|\delta\|^2$, $r = \sqrt q$.
+
+**Step 3 — multiply two Gaussians.** The product of two Gaussian densities in $x_t$ is an
+unnormalized Gaussian whose **information matrices add**:
+
+$$
+\Sigma_x^{-1} = \mat{H}_x\T \mat{Q}_j^{-1} \mat{H}_x + \mat{R}_t^{-1},
+\qquad
+\mu_x = \hat x_t + \Sigma_x \mat{H}_x\T \mat{Q}_j^{-1} \big(z_t - \hat z_t\big)
+$$
+
+This is the information form of [Chapter 6](/chapters/ch06-kalman-filters), run once per
+particle. Sample $x_t^{[i]} \sim \Normal(\mu_x, \Sigma_x)$ and the proposal step is done.
+
+**Step 4 — the weight, and why its variance falls.** Because the sample came from a proposal that
+already used $z_t$, the importance weight is no longer the measurement likelihood. Carrying the
+ratio through gives the *predictive* likelihood
+
+$$
+w_t^{[i]} \;\propto\; \int p(z_t \mid x_t)\, p(x_t \mid x_{t-1}^{[i]}, u_t)\, dx_t
+\;=\; \Normal\big(z_t;\; \hat z_t,\; \mat{H}_x \mat{R}_t \mat{H}_x\T + \mat{Q}_j\big)
+$$
+
+Look at what this expression does *not* contain: $x_t^{[i]}$. The weight depends on where the
+particle came from, not on where the proposal happened to put it — so two particles with the same
+history get the same weight no matter how their draws differed. That is the variance reduction,
+visible in the widget as $N_{\mathrm{eff}}/M = 1.00$.
+
+**Step 5 — when it fails.** Everything above assumed the measurement likelihood is unimodal enough
+to linearize. If it is not — a corridor where a scan matches equally well in two places, a landmark
+with an ambiguous signature — the Gaussian proposal will happily concentrate all $M$ particles at
+one of the modes and the filter will lose the other. FastSLAM 1.0's dumb proposal, by contrast,
+covers both. There is no free lunch: a sharper proposal is a stronger commitment.
+</Derivation>
+
+### Grids: the gmapping recipe
+
+Landmarks are a luxury. In a bare corridor there is nothing to call a landmark and the map is an
+occupancy grid, so the closed forms of the last section evaporate: there is no $\mat{H}_m$, no
+$\Sigma_j$, no integral you can do by hand.
+
+Grisetti, Stachniss and Burgard's answer — the algorithm the world knew as *gmapping* for fifteen
+years — is to keep the *shape* of FastSLAM 2.0 and replace algebra with local sampling.
+
+1. **Find the mode.** Scan-match $z_t$ against the particle's own map $m^{[i]}_{t-1}$, starting from
+   the odometry-predicted pose, giving $\hat x_t^{[i]}$. Any matcher from
+   [Chapter 16](/chapters/ch16-scan-matching) does; ours is a greedy hill climb on the map-match
+   score, which is what gmapping itself used.
+2. **Probe around it.** Draw $K$ poses $\{x_k\}$ in a small neighbourhood of $\hat x_t^{[i]}$.
+3. **Weight the probes** by observation × motion,
+   $\;\omega_k = p(z_t \mid m^{[i]}, x_k)\, p(x_k \mid x_{t-1}^{[i]}, u_t)$.
+4. **Fit and sample.** Compute the weighted mean and covariance of the probes, and draw the new pose
+   from that Gaussian. This is Step 3 of the previous derivation, done numerically.
+5. **Pay the normalizer.** Multiply the particle's weight by
+   $\eta^{[i]} = \sum_k \omega_k$ — the Monte Carlo estimate of the same predictive likelihood
+   integral that FastSLAM 2.0 evaluated in closed form.
+6. **Map, then select.** Integrate the scan into $m^{[i]}$ at the sampled pose with Chapter 13's
+   log-odds update, and resample only if $N_{\mathrm{eff}} < M/2$.
+
+Two details in that list are load-bearing, and both are visible in the widgets.
+
+**The scan matcher must be allowed to fail.** On a fresh map the score surface is flat — every pose
+explains an unexplored grid equally well — and the "optimum" it returns is numerical noise. The
+implementation compares the matched score against the seed score and falls back to plain motion
+sampling when the improvement is not real. Without that guard, the filter confidently follows
+garbage for the first ten steps and never recovers.
+
+**Resampling is a cost, not a service.** Chapter 8 said this about localization; here it decides
+whether there are still competing universes left when the loop finally closes.
+
+<Deferred>
+  <DepletionMeter />
+</Deferred>
+
+The three policies expose two different failure modes, and the instructive part is that the meter
+everyone watches only sees one of them.
+
+*Never resample* and the weights degenerate: $N_{\mathrm{eff}}/M$ slides to about $0.1$, meaning
+that of sixteen universes being simulated and paid for, one holds essentially all the probability.
+The filter has quietly become a single-hypothesis estimator with a fifteen-fold overhead, and the
+error curve shows it — depending on the seed, the lap error grows by anywhere from 20% to a factor
+of three.
+
+*Resample every step* and $N_{\mathrm{eff}}$ looks fine forever, because the weights are wiped clean
+each step and the statistic only ever reports one step of evidence. What dies instead is ancestry:
+the lineage gauge falls to 1, meaning every surviving universe is a copy of one great-grandparent
+and the population can no longer disagree about anything. This is Chapter 8's particle deprivation
+wearing a different hat, and $N_{\mathrm{eff}}$ is structurally blind to it.
+
+*Resample when $N_{\mathrm{eff}} < M/2$* buys the middle — and be honest about how little it buys
+here. Even the selective policy fires on roughly half the steps of this lap, and the lineage gauge
+still collapses inside about twenty steps; on error alone the always-resample policy is
+indistinguishable from it on this benign out-and-back. The difference shows up in the cases this
+lap does not contain: an ambiguous junction, a symmetric wing, a loop closed after ten minutes of
+drift, where the hypothesis that turns out to be right must still exist when the evidence arrives.
+Selective resampling slows the loss of diversity; nothing on that panel restores it, which is why
+the recovery machinery of [Chapter 12](/chapters/ch12-localization-global) is not optional in a
+deployed system.
+
+## The algorithms
+
+<Algorithm
+  name="FastSLAM_1_0(𝒳_{t-1}, u_t, z_t, c_t)"
+  inputs="the particle set, the control, one measurement, its correspondence"
+  outputs="𝒳_t"
+  complexity="O(M) per observation; O(M·N) memory, or O(M·log N) with shared trees"
+>
+1. $\bar{\mathcal{X}}_t = \emptyset$
+2. for $i = 1$ to $M$ do
+3. &nbsp;&nbsp;&nbsp;&nbsp;$x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t)$ &nbsp;&nbsp;// `sample_motion_model_odometry`
+4. &nbsp;&nbsp;&nbsp;&nbsp;$j = c_t$
+5. &nbsp;&nbsp;&nbsp;&nbsp;if landmark $j$ never seen then
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mu_j^{[i]} = g^{-1}(x_t^{[i]}, z_t)$, &nbsp; $\Sigma_j^{[i]} = \mat{H}_m^{-1}\mat{Q}_t\mat{H}_m^{-\mathsf{T}}$, &nbsp; $w^{[i]} = p_0$
+7. &nbsp;&nbsp;&nbsp;&nbsp;else
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\hat z = h(x_t^{[i]}, \mu_j^{[i]})$, &nbsp; $\mat{S} = \mat{H}_m \Sigma_j^{[i]} \mat{H}_m\T + \mat{Q}_t$
+9. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$w^{[i]} = |2\pi\mat{S}|^{-1/2}\exp(-\tfrac12 (z_t - \hat z)\T \mat{S}^{-1} (z_t - \hat z))$
+10. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mat{K} = \Sigma_j^{[i]} \mat{H}_m\T \mat{S}^{-1}$; &nbsp; $\mu_j^{[i]} \mathrel{+}= \mat{K}(z_t - \hat z)$; &nbsp; $\Sigma_j^{[i]} = (\mat{I} - \mat{K}\mat{H}_m)\Sigma_j^{[i]}$
+11. &nbsp;&nbsp;&nbsp;&nbsp;endif
+12. &nbsp;&nbsp;&nbsp;&nbsp;all $k \neq j$: copy $\mu_k^{[i]}, \Sigma_k^{[i]}$ unchanged
+13. &nbsp;&nbsp;&nbsp;&nbsp;add $\langle x_t^{[i]}, \{\mu, \Sigma\}, w^{[i]}\rangle$ to $\bar{\mathcal{X}}_t$
+14. endfor
+15. $\mathcal{X}_t =$ `Low_variance_sampler`$(\bar{\mathcal{X}}_t)$ &nbsp;&nbsp;// Table 4.4
+16. return $\mathcal{X}_t$
+</Algorithm>
+
+FastSLAM 2.0 changes exactly two lines. Line 3 samples from the measurement-aware proposal, and
+line 9 uses the predictive covariance $\mat{H}_x \mat{R}_t \mat{H}_x\T + \mat{Q}_j$ instead of
+$\mat{S}$. Everything else — the per-landmark EKF, the untouched landmarks, the resampler — is
+identical.
+
+<Algorithm
+  name="FastSLAM_unknown_correspondence(𝒳_{t-1}, u_t, z_t)"
+  inputs="the particle set, the control, one measurement with no correspondence"
+  outputs="𝒳_t with per-particle data association"
+  complexity="O(M·N) per observation; the gate usually makes it O(M·k) for k candidates in view"
+>
+1. for $i = 1$ to $M$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;sample $x_t^{[i]}$ from the chosen proposal
+3. &nbsp;&nbsp;&nbsp;&nbsp;for each landmark $k$ in particle $i$'s map do
+4. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\boldsymbol{\nu}_k = z_t - h(x_t^{[i]}, \mu_k^{[i]})$, &nbsp; $\mat{S}_k = \mat{H}_m\Sigma_k^{[i]}\mat{H}_m\T + \mat{Q}_t$
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if $\boldsymbol{\nu}_k\T \mat{S}_k^{-1} \boldsymbol{\nu}_k > \chi^2_{2,\,0.99}$ then skip $k$ &nbsp;&nbsp;// the gate
+6. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\ell_k = \Normal(\boldsymbol{\nu}_k;\, 0,\, \mat{S}_k)$
+7. &nbsp;&nbsp;&nbsp;&nbsp;endfor
+8. &nbsp;&nbsp;&nbsp;&nbsp;$\hat c^{[i]} = \arg\max_k \ell_k$; &nbsp; if $\max_k \ell_k < p_0$ then $\hat c^{[i]} =$ new landmark
+9. &nbsp;&nbsp;&nbsp;&nbsp;update particle $i$ with correspondence $\hat c^{[i]}$ as in `FastSLAM_1_0`
+10. endfor
+11. resample
+</Algorithm>
+
+Line 8 is the line that matters, and it is worth pausing on. The maximum-likelihood association is
+computed *per particle*, against that particle's own map and its own pose. Different particles reach
+different conclusions, and the ambiguity is resolved not by a decision but by survival: whichever
+association was right leads to consistent future scans and its universe multiplies. Chapter 11's
+EKF had to pick one and could never take it back.
+
+<Algorithm
+  name="gmapping_step(𝒳_{t-1}, u_t, z_t)"
+  inputs="grid particles, odometry, a laser scan"
+  outputs="𝒳_t"
+  complexity="O(M · (scan match + K likelihood evaluations + grid update)); memory O(M · cells), shared copy-on-write"
+>
+1. for $i = 1$ to $M$ do
+2. &nbsp;&nbsp;&nbsp;&nbsp;$x'_t = g(u_t, x_{t-1}^{[i]})$ &nbsp;&nbsp;// odometry prediction
+3. &nbsp;&nbsp;&nbsp;&nbsp;$\hat x_t^{[i]} = $ `scan_match`$(m^{[i]}_{t-1}, z_t, x'_t)$
+4. &nbsp;&nbsp;&nbsp;&nbsp;if the match did not beat $x'_t$ then &nbsp;// flat score: unexplored map
+5. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t)$; &nbsp; $w^{[i]} \mathrel{*}= p(z_t \mid m^{[i]}, x_t^{[i]})$
+6. &nbsp;&nbsp;&nbsp;&nbsp;else
+7. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sample $\{x_k\}_{k=1}^{K}$ around $\hat x_t^{[i]}$; &nbsp; $\omega_k = p(z_t \mid m^{[i]}, x_k)\,p(x_k \mid x_{t-1}^{[i]}, u_t)$
+8. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$\mu = \tfrac{1}{\sum \omega}\sum_k \omega_k x_k$; &nbsp; $\Sigma = \tfrac{1}{\sum \omega}\sum_k \omega_k (x_k - \mu)(x_k - \mu)\T$
+9. &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;$x_t^{[i]} \sim \Normal(\mu, \Sigma)$; &nbsp; $w^{[i]} \mathrel{*}= \eta^{[i]} = \sum_k \omega_k$
+10. &nbsp;&nbsp;&nbsp;&nbsp;endif
+11. &nbsp;&nbsp;&nbsp;&nbsp;$m^{[i]} = $ `occupancy_grid_mapping`$(m^{[i]}, x_t^{[i]}, z_t)$ &nbsp;&nbsp;// Table 9.1
+12. endfor
+13. normalize $\{w^{[i]}\}$; &nbsp; $N_{\mathrm{eff}} = 1/\sum_i (\tilde w^{[i]})^2$
+14. if $N_{\mathrm{eff}} < M/2$ then $\mathcal{X}_t = $ `Low_variance_sampler`$(\bar{\mathcal{X}}_t)$, reset weights
+15. return $\mathcal{X}_t$
+</Algorithm>
+
+## Implementation in Rust
+
+Before the code, one observation about the dependency list. This chapter uses `nalgebra` for
+$2\times2$ and $3\times3$ blocks, `rand` + `rand_distr` with a seeded `Pcg64`, `statrs` in the tests
+to cross-check the Gaussian densities, and `rayon` behind a native-only feature for the
+per-particle loop. What it does **not** use is `faer` or `factrs` — and that absence is the
+architectural point. [Chapter 15](/chapters/ch15-factor-graphs) needed a sparse linear solver
+because it was inverting one enormous coupled system. Here there is no system to invert: the
+factorization theorem has already broken the problem into $M \times N$ pieces of size 2. The
+largest matrix anyone factors in this entire chapter is $3 \times 3$.
+
+Three types carry the rest: a landmark's EKF, a particle that owns a path and a bank of them, and a
+copy-on-write grid for the map-based variant.
+
+```rust title="crates/ch17_fastslam/src/landmark_ekf.rs"
+use nalgebra::{Matrix2, Matrix2x3, Vector2};
+use pr_core::geom::SE2;
+
+/// One landmark's posterior inside one particle: a 2-D Gaussian, and nothing
+/// else. There is no pose block and no cross-covariance with any other
+/// landmark, because conditioned on this particle's path there is nothing for
+/// them to correlate through. That absence *is* the factorization theorem.
+#[derive(Clone, Debug)]
+pub struct LandmarkEkf {
+    pub mu: Vector2<f64>,
+    pub sigma: Matrix2<f64>,
+    /// Sightings so far — FastSLAM's cheap stand-in for existence evidence.
+    pub hits: u32,
+}
+
+/// A range–bearing feature, Thrun's f = (r, φ, s) without the signature.
+#[derive(Clone, Copy, Debug)]
+pub struct Feature {
+    pub r: f64,
+    pub phi: f64,
+}
+
+impl LandmarkEkf {
+    /// Initialize from a first sighting: invert the measurement, then push the
+    /// sensor covariance through the inverse Jacobian.
+    ///
+    /// Σ carries *no* pose uncertainty. Inside this particle the pose is known
+    /// exactly — that is the whole point of sampling the path.
+    pub fn from_first_sighting(x: &SE2, z: Feature, q: &Matrix2<f64>) -> Self {
+        let bearing = x.theta() + z.phi;
+        let mu = Vector2::new(x.x() + z.r * bearing.cos(), x.y() + z.r * bearing.sin());
+        let h = landmark_jacobian(x, &mu);
+        let h_inv = h.try_inverse().expect("range–bearing Jacobian is singular only at r = 0");
+        Self { mu, sigma: h_inv * q * h_inv.transpose(), hits: 1 }
+    }
+
+    /// Innovation ν and its covariance S = H Σ Hᵀ + Q — Chapter 11's gate,
+    /// unchanged, and the one matrix this chapter uses for three jobs at once:
+    /// weighting, gating, and the Kalman gain.
+    pub fn innovation(&self, x: &SE2, z: Feature, q: &Matrix2<f64>) -> (Vector2<f64>, Matrix2<f64>) {
+        let (r_hat, phi_hat) = predict(x, &self.mu);
+        let h = landmark_jacobian(x, &self.mu);
+        let nu = Vector2::new(z.r - r_hat, wrap_angle(z.phi - phi_hat));
+        (nu, h * self.sigma * h.transpose() + q)
+    }
+
+    /// FastSLAM 1.0's importance weight: the measurement's *marginal*
+    /// likelihood, with the landmark integrated out (Derivation 3).
+    pub fn weight_1_0(&self, x: &SE2, z: Feature, q: &Matrix2<f64>) -> f64 {
+        let (nu, s) = self.innovation(x, z, q);
+        let s_inv = s.try_inverse().expect("S is positive definite whenever Q is");
+        let det = (std::f64::consts::TAU * s).determinant();
+        det.powf(-0.5) * (-0.5 * (nu.transpose() * s_inv * nu)[0]).exp()
+    }
+
+    /// Standard EKF correction of this landmark at the sampled pose.
+    pub fn update(&mut self, x: &SE2, z: Feature, q: &Matrix2<f64>) {
+        let (nu, s) = self.innovation(x, z, q);
+        let h = landmark_jacobian(x, &self.mu);
+        let k = self.sigma * h.transpose() * s.try_inverse().unwrap();
+        self.mu += k * nu;
+        self.sigma = (Matrix2::identity() - k * h) * self.sigma;
+        self.hits += 1;
+    }
+}
+
+/// ∂h/∂m for the range–bearing model.
+fn landmark_jacobian(x: &SE2, mu: &Vector2<f64>) -> Matrix2<f64> {
+    let d = Vector2::new(mu.x - x.x(), mu.y - x.y());
+    let q = d.norm_squared().max(1e-12);
+    let r = q.sqrt();
+    Matrix2::new(d.x / r, d.y / r, -d.y / q, d.x / q)
+}
+
+/// ∂h/∂x. Only FastSLAM 2.0 needs this one — 1.0 never differentiates the
+/// measurement with respect to the pose, which is precisely its weakness.
+fn pose_jacobian(x: &SE2, mu: &Vector2<f64>) -> Matrix2x3<f64> {
+    let d = Vector2::new(mu.x - x.x(), mu.y - x.y());
+    let q = d.norm_squared().max(1e-12);
+    let r = q.sqrt();
+    Matrix2x3::new(-d.x / r, -d.y / r, 0.0, d.y / q, -d.x / q, -1.0)
+}
+```
+
+The particle is where the theorem becomes a data structure. Note the `path` field: a particle is a
+trajectory, and the reason it must be is in the collapsible proof above.
+
+```rust title="crates/ch17_fastslam/src/fastslam.rs" {17-21,44-58}
+use nalgebra::{Matrix2, Matrix3, Vector2, Vector3};
+use rand::SeedableRng;
+use rand_distr::{Distribution, StandardNormal};
+use rand_pcg::Pcg64;
+use pr_core::geom::SE2;
+use pr_core::models::OdomDelta;
+
+pub struct FsParticle {
+    pub pose: SE2,
+    /// The particle IS a path. Dropping this field would break the
+    /// factorization theorem, not merely lose a visualization.
+    pub path: Vec<SE2>,
+    pub landmarks: Vec<LandmarkEkf>,
+    pub log_w: f64,
+}
+
+/// FastSLAM 1.0 vs 2.0, as a choice of proposal rather than a fork of the code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Proposal {
+    MotionPrior,
+    MeasurementAware,
+}
+
+pub struct FastSlam {
+    particles: Vec<FsParticle>,
+    proposal: Proposal,
+    /// Measurement noise Q = diag(σ_r², σ_φ²).
+    q: Matrix2<f64>,
+    /// Chapter 9's odometry α's, used for both the sampler and R_t.
+    alphas: [f64; 4],
+    /// p₀ from `FastSLAM_unknown_correspondence`: the likelihood credited to a
+    /// brand-new landmark, and therefore the bar an old one has to clear.
+    p0: f64,
+    rng: Pcg64,
+}
+
+impl FastSlam {
+    pub fn step(&mut self, u: &OdomDelta, z: &[Feature], c: Option<&[usize]>) -> FsReport {
+        for p in &mut self.particles {
+            let r = odometry_pose_covariance(&p.pose, u, &self.alphas);
+            // 2.0 folds one already-mapped feature into the proposal. An
+            // unmapped one carries no pose information, so there is nothing to
+            // fold and we fall back to 1.0's motion prior for this step.
+            let anchor = (self.proposal == Proposal::MeasurementAware)
+                .then(|| z.first().and_then(|f| self.associate(p, u, f, c)))
+                .flatten();
+
+            let pose = match anchor {
+                Some(j) => {
+                    let (x, log_w) = self.propose_2_0(p, u, &r, z[0], j);
+                    p.log_w += log_w;
+                    x
+                }
+                None => sample_motion_model_odometry(u, &p.pose, &self.alphas, &mut self.rng),
+            };
+
+            for (k, f) in z.iter().enumerate() {
+                match self.associate_at(p, &pose, f, c.map(|cs| cs[k])) {
+                    Some(j) => {
+                        // 1.0 pays here; 2.0 already paid for the anchor above.
+                        if !(k == 0 && anchor.is_some()) {
+                            p.log_w += p.landmarks[j].weight_1_0(&pose, *f, &self.q).ln();
+                        }
+                        p.landmarks[j].update(&pose, *f, &self.q);
+                    }
+                    None => {
+                        p.landmarks.push(LandmarkEkf::from_first_sighting(&pose, *f, &self.q));
+                        p.log_w += self.p0.ln();
+                    }
+                }
+            }
+
+            p.pose = pose;
+            p.path.push(pose);
+        }
+        self.select()
+    }
+
+    /// FastSLAM 2.0's proposal (Derivation 4): add precisions, let the
+    /// measurement pull the mean, and return the predictive log-likelihood as
+    /// the weight increment.
+    fn propose_2_0(
+        &mut self,
+        p: &FsParticle,
+        u: &OdomDelta,
+        r: &Matrix3<f64>,
+        z: Feature,
+        j: usize,
+    ) -> (SE2, f64) {
+        let lm = &p.landmarks[j];
+        let x_hat = p.pose.apply_odom(u);
+        let (r_hat, phi_hat) = predict(&x_hat, &lm.mu);
+        let hm = landmark_jacobian(&x_hat, &lm.mu);
+        let hx = pose_jacobian(&x_hat, &lm.mu);
+
+        let qj = hm * lm.sigma * hm.transpose() + self.q;
+        let qj_inv = qj.try_inverse().unwrap();
+        let nu = Vector2::new(z.r - r_hat, wrap_angle(z.phi - phi_hat));
+
+        // Σ_x = [Hxᵀ Qj⁻¹ Hx + R⁻¹]⁻¹ — information matrices add.
+        let sigma_x = (hx.transpose() * qj_inv * hx + r.try_inverse().unwrap())
+            .try_inverse()
+            .expect("R is positive definite, so the sum is too");
+        let mu_x = Vector3::from(x_hat) + sigma_x * hx.transpose() * qj_inv * nu;
+
+        let l = sigma_x.cholesky().expect("Σ_x ≻ 0").l();
+        let noise: Vector3<f64> =
+            Vector3::from_fn(|_, _| StandardNormal.sample(&mut self.rng));
+        let sample = SE2::from_vector(mu_x + l * noise);
+
+        // The weight uses the *predictive* covariance and is evaluated at the
+        // motion mean — so it does not depend on where the sample landed.
+        let s = hx * r * hx.transpose() + qj;
+        (sample, log_mvn_pdf(&nu, &s))
+    }
+}
+```
+
+The grid variant needs one more idea. Resampling clones particles, most clones die before they ever
+write a cell, and copying a 40×30 grid per clone per step is pure waste. FastSLAM's classic answer
+was a shared balanced tree over landmarks; the idiomatic Rust answer is `Arc` plus `make_mut`,
+which gives the same asymptotic win with none of the pointer bookkeeping.
+
+```rust title="crates/ch17_fastslam/src/grid_rbpf.rs" {10-16,39-52}
+use std::sync::Arc;
+use pr_core::mapping::OccGrid;
+
+pub struct GridParticle {
+    pub pose: SE2,
+    pub path: Vec<SE2>,
+    /// Shared until written. `Arc::make_mut` performs the deep copy on the
+    /// first mutation after a clone — and only if someone else is still
+    /// reading, which after a resample is usually nobody.
+    pub map: Arc<OccGrid>,
+    pub log_w: f64,
+}
+
+impl Clone for GridParticle {
+    fn clone(&self) -> Self {
+        // O(1). The cells are not touched.
+        Self { pose: self.pose, path: self.path.clone(), map: Arc::clone(&self.map), log_w: 0.0 }
+    }
+}
+
+pub struct GridRbpf {
+    particles: Vec<GridParticle>,
+    /// K in the improved proposal: how many poses to probe around the mode.
+    k_samples: usize,
+    /// Resample below this fraction of M. Grisetti et al. use 1/2.
+    neff_threshold: f64,
+    alphas: [f64; 4],
+    angles: Vec<f64>,
+}
+
+impl GridRbpf {
+    /// One `gmapping_step`. On native builds the per-particle loop is a rayon
+    /// `par_iter_mut`; on WASM it is the same code, single-threaded, because
+    /// every particle is independent until the weights are normalized.
+    pub fn step(&mut self, u: &OdomDelta, scan: &[f64], rng: &mut Pcg64) -> RbpfReport {
+        for p in &mut self.particles {
+            let predicted = p.pose.apply_odom(u);
+            let matched = scan_match(&p.map, &predicted, scan, &self.angles);
+
+            let (pose, increment) = if matched.score - matched.seed_score > SCAN_MATCH_GAIN {
+                self.improved_proposal(p, u, matched.pose, scan, rng)
+            } else {
+                // Flat score surface: the map has nothing to say here yet, and
+                // trusting the "optimum" would be trusting numerical noise.
+                let x = sample_motion_model_odometry(u, &p.pose, &self.alphas, rng);
+                let w = log_map_match_score(&p.map, &x, scan, &self.angles);
+                (x, w)
+            };
+
+            p.pose = pose;
+            p.path.push(pose);
+            // Tempered: beams are not independent (Chapter 10), so the raw
+            // product over-counts the evidence badly enough to collapse the
+            // population on the first resample.
+            p.log_w += WEIGHT_TEMPER * increment;
+
+            // The copy happens here, or not at all.
+            Arc::make_mut(&mut p.map).integrate_scan(&pose, scan, &self.angles);
+        }
+
+        let weights = normalize_log_weights(&self.particles);
+        let neff = effective_sample_size(&weights);
+        let resampled = neff < self.neff_threshold * self.particles.len() as f64;
+        if resampled {
+            // Clones are O(1) here; the deep copies happen lazily, above.
+            self.particles = low_variance_sampler(&self.particles, &weights, rng);
+        }
+        RbpfReport { neff, resampled }
+    }
+}
+
+/// N_eff = 1 / Σ w̃². M when the weights are uniform, 1 when a single particle
+/// carries everything.
+pub fn effective_sample_size(w: &[f64]) -> f64 {
+    let s: f64 = w.iter().map(|x| x * x).sum();
+    if s > 0.0 { 1.0 / s } else { 0.0 }
+}
+```
+
+<Callout type="info">
+The widgets on this page run the TypeScript port of exactly these algorithms —
+`lib/filters/fastslam.ts` and `lib/filters/rbpf.ts`. The scan matcher in w17.1 is the same greedy
+hill climb; the proposal in w17.3 is the same information-form product; the copy-on-write grid is
+the same refcount trick with `Arc` spelled out by hand.
+</Callout>
+
+### A worked example you can check by hand
+
+Two particles, one landmark, one sighting. Everything below is arithmetic you can do on paper, and
+the numbers are pinned by the test that follows.
+
+Particle $i$ sits at the origin facing along $+x$. Its EKF for landmark $j$ says
+$\mu_j = (4, 0)$ with $\Sigma_j = \diag(0.21,\, 0.12)$. The sensor has
+$\mat{Q} = \diag(0.2^2,\, 0.05^2) = \diag(0.04,\, 0.0025)$.
+
+**Step 1 — the Jacobian.** With $\delta = (4, 0)$, $r = 4$ and $q = 16$:
+
+$$
+\mat{H}_m = \begin{bmatrix} \delta_x/r & \delta_y/r \\ -\delta_y/q & \delta_x/q \end{bmatrix}
+= \begin{bmatrix} 1 & 0 \\ 0 & 0.25 \end{bmatrix}
+$$
+
+**Step 2 — the innovation covariance.** $\mat{H}_m \Sigma_j \mat{H}_m\T = \diag(0.21,\, 0.0625 \cdot 0.12) = \diag(0.21,\, 0.0075)$, so
+
+$$
+\mat{S} = \mat{H}_m \Sigma_j \mat{H}_m\T + \mat{Q} = \diag(0.25,\; 0.01)
+$$
+
+Bearing uncertainty is dominated by the sensor, range uncertainty by the map — read straight off the
+two terms.
+
+**Step 3 — the normalizer.** $|2\pi\mat{S}|^{1/2} = 2\pi\sqrt{0.25 \cdot 0.01} = 2\pi (0.05) = 0.31416$,
+so the leading factor is $1/0.31416 = 3.1831$.
+
+**Step 4 — the weights.** Particle 1 gets $z = (4.1,\, 0.05)$, hence $\boldsymbol{\nu}_1 = (0.1,\, 0.05)$:
+
+$$
+\boldsymbol{\nu}_1\T \mat{S}^{-1} \boldsymbol{\nu}_1 = \frac{0.01}{0.25} + \frac{0.0025}{0.01} = 0.04 + 0.25 = 0.29
+\quad\Longrightarrow\quad
+w_1 = 3.1831\, e^{-0.145} = 2.7534
+$$
+
+Particle 2 gets $z = (4.3,\, 0.15)$, hence $\boldsymbol{\nu}_2 = (0.3,\, 0.15)$ — exactly three times
+as wrong:
+
+$$
+\boldsymbol{\nu}_2\T \mat{S}^{-1} \boldsymbol{\nu}_2 = 0.36 + 2.25 = 2.61
+\quad\Longrightarrow\quad
+w_2 = 3.1831\, e^{-1.305} = 0.8632
+$$
+
+**Step 5 — normalize, and check the resampling rule.** $\tilde w = (0.7613,\, 0.2387)$, so
+
+$$
+N_{\mathrm{eff}} = \frac{1}{0.7613^2 + 0.2387^2} = \frac{1}{0.6367} = 1.571
+$$
+
+Three lessons in one number. Tripling the innovation cost particle 2 a factor of $3.19$ in weight,
+not a factor of 3 — the exponential is unforgiving, and it is unforgiving in the *bearing* channel
+(which contributed 2.25 of the 2.61) because that is where $\mat{S}$ is small. And with
+$N_{\mathrm{eff}} = 1.571 > M/2 = 1$, gmapping's rule says **do not resample**: a 3:1 weight ratio
+between two particles is not yet degeneracy.
+
+```rust title="crates/ch17_fastslam/src/landmark_ekf.rs (tests)"
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn worked_example_ch17_two_universes() {
+        let q = Matrix2::new(0.04, 0.0, 0.0, 0.0025);
+        let lm = LandmarkEkf {
+            mu: Vector2::new(4.0, 0.0),
+            sigma: Matrix2::new(0.21, 0.0, 0.0, 0.12),
+            hits: 1,
+        };
+        let x = SE2::new(0.0, 0.0, 0.0);
+
+        let (_, s) = lm.innovation(&x, Feature { r: 4.1, phi: 0.05 }, &q);
+        assert_relative_eq!(s[(0, 0)], 0.25, epsilon = 1e-12);
+        assert_relative_eq!(s[(1, 1)], 0.01, epsilon = 1e-12);
+        assert_relative_eq!(s[(0, 1)], 0.0, epsilon = 1e-12);
+
+        let w1 = lm.weight_1_0(&x, Feature { r: 4.1, phi: 0.05 }, &q);
+        let w2 = lm.weight_1_0(&x, Feature { r: 4.3, phi: 0.15 }, &q);
+        assert_relative_eq!(w1, 2.753_451_476_665, epsilon = 1e-9);
+        assert_relative_eq!(w2, 0.863_168_987_665, epsilon = 1e-9);
+
+        // Two particles, a 3.19:1 weight ratio — and still above the M/2 line.
+        let total = w1 + w2;
+        let normalized = [w1 / total, w2 / total];
+        assert_relative_eq!(normalized[0], 0.761_332_714_843, epsilon = 1e-9);
+        assert_relative_eq!(effective_sample_size(&normalized), 1.570_870_837_6, epsilon = 1e-9);
+        assert!(effective_sample_size(&normalized) > normalized.len() as f64 / 2.0);
+    }
+}
+```
+
+The TypeScript port reproduces the same five digits, from the same `landmarkInnovation` the widgets
+call. If the prose and the code ever disagree, the test settles it.
+
+## Putting it together
+
+### What the numbers say
+
+Here is the Apartment lap from w17.1 — out along the corridor, turn, and back over ground already
+mapped — run to completion under both proposals, at five particle counts, on seeds 3, 42, 11 and 7.
+Numbers are the RMS position error of the highest-weight particle over the whole lap, in metres.
+Raw odometry on the same log has an RMS error of **3.37 m**.
+
+| $M$ | measurement-aware (median / worst) | motion prior (median / worst) |
+|---|---|---|
+| 4 | 0.36 / 1.06 | 1.22 / 2.27 |
+| 8 | 0.20 / 0.73 | 0.79 / 1.34 |
+| 16 | 0.18 / 0.26 | 0.25 / 0.30 |
+| 24 | 0.16 / 0.25 | 0.33 / 0.56 |
+| 40 | 0.17 / **3.89** | 0.26 / 0.44 |
+
+Three readings, in order of how much they matter.
+
+**The proposal is worth particles.** On the median, eight measurement-aware particles match sixteen
+motion-prior ones, and four of them beat eight. This is Grisetti et al.'s headline claim reproduced
+in a browser: the reason gmapping could map a building with thirty particles when FastSLAM 1.0
+needed hundreds is not a better resampler, it is that the scan matcher tells each particle roughly
+where it is *before* the particle has to guess. Note the median-versus-worst columns, though — at
+small $M$ a good proposal lowers the typical error without doing much for the tail, because the tail
+is dominated by runs where every particle was wrong together.
+
+**More particles is not monotone.** At $M = 40$ one of the four seeds diverged to 3.9 m. Nothing
+about a large $M$ prevents every particle from being descended from one universe that mapped a
+doorway in the wrong place; once the map is wrong and self-consistent, the scan matcher agrees with
+it enthusiastically. Particle count buys coverage of the *proposal's* uncertainty, not insurance
+against a confidently wrong map.
+
+**The floor is the grid.** Every configuration plateaus near 0.16 m, which is about half a cell.
+That is not a coincidence and not a bug: the map-match score cannot distinguish poses that put the
+scan endpoints in the same cells. If you want centimetres, you need Chapter 16's continuous
+correspondences, not more universes.
+
+### The road not taken: EM mapping
+
+<Callout type="warn">
+**A historical aside.** The 1999–2000 draft that this book modernizes does not contain FastSLAM —
+it had not been invented. Its Chapter 13 solved the same problem a different way: **EM mapping**.
+The E-step ran forward–backward smoothing over the robot's poses given a map; the M-step chose the
+maximum-likelihood map given those smoothed poses; iterate to convergence.
+
+It was the first system to treat correspondence as a genuine latent variable rather than a decision,
+and that idea outlived it. But it was offline, it needed several passes over the whole log, and it
+converged to local optima with no way to tell you it had. Online Rao-Blackwellization beat it in the
+one dimension robots care about — you can run it while the robot is driving. Its E-step, though,
+came back: smoothing over a whole trajectory is exactly what
+[Chapter 15](/chapters/ch15-factor-graphs) does, only with sparse least squares instead of
+forward–backward.
+</Callout>
+
+### The verdict, in 2026
+
+It would be dishonest to end this chapter without saying what happened next.
+
+**gmapping lost.** In production 2-D SLAM the default is a pose graph — Chapter 16's architecture,
+shipped as `slam_toolbox` and its relatives. The reasons are not subtle. A pose graph stores one map
+and $O(T)$ poses; an RBPF stores $M$ maps, and while copy-on-write hides much of that, a large
+building at 5 cm resolution times thirty particles is real memory. A pose graph can revisit and
+*correct* an old decision when a loop closes; an RBPF can only fail to have deleted the universe that
+was right. And a pose graph gives you lifelong mapping — load yesterday's graph, add today's — where
+a particle filter's ancestry is gone the moment it is resampled away.
+
+**Rao-Blackwellization won.** The theorem is permanent, and it is everywhere: sample the part that is
+genuinely nonlinear, integrate the rest. [Chapter 18](/chapters/ch18-visual-slam) marginalizes
+landmarks out of a visual-inertial window rather than sampling them.
+[Chapter 22](/chapters/ch22-pomdps) builds POMCP on particles that carry world states because the
+value function given a state is computable. [Chapter 23](/chapters/ch23-mppi) samples control
+sequences and integrates the dynamics analytically along each one. Every one of those is the same
+inequality from Derivation 2.
+
+**Per-particle data association survived too**, and it is still the cleanest answer to genuine
+ambiguity. A corridor of identical doors, a symmetric building, a warehouse of identical racks: a
+single-hypothesis front end must guess, and a pose graph with a wrong loop closure produces a map
+that is confidently, catastrophically folded. Modern systems fight this with robust kernels and
+switchable constraints, which are ways of *softening* a commitment. FastSLAM never had to commit.
+That is why multi-hypothesis loop closing keeps being reinvented, and why the ideas in this chapter
+are worth knowing even though you will probably ship the pose graph.
+
+## Exercises
+
+<Exercises>
+  <Exercise level="F" difficulty={2} title="Prove the factorization, and break it">
+    Reproduce the induction of Derivation 1 with every normalizer tracked explicitly (the sketch
+    quietly absorbs one). Then construct a measurement model that observes *two* landmarks in a
+    single reading — say a stereo pair whose baseline is known — and show exactly which line of the
+    proof fails and what the map posterior factors into instead. Finally: a laser scan observes
+    hundreds of grid cells at once. What is this chapter's grid-based filter implicitly assuming, and
+    which chapter already told you that assumption is false?
+  </Exercise>
+
+  <Exercise level="F" difficulty={2} title="The variance you did not have to pay">
+    Starting from the law of total variance, show that the Rao-Blackwellized estimator's variance
+    deficit is exactly $\E[\Var[\varphi \mid X]]$. Then estimate that quantity for landmark SLAM: if
+    each of $N$ landmarks has posterior covariance $\Sigma_j$ and you sampled them instead of
+    integrating them, roughly how does the weight variance scale with $N$? Use your answer to explain
+    why the naive $(3+2N)$-dimensional particle filter of the opening section fails at $N = 24$ rather than at
+    $N = 2$.
+  </Exercise>
+
+  <Exercise level="F" difficulty={3} title="Derive the 2.0 proposal for range–bearing">
+    Fill in every step of Derivation 4 for the range–bearing model: write $\mat{H}_x$ explicitly,
+    complete the square in $x_t$, and obtain $(\mu_x, \Sigma_x)$. Then answer two questions the
+    algebra makes easy. (a) What happens to $\Sigma_x$ as $\mat{Q} \to 0$ with a single landmark
+    observed — is the pose fully determined, and if not, which direction is left free? (b) What
+    happens when two landmarks are observed at once, and why does FastSLAM 2.0 as published only use
+    one of them in the proposal?
+  </Exercise>
+
+  <Exercise level="C" difficulty={1} title="Predict the depletion, then measure it">
+    In w17.3, before touching anything, predict what happens to the "samples in 90%" counter for
+    FastSLAM 1.0 when you halve $\sigma_r$ — will it halve, stay flat, or something else? Now do it,
+    and read the counter. Then find the value of $\sigma_r$ at which 1.0's $N_{\mathrm{eff}}/M$
+    stops falling, and explain what is limiting it there. (Hint: what else is in $\mat{Q}_j$ besides
+    $\mat{Q}$?)
+  </Exercise>
+
+  <Exercise level="C" difficulty={2} title="Find the smallest sufficient universe count">
+    In w17.1, turn the measurement-aware proposal off. Find the smallest $M$ that completes the lap
+    with the tiles still recognizable as the Apartment, on at least four of five re-rolled seeds.
+    Now turn the proposal back on and repeat. Report both numbers and the ratio. Then explain, using
+    w17.2, why raising $M$ further stops helping — and identify, from the lineage gauge, the moment
+    at which extra particles stopped being independent hypotheses.
+  </Exercise>
+
+  <Exercise level="P" difficulty={2} title="Per-particle data association in the corridor of identical doors">
+    Implement `FastSLAM_unknown_correspondence` (the second algorithm box) against the landmark
+    filter: Mahalanobis gating at $\chi^2_{2,0.99}$, maximum-likelihood association, and
+    new-landmark creation below $p_0$. Then build the experiment the chapter keeps promising: a
+    corridor with six identical doors spaced identically, entered at an unknown offset. Show that
+    the particle population holds multiple association hypotheses simultaneously, and that the
+    Chapter 11 EKF on the same log commits to one and never recovers. Report the fraction of seeds
+    each approach gets right.
+  </Exercise>
+
+  <Exercise level="P" difficulty={3} title="Copy-on-write versus the classic tree">
+    Replace `Arc::make_mut` with FastSLAM's original data structure: a balanced binary tree over
+    landmarks, shared between particles, where an update creates $O(\log N)$ new nodes and shares the
+    rest. Benchmark both against $M \in \{10, 100, 1000\}$ and $N \in \{50, 500, 5000\}$, on native
+    and on WASM. Report where the constant factors cross, and how much of the difference is
+    allocation rather than copying. Then argue whether the tree is worth it for the *grid* variant,
+    where the shared object is 1200 cells rather than $N$ small structs.
+  </Exercise>
+</Exercises>
+
+## References
+
+<References>
+  <Reference
+    id="montemerlo2002"
+    authors="Montemerlo, M., Thrun, S., Koller, D., and Wegbreit, B."
+    year={2002}
+    title="FastSLAM: A Factored Solution to the Simultaneous Localization and Mapping Problem"
+    venue="Proceedings of AAAI-02, Edmonton, 593–598"
+    url="https://aaai.org/papers/00593-aaai02-089-fastslam-a-factored-solution-to-the-simultaneous-localization-and-mapping-problem/"
+    note="The paper this chapter's epigraph and its 1.0 weight derivation come from. Read it for the factorization argument and the shared-tree data structure that copy-on-write replaces here."
+  />
+  <Reference
+    id="montemerlo2003"
+    authors="Montemerlo, M., Thrun, S., Koller, D., and Wegbreit, B."
+    year={2003}
+    title="FastSLAM 2.0: An Improved Particle Filtering Algorithm for Simultaneous Localization and Mapping that Provably Converges"
+    venue="Proceedings of IJCAI-03, Acapulco, 1151–1156"
+    url="https://www.ijcai.org/Proceedings/03/Papers/165.pdf"
+    note="The measurement-aware proposal of Derivation 4, plus the convergence proof for the linear-Gaussian case that the title advertises."
+  />
+  <Reference
+    id="doucet2000rb"
+    authors="Doucet, A., de Freitas, N., Murphy, K., and Russell, S."
+    year={2000}
+    title="Rao-Blackwellised Particle Filtering for Dynamic Bayesian Networks"
+    venue="Proceedings of the 16th Conference on Uncertainty in Artificial Intelligence (UAI), 176–183"
+    url="https://arxiv.org/abs/1301.3853"
+    note="Where the architecture of this chapter comes from, two years before anyone applied it to SLAM. Section 3 has the marginalized-weight result quoted in Derivation 2."
+  />
+  <Reference
+    id="doucet2000smc"
+    authors="Doucet, A., Godsill, S., and Andrieu, C."
+    year={2000}
+    title="On Sequential Monte Carlo Sampling Methods for Bayesian Filtering"
+    venue="Statistics and Computing 10(3), 197–208"
+    doi="10.1023/A:1008935410038"
+    note="The optimal-proposal theorem that makes FastSLAM 2.0 more than a heuristic, and the source of the N_eff resampling criterion used throughout."
+  />
+  <Reference
+    id="grisetti2007"
+    authors="Grisetti, G., Stachniss, C., and Burgard, W."
+    year={2007}
+    title="Improved Techniques for Grid Mapping with Rao-Blackwellized Particle Filters"
+    venue="IEEE Transactions on Robotics 23(1), 34–46"
+    doi="10.1109/TRO.2006.889486"
+    note="gmapping. The six-step recipe in this chapter is this paper: scan-matched proposals, the K-sample Gaussian fit, and selective resampling on N_eff. Their parameter table is a good place to start when tuning your own."
+  />
+  <Reference
+    id="kok2024"
+    authors="Kok, M., Solin, A., and Schön, T. B."
+    year={2024}
+    title="Rao-Blackwellized Particle Smoothing for Simultaneous Localization and Mapping"
+    venue="Data-Centric Engineering 5, e15"
+    doi="10.1017/dce.2024.12"
+    note="The modern continuation: the same factorization run as a smoother rather than a filter, for magnetic-field and radio maps. Shows the theorem is alive well outside laser SLAM."
+  />
+  <Reference
+    id="macenski2021"
+    authors="Macenski, S. and Jambrecic, I."
+    year={2021}
+    title="SLAM Toolbox: SLAM for the Dynamic World"
+    venue="Journal of Open Source Software 6(61), 2783"
+    doi="10.21105/joss.02783"
+    note="What replaced gmapping in production 2-D SLAM, and the concrete reference for the verdict at the end of this chapter: pose graphs, lifelong mapping, serialized maps you can reload."
+  />
+  <Reference
+    id="slamhandbook"
+    authors="Carlone, L., Kim, A., Barfoot, T. D., Cremers, D., and Dellaert, F. (eds.)"
+    year={2026}
+    title="SLAM Handbook: From Localization and Mapping to Spatial Intelligence"
+    venue="Cambridge University Press (public pre-release, 2025)"
+    url="https://github.com/SLAM-Handbook-contributors/slam-handbook-public-release"
+    note="The current state-of-the-field survey. Useful here for situating filtering-era SLAM against what the field actually builds now, and for the pointers into robust and multi-hypothesis loop closing."
+  />
+</References>

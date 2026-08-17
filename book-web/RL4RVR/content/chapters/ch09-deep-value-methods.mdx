@@ -1,0 +1,301 @@
+---
+title: 'Deep Value-Based Methods: DQN & Descendants'
+chapter: 9
+quote:
+  text: We demonstrate that a single architecture can successfully learn control policies in a range of different environments with only very minimal prior knowledge, receiving only the pixels and the game score as inputs.
+  author: Volodymyr Mnih and colleagues
+  affiliation: DeepMind
+  source: Human-level control through deep reinforcement learning, Nature 2015
+---
+
+<ChapterOverview
+  summary="Chapter 8 diagnosed the deadly triad and showed it can make learning diverge. Deep Q-networks charge straight into all three ingredients — a neural network, off-policy data, and bootstrapped targets — and work anyway. This chapter is about the two pieces of engineering that make that possible, why each is a direct response to a specific failure mode, and how the family that grew from DQN systematically removed its remaining flaws. It closes on where value-based methods belong in robotics, which is narrower than their fame suggests."
+  outcomes={[
+    'Explain experience replay as a fix for correlated updates, and target networks as a fix for the moving-target problem',
+    'Derive the Double DQN target and connect it to Chapter 6’s maximization bias',
+    'Explain the dueling architecture’s decomposition and when it helps',
+    'Implement prioritized replay and state why importance-sampling weights are required',
+    'State the distributional Bellman operator and explain what C51 learns that DQN does not',
+    'Say precisely where value-based methods fit in robotics, and where they do not',
+  ]}
+  foundation="The DQN objective, replay and target networks analyzed as variance and stability surgery, Double DQN, dueling decomposition, prioritized replay with bias correction, and the distributional Bellman operator."
+  conceptual="Replay and target networks switchable live, each producing its own characteristic failure signature in the training curve."
+  practical="A full DQN in burn with a sum-tree prioritized replay buffer, trained on visual-gridworld Rusty."
+/>
+
+## 9.1 From Q-table to Q-network
+
+The move is small to write and large in consequence. Replace $Q(s,a)$ — a table — with $Q(s,a;\theta)$, a neural network, and minimize the squared TD error:
+
+$$L(\theta) = \mathbb{E}\left[\left(R_{t+1} + \gamma \max_{a'} Q(S_{t+1}, a'; \theta) - Q(S_t, A_t; \theta)\right)^2\right].$$
+
+Then run semi-gradient descent, exactly as in Chapter 8: differentiate the prediction, not the target.
+
+Done naively, this fails reliably. It has all three triad ingredients and two additional problems that Chapter 8's tabular-adjacent analysis did not surface.
+
+**Correlated samples.** Gradient methods assume roughly independent samples. Consecutive transitions from a robot are anything but: at 100 Hz, successive states differ by a centimetre. A batch of 32 consecutive transitions carries perhaps two transitions' worth of information, and the gradient is systematically biased toward whatever the robot happens to be doing right now.
+
+**A target that runs away.** The target $R + \gamma \max_{a'} Q(S', a'; \theta)$ depends on $\theta$ — the very parameters being updated. Every gradient step moves the target. It is regression where the labels change each time you fit them, and the resulting dynamics oscillate or diverge.
+
+## 9.2 The two pieces of surgery
+
+**Experience replay.** Store transitions $(s,a,r,s')$ in a large circular buffer and train on uniformly sampled minibatches. Three benefits follow at once: samples within a batch are decorrelated, each expensive transition is reused many times (sample efficiency, which robots care about above all else), and the update distribution is smoothed across the whole recent history rather than concentrated wherever the policy currently is — directly attacking the distribution mismatch that Chapter 8 identified as the triad's fuel.
+
+**Target networks.** Keep a second, frozen copy $\theta^-$ of the parameters, used only to compute targets, and sync it every $C$ steps:
+
+$$L(\theta) = \mathbb{E}\left[\left(R + \gamma \max_{a'} Q(S', a'; \theta^-) - Q(S, A; \theta)\right)^2\right].$$
+
+Between syncs the target is *constant*, so each interval is honest supervised regression toward a fixed objective. This is fitted Q-iteration in disguise, and it is where the stability comes from: the feedback loop that Chapter 8 diagnosed still exists, but its gain is now throttled by $C$.
+
+<ReplayBuffer />
+
+Switch each off in turn and the failure signatures are distinct. Without replay the estimate rattles — correlated batches. Without a target network it oscillates and can run away — the moving target. That the two failures look different is useful diagnostic knowledge when your own training goes wrong.
+
+<Callout variant="note" title="Engineering, not theory">
+Neither fix comes with a convergence proof. They do not remove any triad ingredient — DQN still approximates, bootstraps, and learns off-policy. What they do is reduce the gain of the divergence loop below one for problems people actually care about.
+
+It is worth being honest about this, because it sets expectations correctly for your own robot: DQN can still diverge, and when it does, the first two things to check are buffer size and target sync interval.
+</Callout>
+
+## 9.3 The family that fixed DQN's flaws
+
+**Double DQN.** Chapter 6 proved that $\max$ over noisy estimates overestimates. DQN's target has exactly that form, so DQN systematically overestimates action values. The fix is Chapter 6's double estimator, and it is nearly free because a second network already exists:
+
+$$Y^{\text{DoubleDQN}} = R + \gamma\, Q\big(S', \arg\max_{a'} Q(S', a'; \theta);\, \theta^-\big).$$
+
+The online network *selects*; the target network *evaluates*. One line of code, and it measurably improves both value accuracy and final policy quality.
+
+**Dueling networks.** Split the head into a state-value stream and an advantage stream:
+
+$$Q(s,a) = V(s) + \left(A(s,a) - \frac{1}{|\mathcal{A}|}\sum_{a'} A(s,a')\right).$$
+
+The subtraction makes the decomposition identifiable — without it, $V$ and $A$ could shift by any constant. The benefit is that $V(s)$ is learned from every transition regardless of which action was taken, which matters greatly in states where the action barely matters. For a robot, that is most states: while driving down an empty corridor, the choice of small steering correction is nearly irrelevant, but the corridor's value is not.
+
+**Prioritized replay.** Sample transitions in proportion to their TD error, $P(i) \propto |\delta_i|^\omega$, so surprising transitions are revisited more. This is Chapter 7's prioritized sweeping applied to a replay buffer. Because it changes the sampling distribution, the estimate becomes biased, and the bias must be corrected with importance-sampling weights $w_i \propto (1/(N \cdot P(i)))^\beta$, with $\beta$ annealed to 1 over training.
+
+**Rainbow** combines Double, dueling, prioritized replay, multi-step returns, distributional values and noisy exploration nets. The ablation is the interesting part: multi-step returns and prioritized replay contribute most, and the components are largely complementary rather than redundant.
+
+## 9.4 Distributional RL: learning the whole distribution
+
+A genuinely different idea, and the most robotics-relevant of the extensions.
+
+Instead of learning $\mathbb{E}[G_t]$, learn the **distribution** of returns $Z(s,a)$. It satisfies its own recursion — the distributional Bellman equation, where $\stackrel{D}{=}$ denotes equality in distribution:
+
+$$Z(s,a) \stackrel{D}{=} R + \gamma Z(S', A').$$
+
+C51 represents $Z$ as a categorical distribution over 51 fixed atoms, applies the Bellman operator (which shifts and scales the support), projects back onto the fixed atoms, and minimizes cross-entropy.
+
+<Callout variant="insight" title="Why a robot might want the whole distribution">
+Two policies with identical expected return can be wildly different in practice. One reaches the goal in 10 seconds every time; the other reaches it in 5 seconds usually and falls down the stairs occasionally. The mean cannot tell them apart. The distribution can.
+
+That opens the door to **risk-sensitive control**: optimize a conditional value at risk rather than the mean, and the policy becomes conservative in precisely the situations where variance is dangerous. For a robot that can break itself or its surroundings, this is not a refinement — it is often the right objective, and Chapter 14 returns to it under constrained MDPs.
+
+Distributional methods also just learn better, even when only the mean is used. The leading explanation is that predicting a richer target is a better auxiliary learning signal for the representation.
+</Callout>
+
+<RustSnippet title="rl-deep/src/dqn.rs" caption="A Double DQN training step in burn. Note detach() on the target — that is the semi-gradient of Chapter 8, expressed in code: gradients flow through the prediction only.">
+
+```rust
+use burn::prelude::*;
+use burn::optim::{GradientsParams, Optimizer};
+
+pub struct Dqn<B: Backend> {
+    online: QNetwork<B>,
+    target: QNetwork<B>,
+    gamma: f32,
+    sync_every: usize,
+    steps: usize,
+}
+
+impl<B: AutodiffBackend> Dqn<B> {
+    pub fn train_step<O: Optimizer<QNetwork<B>, B>>(
+        &mut self,
+        batch: &Batch<B>,
+        optim: &mut O,
+        lr: f64,
+    ) -> f32 {
+        // Q(s, a) for the actions actually taken.
+        let q_pred = self
+            .online
+            .forward(batch.states.clone())
+            .gather(1, batch.actions.clone().unsqueeze_dim(1))
+            .squeeze(1);
+
+        // Double DQN: the ONLINE net picks the argmax, the TARGET net scores it.
+        // This is Chapter 6's double estimator, reusing a network we already have.
+        let next_actions = self
+            .online
+            .forward(batch.next_states.clone())
+            .argmax(1);
+
+        let next_q = self
+            .target
+            .forward(batch.next_states.clone())
+            .gather(1, next_actions)
+            .squeeze(1);
+
+        // detach(): no gradient through the target — the semi-gradient of Ch 8.
+        let target = batch
+            .rewards
+            .clone()
+            .add(next_q.mul_scalar(self.gamma).mul(batch.not_done.clone()))
+            .detach();
+
+        // Huber loss: bounded gradients keep one outlier transition from
+        // wrecking the network, which matters when rewards are unnormalized.
+        let loss = huber(q_pred - target, 1.0).mean();
+
+        let grads = GradientsParams::from_grads(loss.backward(), &self.online);
+        self.online = optim.step(lr, self.online.clone(), grads);
+
+        self.steps += 1;
+        if self.steps % self.sync_every == 0 {
+            self.target = self.online.clone(); // freeze a fresh copy
+        }
+        loss.into_scalar().elem()
+    }
+}
+```
+
+</RustSnippet>
+
+## 9.5 Where value-based methods belong in robotics
+
+Honesty is due here, because DQN's fame does not match its robotics footprint.
+
+**The hard constraint is discrete actions.** Computing $\max_{a'} Q(s',a')$ requires enumerating actions. A 7-DoF arm's torque vector is continuous; discretizing each joint into even 5 levels gives $5^7 = 78{,}125$ actions per step, and the max is now the bottleneck. This is why Chapter 11 exists.
+
+Where value-based methods genuinely fit is **mid- and high-level discrete decisions**: which grasp to attempt from a set of candidates, which skill to invoke next, which waypoint to pursue. Tang's survey finds exactly this pattern — off-policy value methods appear in manipulation papers with discrete or discretized action spaces, while continuous control belongs to policy-gradient and actor–critic methods.
+
+The grasp-selection case is the clearest, and Chapter 20 builds it: a network scores candidate grasps from a depth image, and the argmax over a few hundred candidates is both tractable and exactly the right computation.
+
+## 9.6 Chapter bridge
+
+We put a network in the value function and survived the deadly triad through two pieces of engineering — replay to decorrelate and broaden the update distribution, target networks to throttle the feedback loop — then watched a decade of refinements remove the remaining flaws one at a time.
+
+But the $\max$ over actions is a wall. Robots command continuous torques and velocities, and no amount of discretization makes that comfortable.
+
+Chapter 10 changes the object being learned. Instead of a value function from which a policy is extracted, parameterize the **policy directly** and ascend the gradient of expected return. The policy gradient theorem makes that possible, continuous actions become natural rather than awkward, and the algorithm that results — PPO — is the one behind more real-world robot RL successes than every method in this chapter combined.
+
+<Exercises items={[
+  {
+    layer: 'F',
+    title: 'Replay as decorrelation',
+    difficulty: 2,
+    body: 'Model consecutive states as an AR(1) process with correlation ρ. Compute the effective sample size of a batch of B consecutive transitions versus B uniformly sampled from a buffer of size N. At ρ = 0.99, how large must N be for the batch to be worth its nominal size?',
+  },
+  {
+    layer: 'F',
+    title: 'Target networks as fitted Q-iteration',
+    difficulty: 2,
+    body: 'Show that DQN with sync interval C is approximately fitted Q-iteration with C gradient steps per iteration. What does the contraction argument from Chapter 4 say about this, and where exactly does the argument break for a neural network?',
+  },
+  {
+    layer: 'F',
+    title: 'Double DQN target',
+    difficulty: 2,
+    body: 'Write both the DQN and Double DQN targets and prove that they coincide when the two networks are identical. Then explain why they diverge in exactly the direction that removes overestimation.',
+  },
+  {
+    layer: 'F',
+    title: 'The dueling identifiability problem',
+    difficulty: 2,
+    body: 'Show that Q = V + A is unidentifiable without a constraint. Compare subtracting the mean advantage against subtracting the max, and say which gives more stable optimization and why.',
+  },
+  {
+    layer: 'C',
+    title: 'Two distinct failures',
+    difficulty: 1,
+    body: 'Using the replay/target widget, produce and describe the characteristic curve for (a) no replay and (b) no target network. Write a two-sentence diagnostic guide you could use on your own training runs.',
+  },
+  {
+    layer: 'C',
+    title: 'Sync interval sweet spot',
+    difficulty: 2,
+    body: 'Sweep the target sync interval from 1 to 500. Both extremes are bad. Explain each failure mode and identify roughly where the interior optimum sits.',
+  },
+  {
+    layer: 'P',
+    title: 'Sum-tree prioritized replay',
+    difficulty: 3,
+    body: 'Implement proportional prioritized replay with a sum-tree for O(log N) sampling and updates. Verify the importance-sampling weights correct the bias by comparing final value accuracy against uniform replay on a task with rare high-error transitions.',
+  },
+  {
+    layer: 'P',
+    title: 'Measure the overestimation',
+    difficulty: 3,
+    body: 'Train DQN and Double DQN on visual-gridworld Rusty, logging max_a Q(s,a) against the true value computed by Chapter 5’s value iteration on the underlying MDP. Plot both. The single-estimator version should sit visibly above the truth throughout training.',
+  },
+]} />
+
+## References
+
+<References items={[
+  {
+    key: 'sutton2018',
+    authors: 'Sutton, R. S. & Barto, A. G.',
+    year: 2018,
+    title: 'Reinforcement Learning: An Introduction',
+    venue: 'MIT Press, 2nd edition',
+    baseline: true,
+    note: 'Chapters 9–11 supply the approximation theory this chapter engineers around; §16.5 discusses DQN as a case study.',
+  },
+  {
+    key: 'tang2024',
+    authors: 'Tang, C. et al.',
+    year: 2024,
+    title: 'Deep Reinforcement Learning for Robotics: A Survey of Real-World Successes',
+    venue: 'Annual Review of Control, Robotics, and Autonomous Systems',
+    url: 'https://arxiv.org/abs/2408.03539',
+    baseline: true,
+    note: '§3.3 policy-optimization axis — the empirical evidence for where off-policy value methods actually appear in successful robot systems.',
+  },
+  {
+    key: 'mnih2015',
+    authors: 'Mnih, V. et al.',
+    year: 2015,
+    title: 'Human-level control through deep reinforcement learning',
+    venue: 'Nature 518',
+    note: 'The DQN paper: replay, target networks, and the Atari results that started the deep RL era.',
+  },
+  {
+    key: 'vanhasselt2016',
+    authors: 'van Hasselt, H., Guez, A. & Silver, D.',
+    year: 2016,
+    title: 'Deep Reinforcement Learning with Double Q-learning',
+    venue: 'AAAI 2016',
+    note: 'Chapter 6’s double estimator, applied to DQN at almost no cost.',
+  },
+  {
+    key: 'wang2016',
+    authors: 'Wang, Z., Schaul, T., Hessel, M., van Hasselt, H., Lanctot, M. & de Freitas, N.',
+    year: 2016,
+    title: 'Dueling Network Architectures for Deep Reinforcement Learning',
+    venue: 'ICML 2016',
+    note: 'The V/A decomposition and its identifiability constraint.',
+  },
+  {
+    key: 'schaul2016',
+    authors: 'Schaul, T., Quan, J., Antonoglou, I. & Silver, D.',
+    year: 2016,
+    title: 'Prioritized Experience Replay',
+    venue: 'ICLR 2016',
+    note: 'Prioritized sampling with importance-sampling correction, and the sum-tree implementation.',
+  },
+  {
+    key: 'hessel2018',
+    authors: 'Hessel, M. et al.',
+    year: 2018,
+    title: 'Rainbow: Combining Improvements in Deep Reinforcement Learning',
+    venue: 'AAAI 2018',
+    note: 'The combination, and — more useful — the ablation showing which components actually carry the weight.',
+  },
+  {
+    key: 'bellemare2017',
+    authors: 'Bellemare, M. G., Dabney, W. & Munos, R.',
+    year: 2017,
+    title: 'A Distributional Perspective on Reinforcement Learning',
+    venue: 'ICML 2017',
+    note: 'C51 and the distributional Bellman operator, including its contraction in the Wasserstein metric.',
+  },
+]} />

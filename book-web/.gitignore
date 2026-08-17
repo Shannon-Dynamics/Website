@@ -1,0 +1,9 @@
+# Build artefacts for the two interactive books. The site's deploy workflow
+# publishes the repository root as-is (`publish_dir: .`), so anything committed
+# under here ships to gh-pages — node_modules very much included.
+node_modules/
+.next/
+out/
+.source/
+*.tsbuildinfo
+.env*.local
