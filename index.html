@@ -1475,7 +1475,25 @@
            description, capabilities and CTA. Panels are stacked in one fixed
            box so the section never reflows as you sweep across the row.
            ═══════════════════════════════════════════════════════════════════ */
-        .ps-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+        /* category toggle */
+        .ps-cat-toggle {
+            display: flex; gap: 6px; margin-bottom: 22px;
+        }
+        .ps-cat-btn {
+            padding: 7px 22px; border-radius: 999px;
+            border: 1px solid rgba(16,24,27,.15); background: transparent;
+            font-family: "Montserrat", sans-serif; font-size: 12.5px;
+            font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+            color: rgba(16,24,27,.45); cursor: pointer; transition: all .25s;
+        }
+        .ps-cat-btn[aria-selected="true"] {
+            background: #10181b; color: #fff; border-color: #10181b;
+        }
+        .ps-cat-btn[aria-selected="false"]:hover {
+            border-color: rgba(76,126,255,.5); color: #4C7EFF;
+        }
+        .ps-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
+            transition: grid-template-columns .3s; }
         .ps-card {
             position: relative; text-align: left; min-height: 158px;
             display: flex; flex-direction: column; justify-content: space-between;
@@ -1836,7 +1854,7 @@
                             <b>Publications</b><small>Papers, preprints and field notes</small>
                         </a>
                         <a class="nav-sub-link" href="library-books.html" role="menuitem">
-                            <b>Books</b><small>Long-form from Shannon Press</small>
+                            <b>Books</b><small>Technical books and guides</small>
                         </a>
                         <a class="nav-sub-link" href="library-open-source.html" role="menuitem">
                             <b>Open Source</b><small>Repositories, guides and API reference</small>
