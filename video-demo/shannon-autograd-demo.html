@@ -1,0 +1,598 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shannon_autograd — Product Demo Reel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   shannon_autograd — GUIDED PRODUCT REEL
+   Differentiable GPU computing SDK in Rust.
+   Chapters: The kernel → The gradient → The proof
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --us:1;
+  --bg:#0d1420; --panel:#121b29; --panel2:#16202f; --raise:#1b2739;
+  --border:#24334a; --border2:#2e3f5a;
+  --fg:#e6edf5; --mfg:#8496ad; --dim:#5f7089;
+  --rust:#EA6A2B; --amber:#F2C14E; --blue:#58A6E8; --green:#4ADE80;
+  --red:#F87171; --violet:#A78BFA;
+  --kw:#FF7B72; --fnc:#D2A8FF; --typ:#FFA657; --str:#A5D6FF; --num:#79C0FF;
+  --cmt:#7d8ea3; --pun:#c9d1d9;
+  --font:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1); --ease-out:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#080d15;height:100%;-webkit-font-smoothing:antialiased}
+body{font-family:var(--font);display:flex;flex-direction:column;align-items:center;
+     justify-content:center;min-height:100vh;padding:24px;gap:16px}
+
+/* ── Stage ─────────────────────────────────────────────────────── */
+#wrap{width:100%;max-width:1440px;aspect-ratio:16/9;position:relative;border-radius:14px;
+      overflow:hidden;background:#080d15;
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.07)}
+#root{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:top left;
+      background:#080d15;overflow:hidden}
+
+/* ── Window frame ──────────────────────────────────────────────── */
+#titlebar{height:38px;background:var(--panel);border-bottom:1px solid var(--border);
+          display:flex;align-items:center;gap:14px;padding:0 14px}
+.lights{display:flex;gap:7px}.lights i{width:10px;height:10px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}
+.lights i:nth-child(3){background:#28C840}
+#wtitle{flex:1;text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--mfg);
+        transition:opacity .25s}
+#wtitle b{color:var(--fg);font-weight:500}
+.wbadge{font-family:var(--mono);font-size:10px;color:var(--mfg);border:1px solid var(--border);
+        padding:2px 7px;border-radius:5px}
+
+#app{height:708px;background:var(--bg);position:relative;overflow:hidden}
+.scene{position:absolute;inset:0;overflow:hidden;opacity:0;visibility:hidden;
+       transform:translateX(24px) scale(.993);filter:blur(6px);
+       transition:opacity .45s ease,transform .65s var(--ease-out),filter .45s ease,visibility .45s}
+.scene.active{opacity:1;visibility:visible;transform:none;filter:blur(0)}
+.scene.out{transform:translateX(-16px) scale(.995);filter:blur(4px)}
+
+/* ── Caption bar ───────────────────────────────────────────────── */
+#capbar{position:absolute;bottom:0;left:0;right:0;height:64px;
+        background:linear-gradient(transparent,rgba(8,13,21,.92));
+        display:flex;align-items:flex-end;padding:0 28px 14px;z-index:10}
+#captext{font-size:13.5px;color:var(--mfg);line-height:1.5;transition:opacity .3s}
+
+/* ── Chapter bar ───────────────────────────────────────────────── */
+#chbar{position:absolute;bottom:0;left:0;right:0;height:3px;background:rgba(255,255,255,.06);z-index:11}
+#chbar i{position:absolute;top:0;left:0;height:100%;background:var(--blue);width:0%;
+         transition:width .3s linear}
+#chbar .ch-mark{position:absolute;top:-16px;font-family:var(--mono);font-size:9px;
+                color:var(--dim);letter-spacing:.06em;padding:2px 6px;
+                background:rgba(8,13,21,.8);border-radius:3px;transform:translateX(-50%);
+                opacity:0;transition:opacity .4s}
+#chbar .ch-mark.on{opacity:1}
+
+/* ══ CHAPTER 1 · THE KERNEL ═══════════════════════════════════ */
+#kernel{display:grid;grid-template-columns:1fr 420px;height:100%}
+.editor{border-right:1px solid var(--border);display:flex;flex-direction:column}
+.etabs{height:36px;display:flex;align-items:stretch;border-bottom:1px solid var(--border);
+       background:var(--panel)}
+.etab{display:flex;align-items:center;gap:8px;padding:0 16px;font-size:12px;color:var(--mfg);
+      border-right:1px solid var(--border)}
+.etab.on{background:var(--bg);color:var(--fg)}
+.ecode{flex:1;padding:18px 0;overflow:hidden;font-family:var(--mono);font-size:13px;
+       line-height:1.85;counter-reset:ln}
+.cl{opacity:0;transform:translateX(8px);transition:opacity .25s,transform .35s var(--ease);
+    display:flex;padding:0 20px 0 0}
+.cl.on{opacity:1;transform:none}
+.cl .ln{width:44px;text-align:right;color:var(--dim);padding-right:16px;user-select:none;
+        flex:none;font-size:12px}
+.cl .ln::before{counter-increment:ln;content:counter(ln)}
+.cl code{white-space:pre}
+.kw{color:var(--kw)}.fn{color:var(--fnc)}.ty{color:var(--typ)}
+.st{color:var(--str)}.nu{color:var(--num)}.cm{color:var(--cmt)}.pu{color:var(--pun)}
+
+/* build panel */
+.build{display:flex;flex-direction:column;background:var(--panel)}
+.btitle{height:36px;display:flex;align-items:center;padding:0 16px;font-size:12px;
+        font-weight:600;color:var(--fg);border-bottom:1px solid var(--border);
+        background:var(--panel2)}
+.blog{flex:1;padding:16px;font-family:var(--mono);font-size:11.5px;line-height:1.9;
+      color:var(--mfg);overflow:hidden}
+.blog .bl{opacity:0;transform:translateY(4px);transition:opacity .2s,transform .3s var(--ease)}
+.blog .bl.on{opacity:1;transform:none}
+.bl .ok{color:var(--green)}.bl .er{color:var(--rust)}.bl .hi{color:var(--fg)}
+.bl .warn{color:var(--amber)}
+.bprog{height:3px;background:var(--border);border-radius:2px;margin:6px 0 10px;overflow:hidden}
+.bprog i{display:block;height:100%;background:var(--green);width:0%;
+         transition:width 1.8s var(--ease)}
+.bprog.on i{width:100%}
+.dual-badge{display:inline-flex;gap:6px;margin-top:12px;opacity:0;transition:opacity .4s}
+.dual-badge.on{opacity:1}
+.dual-badge span{font-size:10px;padding:3px 10px;border-radius:4px;font-weight:600;
+                 letter-spacing:.04em}
+.dual-badge .gpu{background:rgba(76,187,23,.15);color:var(--green)}
+.dual-badge .cpu{background:rgba(88,166,232,.15);color:var(--blue)}
+
+/* ══ CHAPTER 2 · THE GRADIENT ═════════════════════════════════ */
+#gradient{display:grid;grid-template-columns:1fr 1fr;height:100%}
+.viz{display:flex;align-items:center;justify-content:center;position:relative;
+     border-right:1px solid var(--border)}
+.viz svg{width:420px;height:420px}
+.shape-src{fill:none;stroke:var(--blue);stroke-width:2;opacity:0;transition:opacity .6s}
+.shape-tgt{fill:none;stroke:var(--green);stroke-width:1.5;stroke-dasharray:4 3;opacity:0;
+           transition:opacity .6s}
+.shape-src.on,.shape-tgt.on{opacity:1}
+.grad-arrow{stroke:var(--rust);stroke-width:1.5;fill:none;opacity:0;
+            transition:opacity .3s;marker-end:url(#arrowhead)}
+.grad-arrow.on{opacity:.7}
+.viz-label{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);
+           font-family:var(--mono);font-size:11px;color:var(--dim);opacity:0;
+           transition:opacity .4s}
+.viz-label.on{opacity:1}
+.viz-label .bl-dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+                   margin-right:6px;vertical-align:middle}
+
+/* chart panel */
+.chart-panel{display:flex;flex-direction:column;background:var(--panel)}
+.chart-head{height:36px;display:flex;align-items:center;padding:0 16px;font-size:12px;
+            font-weight:600;color:var(--fg);border-bottom:1px solid var(--border);
+            background:var(--panel2)}
+.chart-body{flex:1;padding:24px;display:flex;flex-direction:column;gap:16px}
+.chart-svg{flex:1;min-height:0}
+.chart-svg svg{width:100%;height:100%}
+.loss-line{fill:none;stroke:var(--rust);stroke-width:2;stroke-linecap:round;
+           stroke-dasharray:600;stroke-dashoffset:600;transition:stroke-dashoffset 8s linear}
+.loss-line.on{stroke-dashoffset:0}
+.chart-axis{stroke:var(--border);stroke-width:1}
+.chart-label{font-family:var(--mono);font-size:10px;fill:var(--dim)}
+.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.metric{background:var(--bg);border:1px solid var(--border);border-radius:8px;
+        padding:10px 14px;opacity:0;transform:translateY(6px);
+        transition:opacity .3s,transform .4s var(--ease)}
+.metric.on{opacity:1;transform:none}
+.metric label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;
+              display:block;margin-bottom:4px}
+.metric .val{font-family:var(--mono);font-size:16px;color:var(--fg);font-weight:600}
+.metric .val.green{color:var(--green)}
+
+/* ══ CHAPTER 3 · THE PROOF ════════════════════════════════════ */
+#proof{display:flex;flex-direction:column;height:100%;padding:20px 28px}
+.term{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+      flex:1;display:flex;flex-direction:column;overflow:hidden}
+.term-head{height:34px;display:flex;align-items:center;padding:0 14px;font-size:11px;
+           font-family:var(--mono);color:var(--mfg);border-bottom:1px solid var(--border);
+           background:var(--panel2)}
+.term-body{flex:1;padding:18px 20px;font-family:var(--mono);font-size:12.5px;
+           line-height:2;color:var(--mfg);overflow:hidden}
+.tl{opacity:0;transform:translateX(6px);transition:opacity .22s,transform .3s var(--ease)}
+.tl.on{opacity:1;transform:none}
+.tl .pass{color:var(--green)}.tl .fail{color:var(--red)}.tl .hi{color:var(--fg)}
+.tl .num{color:var(--num)}.tl .warn{color:var(--amber)}
+
+.banner{margin-top:16px;padding:16px 24px;border-radius:10px;
+        background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);
+        font-family:var(--mono);font-size:15px;font-weight:600;color:var(--green);
+        text-align:center;opacity:0;transform:scale(.96);
+        transition:opacity .4s,transform .5s var(--ease-out)}
+.banner.on{opacity:1;transform:none}
+
+.bench{margin-top:12px;opacity:0;transition:opacity .4s}
+.bench.on{opacity:1}
+.bench table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px}
+.bench th{text-align:left;color:var(--dim);font-weight:500;padding:6px 10px;
+          border-bottom:1px solid var(--border)}
+.bench td{padding:5px 10px;color:var(--mfg);border-bottom:1px solid rgba(36,51,74,.4)}
+.bench .faster{color:var(--green)}
+
+/* ── End card ──────────────────────────────────────────────────── */
+#end{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;
+     align-items:center;justify-content:center;gap:14px;z-index:5;
+     opacity:0;visibility:hidden;transition:opacity .5s,visibility .5s}
+#end.active{opacity:1;visibility:visible}
+#end .mark{font-size:42px;opacity:0;transition:opacity .4s}
+#end .mark.on{opacity:1}
+#end .tag{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.12em;
+          text-transform:uppercase;opacity:0;transition:opacity .4s}
+#end .tag.on{opacity:1}
+#end .sub{font-size:14px;color:var(--mfg);opacity:0;transition:opacity .4s}
+#end .sub.on{opacity:1}
+#end .url{font-family:var(--mono);font-size:11px;color:var(--blue);opacity:0;transition:opacity .4s}
+#end .url.on{opacity:1}
+</style>
+
+<!-- ═══════════════════════ MARKUP ═══════════════════════ -->
+<div id="wrap"><div id="root">
+
+<!-- titlebar -->
+<div id="titlebar">
+  <div class="lights"><i></i><i></i><i></i></div>
+  <div id="wtitle"><b>shannon_autograd</b> — cargo oxide build</div>
+  <span class="wbadge">rustc nightly · cuda 12</span>
+</div>
+
+<div id="app">
+
+<!-- ── CHAPTER 1 · THE KERNEL ─────────────────────────────────── -->
+<div class="scene" id="kernel">
+  <div class="editor">
+    <div class="etabs"><div class="etab on">affine.rs</div><div class="etab">Cargo.toml</div></div>
+    <div class="ecode" id="code">
+      <div class="cl"><span class="ln"></span><code><span class="cm">// shannon-core: one kernel, two backends</span></code></div>
+      <div class="cl"><span class="ln"></span><code><span class="kw">use</span> shannon_core::{<span class="ty">Vec3</span>, <span class="ty">DisjointSlice</span>};</code></div>
+      <div class="cl"><span class="ln"></span><code></code></div>
+      <div class="cl"><span class="ln"></span><code><span class="cm">/// Forward pass: scale + translate every vertex</span></code></div>
+      <div class="cl"><span class="ln"></span><code><span class="kw">pub fn</span> <span class="fn">affine_fwd</span>(</code></div>
+      <div class="cl"><span class="ln"></span><code>    a: <span class="pu">&</span>[<span class="ty">Vec3</span>],</code></div>
+      <div class="cl"><span class="ln"></span><code>    scale: <span class="ty">f32</span>,</code></div>
+      <div class="cl"><span class="ln"></span><code>    bias: <span class="ty">Vec3</span>,</code></div>
+      <div class="cl"><span class="ln"></span><code>    out: <span class="ty">DisjointSlice</span>&lt;<span class="ty">Vec3</span>&gt;,</code></div>
+      <div class="cl"><span class="ln"></span><code>) {</code></div>
+      <div class="cl"><span class="ln"></span><code>    <span class="kw">let</span> i = thread_idx();</code></div>
+      <div class="cl"><span class="ln"></span><code>    out[i] = a[i] * scale + bias;</code></div>
+      <div class="cl"><span class="ln"></span><code>}</code></div>
+      <div class="cl"><span class="ln"></span><code></code></div>
+      <div class="cl"><span class="ln"></span><code><span class="cm">/// Adjoint: reverse-mode gradient</span></code></div>
+      <div class="cl"><span class="ln"></span><code><span class="kw">pub fn</span> <span class="fn">affine_bwd</span>(</code></div>
+      <div class="cl"><span class="ln"></span><code>    a: <span class="pu">&</span>[<span class="ty">Vec3</span>],</code></div>
+      <div class="cl"><span class="ln"></span><code>    scale: <span class="ty">f32</span>,</code></div>
+      <div class="cl"><span class="ln"></span><code>    d_out: <span class="pu">&</span>[<span class="ty">Vec3</span>],</code></div>
+      <div class="cl"><span class="ln"></span><code>    sink: <span class="kw">impl</span> <span class="ty">GradSink</span>&lt;<span class="ty">Vec3</span>&gt;,</code></div>
+      <div class="cl"><span class="ln"></span><code>) {</code></div>
+      <div class="cl"><span class="ln"></span><code>    <span class="kw">let</span> i = thread_idx();</code></div>
+      <div class="cl"><span class="ln"></span><code>    sink.add(i, d_out[i] * scale);</code></div>
+      <div class="cl"><span class="ln"></span><code>}</code></div>
+    </div>
+  </div>
+  <div class="build">
+    <div class="btitle">Build Output</div>
+    <div class="blog" id="blog">
+      <div class="bl" id="b1"><span class="hi">$</span> cargo oxide build</div>
+      <div class="bl" id="b2">   <span class="ok">Compiling</span> shannon-core v0.1.0</div>
+      <div class="bl" id="b3">   <span class="ok">Compiling</span> shannon-kernels v0.1.0 <span class="warn">(PTX)</span></div>
+      <div class="bl" id="b4"><div class="bprog" id="bp1"><i></i></div></div>
+      <div class="bl" id="b5">   <span class="ok">Compiled</span>  → target/ptx/kernels.ptx <span class="hi">(48 KB)</span></div>
+      <div class="bl" id="b6">   <span class="ok">Compiling</span> shannon-cpu v0.1.0 <span class="warn">(rayon)</span></div>
+      <div class="bl" id="b7"><div class="bprog" id="bp2"><i></i></div></div>
+      <div class="bl" id="b8">   <span class="ok">Compiled</span>  → same kernel body, rayon backend</div>
+      <div class="bl" id="b9">   <span class="ok">Compiling</span> shannon-autodiff v0.1.0</div>
+      <div class="bl" id="b10">   <span class="ok">Compiling</span> shannon-examples v0.1.0</div>
+      <div class="bl" id="b11"></div>
+      <div class="bl" id="b12"><span class="ok">✓</span> <span class="hi">dual-backend ready</span> — 8 crates, 9.2k lines</div>
+      <div class="dual-badge" id="dbadge">
+        <span class="gpu">▸ GPU (PTX)</span>
+        <span class="cpu">▸ CPU (rayon)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── CHAPTER 2 · THE GRADIENT ───────────────────────────────── -->
+<div class="scene" id="gradient">
+  <div class="viz">
+    <svg viewBox="0 0 420 420" id="shape-svg">
+      <defs>
+        <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#EA6A2B" opacity=".7"/>
+        </marker>
+      </defs>
+      <!-- target shape (star) -->
+      <polygon class="shape-tgt" id="tgt" points="210,60 240,160 340,160 258,220 285,320 210,260 135,320 162,220 80,160 180,160"/>
+      <!-- source shape (circle that morphs) -->
+      <circle class="shape-src" id="src" cx="210" cy="210" r="120"/>
+      <!-- gradient arrows (added dynamically) -->
+      <g id="arrows"></g>
+    </svg>
+    <div class="viz-label" id="vlabel">
+      <span class="bl-dot" style="background:var(--blue)"></span>source mesh
+      <span style="margin:0 10px">·</span>
+      <span class="bl-dot" style="background:var(--green)"></span>target
+    </div>
+  </div>
+  <div class="chart-panel">
+    <div class="chart-head">Loss · Chamfer + Laplacian</div>
+    <div class="chart-body">
+      <div class="chart-svg">
+        <svg viewBox="0 0 400 220" preserveAspectRatio="none">
+          <line class="chart-axis" x1="40" y1="10" x2="40" y2="195"/>
+          <line class="chart-axis" x1="40" y1="195" x2="390" y2="195"/>
+          <text class="chart-label" x="36" y="18" text-anchor="end">10⁰</text>
+          <text class="chart-label" x="36" y="105" text-anchor="end">10⁻⁴</text>
+          <text class="chart-label" x="36" y="192" text-anchor="end">10⁻⁸</text>
+          <text class="chart-label" x="215" y="212" text-anchor="middle">iterations</text>
+          <polyline class="loss-line" id="lossLine"
+            points="40,20 80,38 120,62 160,90 200,118 240,142 280,158 320,170 360,178 390,182"/>
+        </svg>
+      </div>
+      <div class="metrics">
+        <div class="metric" id="m-loss"><label>Loss</label><div class="val" id="v-loss">—</div></div>
+        <div class="metric" id="m-grad"><label>∇ norm</label><div class="val" id="v-grad">—</div></div>
+        <div class="metric" id="m-iter"><label>Iteration</label><div class="val" id="v-iter">—</div></div>
+        <div class="metric" id="m-time"><label>Wall time</label><div class="val green" id="v-time">—</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── CHAPTER 3 · THE PROOF ──────────────────────────────────── -->
+<div class="scene" id="proof">
+  <div class="term">
+    <div class="term-head">affine — acceptance test</div>
+    <div class="term-body" id="tbody">
+      <div class="tl" id="t0"><span class="hi">$</span> cargo oxide run --bin affine</div>
+      <div class="tl" id="t1">   <span class="ok">Compiling</span> shannon-examples v0.1.0</div>
+      <div class="tl" id="t2">     <span class="ok">Running</span> target/debug/affine</div>
+      <div class="tl" id="t3"></div>
+      <div class="tl" id="t4"><span class="pass">✓</span> forward: GPU == CPU == analytic  (<span class="num">1024</span> elements)</div>
+      <div class="tl" id="t5"><span class="pass">✓</span> backward: GPU == CPU == <span class="num">2</span> (analytic)</div>
+      <div class="tl" id="t6"><span class="pass">✓</span> gradcheck: analytic gradient confirmed by finite differences</div>
+      <div class="tl" id="t7"></div>
+      <div class="tl" id="t8" style="font-size:14px"><span class="pass">✅ AFFINE ACCEPTANCE PASSED</span></div>
+      <div class="tl" id="t9"></div>
+      <div class="tl" id="t10"><span class="hi">$</span> cargo oxide run --bin launch_bench</div>
+      <div class="tl" id="t11">     <span class="ok">Running</span> target/debug/launch_bench</div>
+    </div>
+  </div>
+  <div class="bench" id="bench">
+    <table>
+      <tr><th>Kernel</th><th>Autograd</th><th>Warp</th><th>Δ</th></tr>
+      <tr class="tl" id="r1"><td>k0 direct</td><td>17.87 µs</td><td>45.3 µs</td><td class="faster">2.5× faster</td></tr>
+      <tr class="tl" id="r2"><td>k0 graph</td><td>5.05 µs</td><td>8.4 µs</td><td class="faster">1.7× faster</td></tr>
+      <tr class="tl" id="r3"><td>k7 direct</td><td>19.4 µs</td><td>47.2 µs</td><td class="faster">2.4× faster</td></tr>
+      <tr class="tl" id="r4"><td>CPU dispatch</td><td>1.3 ns</td><td>6.5 µs</td><td class="faster">5000× faster</td></tr>
+    </table>
+  </div>
+  <div class="banner" id="banner">✅ 11 of 12 cells faster than Warp · GPU == CPU on every benchmark</div>
+</div>
+
+<!-- end card -->
+<div id="end">
+  <div class="mark" id="emark">⚡</div>
+  <div class="tag" id="etag">SHANNON AUTOGRAD</div>
+  <div class="sub" id="esub">Differentiable GPU computing in Rust</div>
+  <div class="url" id="eurl">github.com/Shannon-Dynamics/shannon-autograd</div>
+</div>
+
+</div><!-- /app -->
+
+<!-- caption + chapter bar -->
+<div id="capbar"><span id="captext"></span></div>
+<div id="chbar">
+  <i id="chline"></i>
+  <span class="ch-mark" id="ch1" style="left:7.2%">01 The kernel</span>
+  <span class="ch-mark" id="ch2" style="left:33.3%">02 The gradient</span>
+  <span class="ch-mark" id="ch3" style="left:69.3%">03 The proof</span>
+</div>
+
+</div></div><!-- /root /wrap -->
+
+<script>
+(function(){
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const on = s => { const el = typeof s==='string'?$(s):s; if(el) el.classList.add("on"); };
+const off = s => { const el = typeof s==='string'?$(s):s; if(el) el.classList.remove("on"); };
+const DUR = 45000;
+const timers = [];
+const later = (ms,fn) => timers.push(setTimeout(fn,ms));
+
+function scene(id){
+  $$(".scene").forEach(s => {
+    if(s.id===id){ s.classList.add("active"); s.classList.remove("out"); }
+    else if(s.classList.contains("active")){ s.classList.remove("active"); s.classList.add("out"); }
+  });
+}
+function title(h){ $("#wtitle").innerHTML = h; }
+function cap(t){ $("#captext").textContent = t; }
+function chap(n){
+  $$(".ch-mark").forEach((m,i) => m.classList.toggle("on", i < n));
+}
+
+/* ── cue engine ─────────────────────────────────────────────── */
+const CUES = [];
+function at(t, fn){ CUES.push({t, fn, done:false}); }
+
+/* stagger-in utility */
+function stag(sel, delay){
+  $$(sel).forEach((el,i) => later(i*delay, () => on(el)));
+}
+
+/* ── shape morphing helpers ──────────────────────────────────── */
+const starPts = [[210,60],[240,160],[340,160],[258,220],[285,320],[210,260],[135,320],[162,220],[80,160],[180,160]];
+const circPts = starPts.map(([tx,ty]) => {
+  const cx=210,cy=210,r=120;
+  const a = Math.atan2(ty-cy,tx-cx);
+  return [cx+r*Math.cos(a), cy+r*Math.sin(a)];
+});
+let morphT = 0;
+function morphShape(t){
+  morphT = Math.min(1, t);
+  const pts = circPts.map(([cx,cy],i) => {
+    const [tx,ty] = starPts[i];
+    const ease = t*t*(3-2*t); // smoothstep
+    return [cx+(tx-cx)*ease, cy+(ty-cy)*ease];
+  });
+  $("#src").setAttribute("points", pts.map(p=>p.join(",")).join(" "));
+}
+function showArrows(){
+  const g = $("#arrows");
+  g.innerHTML = "";
+  circPts.forEach(([cx,cy],i) => {
+    const [tx,ty] = starPts[i];
+    const dx=(tx-cx)*0.3, dy=(ty-cy)*0.3;
+    const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+    line.setAttribute("x1",cx); line.setAttribute("y1",cy);
+    line.setAttribute("x2",cx+dx); line.setAttribute("y2",cy+dy);
+    line.setAttribute("class","grad-arrow");
+    g.appendChild(line);
+    later(i*60, () => line.classList.add("on"));
+  });
+}
+
+/* metrics animation */
+const losses = [1.0,0.42,0.18,0.071,0.029,0.011,4.2e-3,1.5e-3,5.1e-4,1.8e-4,6.2e-5,1.9e-5,8.1e-6];
+const grads  = [2.4,1.1,0.48,0.19,0.074,0.028,0.011,3.8e-3,1.4e-3,5.2e-4,1.9e-4,7.1e-5,2.6e-5];
+let metricIdx = 0;
+function tickMetrics(){
+  if(metricIdx >= losses.length) return;
+  const l = losses[metricIdx], g = grads[metricIdx];
+  const iter = Math.round((metricIdx/12)*400);
+  $("#v-loss").textContent = l >= 0.01 ? l.toFixed(3) : l.toExponential(1);
+  $("#v-grad").textContent = g >= 0.01 ? g.toFixed(3) : g.toExponential(1);
+  $("#v-iter").textContent = iter + " / 400";
+  $("#v-time").textContent = (metricIdx*0.09).toFixed(2) + " s";
+  morphShape(metricIdx/12);
+  metricIdx++;
+}
+
+/* ─ CHAPTER 1 · THE KERNEL ─ */
+at(0, () => { scene("kernel"); chap(0); });
+at(800, () => { chap(1); cap("A kernel is an ordinary Rust function — no DSL, no codegen macro"); });
+at(1200, () => stag("#code .cl", 140));
+at(5500, () => { cap("cargo oxide compiles it to PTX for the GPU…"); on("#b1"); });
+at(6200, () => on("#b2"));
+at(7000, () => { on("#b3"); later(200, () => { on("#b4"); on("#bp1"); }); });
+at(9200, () => { on("#b5"); cap("…and to a rayon CPU backend from the same source"); });
+at(10000, () => { on("#b6"); later(200, () => { on("#b7"); on("#bp2"); }); });
+at(12000, () => { on("#b8"); });
+at(12600, () => { on("#b9"); on("#b10"); });
+at(13200, () => { on("#b11"); on("#b12"); later(300, () => { on("#dbadge"); }); });
+at(13800, () => cap("One source file, two backends — the math lives in shannon-core, nowhere else"));
+
+/* ─ CHAPTER 2 · THE GRADIENT ─ */
+at(15000, () => {
+  scene("gradient"); chap(2);
+  title('<b>shape_fit</b> — gradient descent');
+  cap("Gradient descent through GPU kernels: a sphere shrink-wraps onto a target");
+  metricIdx = 0;
+  morphShape(0);
+  // convert circle to polygon for morphing
+  $("#src").outerHTML = '<polygon class="shape-src" id="src" points="' +
+    circPts.map(p=>p.join(",")).join(" ") + '"/>';
+});
+at(15600, () => { on("#tgt"); on("#src"); on("#vlabel"); });
+at(16200, () => { showArrows(); cap("Gradients flow backward through spatial queries via the envelope theorem"); });
+at(17000, () => { on("#lossLine"); stag(".metric", 200); });
+at(17800, () => { tickMetrics(); tickMetrics(); });
+at(18600, () => { tickMetrics(); tickMetrics(); cap("The tape records launches — backward replays adjoints in reverse"); });
+at(19500, () => { tickMetrics(); tickMetrics(); });
+at(20500, () => { tickMetrics(); tickMetrics(); });
+at(21500, () => { tickMetrics(); tickMetrics(); cap("Loss drops 8.9 orders — matching the (1−lr)² theorem"); });
+at(22500, () => { tickMetrics(); tickMetrics(); });
+at(24000, () => { tickMetrics();
+  cap("Chamfer + Adam: 3.5 orders of loss decrease, GPU == CPU at rel 1e-3"); });
+at(26000, () => { cap("Full acceptance run: 1.08 seconds wall time"); });
+at(28000, () => { cap("Imperative kernels with BVH descent — differentiated as-is, not through array primitives"); });
+
+/* ─ CHAPTER 3 · THE PROOF ─ */
+at(31200, () => {
+  scene("proof"); chap(3);
+  title('<b>affine</b> — acceptance test');
+  cap("A library is only worth trusting if it proves itself every run");
+});
+at(31600, () => on("#t0"));
+at(32000, () => on("#t1"));
+at(32400, () => on("#t2"));
+at(32800, () => on("#t3"));
+at(33400, () => { on("#t4"); cap("Forward pass: GPU and CPU agree with the analytic result"); });
+at(34200, () => { on("#t5"); cap("Backward pass: adjoints match on both backends"); });
+at(35000, () => { on("#t6"); cap("Finite-difference gradcheck confirms the autodiff is exact"); });
+at(35800, () => { on("#t7"); on("#t8"); cap("Every demo binary ends at a banner like this — mostly-works is a failure"); });
+at(37000, () => { on("#t9"); on("#t10"); on("#t11");
+  cap("Launch overhead: native dispatch, no interpreter, no per-argument marshalling"); });
+at(37600, () => { on("#bench"); ["#r1","#r2","#r3","#r4"].forEach((id,i) => later(i*350, () => on(id))); });
+at(39500, () => { on("#banner"); cap(""); });
+
+/* ─ END CARD ─ */
+at(40900, () => { $("#end").classList.add("active"); on("#emark"); cap(""); });
+at(41500, () => on("#etag"));
+at(42000, () => on("#esub"));
+at(42600, () => on("#eurl"));
+
+/* ── reset ───────────────────────────────────────────────────── */
+function reset(){
+  timers.forEach(clearTimeout); timers.length = 0;
+  off("#code .cl"); $$("#code .cl").forEach(l => l.classList.remove("on"));
+  ["b1","b2","b3","b4","b5","b6","b7","b8","b9","b10","b11","b12"].forEach(id => off("#"+id));
+  off("#bp1"); off("#bp2");
+  $$("#blog .bprog i").forEach(i => i.style.width = "0%");
+  off("#dbadge");
+  off("#tgt"); off("#src"); off("#vlabel");
+  $$("#arrows").forEach(g => g.innerHTML = "");
+  $$(".grad-arrow").forEach(a => a.classList.remove("on"));
+  off("#lossLine");
+  $$("#lossLine").forEach(l => { l.style.transition="none"; l.style.strokeDashoffset="600";
+    requestAnimationFrame(()=>l.style.transition=""); });
+  $$(".metric").forEach(m => m.classList.remove("on"));
+  metricIdx = 0;
+  ["t0","t1","t2","t3","t4","t5","t6","t7","t8","t9","t10","t11"].forEach(id => off("#"+id));
+  ["r1","r2","r3","r4"].forEach(id => off("#"+id));
+  off("#bench"); off("#banner");
+  off("#emark"); off("#etag"); off("#esub"); off("#eurl");
+  $("#end").classList.remove("active");
+  $$(".scene").forEach(s => s.classList.remove("active","out"));
+  title('<b>shannon_autograd</b> — cargo oxide build');
+  cap(""); chap(0);
+  CUES.forEach(c => c.done = false);
+}
+
+/* ── clock ───────────────────────────────────────────────────── */
+let t0 = performance.now(), paused = false, pausedAt = 0;
+const chline = $("#chline");
+function frame(now){
+  requestAnimationFrame(frame);
+  if (paused) return;
+  let t = now - t0;
+  if (t >= DUR){ reset(); t0 = now; t = 0; }
+  for (const c of CUES) if (!c.done && t >= c.t){ c.done = true; c.fn(); }
+  chline.style.width = (t/DUR*100)+"%";
+}
+requestAnimationFrame(frame);
+
+/* ── responsive scale ────────────────────────────────────────── */
+function fit(){
+  const w = $("#wrap").clientWidth, sc = w/1440;
+  $("#root").style.transform = `scale(${sc})`;
+  document.documentElement.style.setProperty("--us", 1/sc);
+}
+fit(); addEventListener("resize", fit);
+
+const CHAPTERS = [
+  { name: "The kernel", start: 3250 },
+  { name: "The gradient", start: 15000 },
+  { name: "The proof", start: 31200 }
+];
+
+/* ── postMessage API for parent page ────────────────────────── */
+window.addEventListener("message", e => {
+  if (!e.data || typeof e.data !== "object") return;
+  const msg = e.data;
+  if (msg.type === "replay") {
+    reset(); t0 = performance.now(); paused = false;
+  } else if (msg.type === "pause") {
+    if (!paused) { paused = true; pausedAt = performance.now(); }
+  } else if (msg.type === "play") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+  } else if (msg.type === "toggle") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    else { paused = true; pausedAt = performance.now(); }
+  } else if (msg.type === "seek") {
+    const target = Math.max(0, Math.min(1, msg.position)) * DUR;
+    reset();
+    t0 = performance.now() - target;
+    for (const c of CUES) {
+      if (c.t <= target) { c.done = true; c.fn(); }
+    }
+    if (paused) pausedAt = performance.now();
+  } else if (msg.type === "getInfo") {
+    parent.postMessage({ type: "info", id: msg.id, dur: DUR, chapters: CHAPTERS }, "*");
+  }
+});
+
+// Expose progress getter so parent can poll via rAF
+window._demoProgress = () => {
+  const now = performance.now();
+  const elapsed = paused ? (pausedAt - t0) : (now - t0);
+  const t = ((elapsed % DUR) + DUR) % DUR;
+  return { position: t / DUR, time: t, duration: DUR, paused: paused };
+};
+})();
+</script>
