@@ -748,6 +748,7 @@
         .cta-fallback a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
         .cta-form { padding: 30px; border-radius: 20px; }
+        @media (max-width: 640px) { .cta-form { padding: 20px; border-radius: 16px; } }
         .cta-form-head { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px; }
         .cta-form-sub { font-size: 12.5px; line-height: 1.6; color: rgba(255,255,255,.6); margin-bottom: 20px; }
         .field { margin-top: 16px; }
@@ -894,8 +895,9 @@
             .hero-shortcuts { grid-template-columns: 1fr; }
         }
 
-        /* ── mobile hero: tighter, stable, no scramble reflow ── */
+        /* ── mobile overrides (≤640px) ── */
         @media (max-width: 640px) {
+            /* — hero — */
             /* svh = small viewport height, excludes mobile browser chrome */
             .hero { min-height: 100svh; }
             .hero-in { padding-top: 110px; padding-bottom: 52px; }
@@ -910,6 +912,22 @@
             .hero-shortcut { padding: 16px 18px; gap: 12px; border-radius: 12px; }
             .hero-shortcut b { font-size: 13.5px; }
             .hero-shortcut em { font-size: 11.5px; }
+
+            /* — how we work marquee — */
+            .hww-ticker { padding: 16px 0; }
+            .hww-set { gap: 16px; padding-right: 16px; }
+
+            /* — capabilities grid — */
+            .hair-cell { padding: 22px 18px 26px; }
+
+            /* — discipline cards — */
+            .disc2-card { padding: clamp(20px, 5vw, 28px); }
+
+            /* — section headings — */
+            .sec-head { margin-bottom: 28px; }
+
+            /* — library panels (stacked below 1024px, further tightened on phones) — */
+            .lib-inner { padding: 28px 16px 40px; }
         }
 
         /* ── library shortcut ──
@@ -1031,7 +1049,7 @@
         }
         .disc2-bg-num {
             position: absolute; bottom: -20px; right: 8px;
-            font-size: clamp(110px,13vw,150px); font-weight: 700;
+            font-size: clamp(80px,13vw,150px); font-weight: 700;
             letter-spacing: -.06em; line-height: 1;
             color: rgba(16,24,27,.04);
             pointer-events: none; user-select: none; z-index: 0;
@@ -1072,6 +1090,7 @@
         .disc2-cta:hover { background: #4C7EFF; border-color: #4C7EFF; color: #fff; gap: 11px; }
         /* ═══ geometric capability marks ═══ */
         .cap-mark { display: block; width: 60px; height: 60px; color: #4C7EFF; margin-bottom: 15px; }
+        @media (max-width: 640px) { .cap-mark { width: 48px; height: 48px; margin-bottom: 12px; } }
 
         /* ─── capability icon animations ─── */
 
