@@ -1545,6 +1545,8 @@
                     transition: transform .7s cubic-bezier(.76,0,.24,1); will-change: transform; }
         .ps-panel { flex: 0 0 100%; min-width: 0;
                     display: grid; grid-template-columns: 3fr 1fr; }
+        .ps-panel--full { grid-template-columns: 1fr; }
+        .ps-panel--full .ps-body { display: none; }
         .ps-shot { position: relative; overflow: hidden; width: 100%;
                    background: #000; min-height: 280px; }
         .ps-win { height: 100%; border-radius: 0; border-width: 0; }
