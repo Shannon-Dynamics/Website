@@ -2110,7 +2110,7 @@
                             <span class="sec-num">02</span>
                             <span class="sec-dash"></span>
                             <span class="sec-label">PRODUCTS</span>
-                            <span class="sec-meta" id="ps-meta">OCT / CND</span>
+                            <span class="sec-meta" id="ps-meta">OCT / CND / AGD</span>
                         </div>
                         <h2 class="sec-title">Selected Work</h2>
                     </div>
@@ -2135,6 +2135,13 @@
                             <span>
                                 <h3>Candi Recon</h3>
                                 <p>A MuJoCo drone reconstructs a temple into a 3D occupancy map.</p>
+                            </span>
+                        </button>
+                        <button type="button" class="ps-card" role="tab" data-cat="robotics" aria-selected="false" aria-controls="ps-agd">
+                            <span class="ps-num">003</span>
+                            <span>
+                                <h3>Shannon Autograd</h3>
+                                <p>Differentiable GPU computing — write one Rust kernel, get PTX + CPU + autodiff.</p>
                             </span>
                         </button>
                         <button type="button" class="ps-card" role="tab" data-cat="software" aria-selected="false" aria-controls="ps-sen">
@@ -2242,6 +2249,45 @@
                             </div>
                         </article>
 
+                            <article class="ps-panel" id="ps-agd" data-cat="robotics" role="tabpanel">
+                            <div class="ps-shot">
+                                <iframe class="ps-demo-frame" src="video-demo/shannon-autograd-demo.html?embed=1"
+                                        title="Shannon Autograd demo" loading="lazy"></iframe>
+                                <div class="ps-controls" data-chapters='[{"name":"The kernel","start":3250},{"name":"The gradient","start":15000},{"name":"The proof","start":31200}]'>
+                                    <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
+                                        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                                    </button>
+                                    <button class="ps-ctrl-btn ps-btn-replay" aria-label="Replay" title="Replay">
+                                        <svg viewBox="0 0 24 24"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                    </button>
+                                    <div class="ps-scrubber">
+                                        <div class="ps-scrub-chapters"></div>
+                                        <div class="ps-scrub-track">
+                                            <div class="ps-scrub-fill"></div>
+                                            <div class="ps-scrub-thumb"></div>
+                                        </div>
+                                        <div class="ps-scrub-tip">0:00</div>
+                                    </div>
+                                    <span class="ps-time">0:00 / 0:45</span>
+                                </div>
+                            </div>
+                            <div class="ps-body">
+                                <div class="ps-hero">
+                                    <span class="ps-eyebrow">AGD.03 · EXPERIMENTAL</span>
+                                    <h3 class="ps-title">Shannon Autograd</h3>
+                                    <p class="ps-desc">A differentiable GPU computing SDK in Rust. Kernels are ordinary Rust functions compiled ahead-of-time to PTX and to a rayon CPU backend from the same source, with reverse-mode autodiff over a tape of launches — including gradients through spatial queries via the envelope theorem.</p>
+                                    <a href="https://github.com/Shannon-Dynamics/shannon-autograd" class="btn-black ps-cta" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">→</span></a>
+                                </div>
+                                <div class="ps-caps">
+                                    <div class="ps-cap"><span>C.01</span><p>One kernel source, two backends — same Rust body runs on GPU (PTX) and CPU (rayon)</p></div>
+                                    <div class="ps-cap"><span>C.02</span><p>Reverse-mode autodiff through a tape of GPU launches, not array primitives</p></div>
+                                    <div class="ps-cap"><span>C.03</span><p>Gradients through BVH spatial queries — shape fitting in 1.08 s wall time</p></div>
+                                    <div class="ps-cap"><span>C.04</span><p>Apache 2.0 licensed · ~9,200 lines of Rust · experimental</p></div>
+                                </div>
+
+                            </div>
+                        </article>
+
                             <article class="ps-panel" id="ps-sen" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-sentinel-demo.html?embed=1"
@@ -2271,6 +2317,13 @@
                                     <p class="ps-desc">An agentic security operations center. AI agents triage alerts, run investigations, and file audit-ready reports under governed autonomy — around the clock.</p>
                                     <a href="#contact" class="btn-black ps-cta">Request a demo <span aria-hidden="true">→</span></a>
                                 </div>
+                                <div class="ps-caps">
+                                    <div class="ps-cap"><span>C.01</span><p>AI agents triage, investigate, and close alerts — 24/7, no human in the loop</p></div>
+                                    <div class="ps-cap"><span>C.02</span><p>Governed autonomy — every action logged, every escalation auditable</p></div>
+                                    <div class="ps-cap"><span>C.03</span><p>Plugs into existing SIEM/SOAR tooling — Splunk, Sentinel, CrowdStrike</p></div>
+                                    <div class="ps-cap"><span>C.04</span><p>Human-on-the-loop: override any decision, replay any investigation</p></div>
+                                </div>
+
                             </div>
                         </article>
 
@@ -3026,7 +3079,7 @@
             const meta = document.getElementById("ps-meta");
             const catBtns = [...document.querySelectorAll(".ps-cat-btn")];
 
-            const CAT_META = { robotics: "OCT / CND", software: "SEN / SCT / FCT" };
+            const CAT_META = { robotics: "OCT / CND / AGD", software: "SEN / SCT / FCT" };
             let activeCat = "robotics";
 
             /* return only the tabs/panels in the active category */
@@ -3300,7 +3353,7 @@
                     const subject = "Enquiry from " + form.elements.name.value.trim();
                     const body = "From: " + form.elements.name.value.trim() + " <" + form.elements.email.value.trim() + ">\n\n"
                         + form.elements.message.value.trim();
-                    const mailto = "mailto:hello@shannon.id"
+                    const mailto = "mailto:hello@shannon.id,tamaria.artpinkkan@gmail.com"
                         + "?subject=" + encodeURIComponent(subject)
                         + "&body=" + encodeURIComponent(body);
 
