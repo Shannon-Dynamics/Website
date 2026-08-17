@@ -1544,7 +1544,7 @@
         .ps-track { display: flex;
                     transition: transform .7s cubic-bezier(.76,0,.24,1); will-change: transform; }
         .ps-panel { flex: 0 0 100%; min-width: 0;
-                    display: grid; grid-template-columns: 1.15fr 1fr; }
+                    display: grid; grid-template-columns: 3fr 1fr; }
         .ps-shot { position: relative; overflow: hidden; width: 100%;
                    background: #000; min-height: 280px; }
         .ps-win { height: 100%; border-radius: 0; border-width: 0; }
@@ -1665,23 +1665,18 @@
            it reads on the white body corner it sits over */
         .ps-detail .ps-counter { position: absolute; top: 18px; right: 20px; z-index: 5;
                                  background: #10181b; border-color: #10181b; color: #fff; }
-        /* ── bento grid: hero on top, 2×2 caps below ── */
+        /* ── bento: single column, stacked hero + caps ── */
         .ps-body {
-            padding: 24px 26px;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: auto 1fr 1fr;
+            padding: 20px 18px;
+            display: flex;
+            flex-direction: column;
             gap: 8px;
-            align-items: stretch;
-            align-content: start;
+            overflow-y: auto;
         }
-        /* panels without caps → hero fills everything */
-        .ps-body:not(:has(.ps-caps)) { grid-template-columns: 1fr; grid-template-rows: auto; }
         .ps-hero {
-            grid-column: 1 / -1; grid-row: 1;
-            display: flex; flex-direction: column; justify-content: center;
+            display: flex; flex-direction: column;
             background: rgba(16,24,27,.025); border-radius: 14px;
-            padding: 22px 20px;
+            padding: 16px 14px;
         }
         .ps-body:not(:has(.ps-caps)) .ps-hero { background: none; padding: 0; }
         .ps-eyebrow {
@@ -1689,20 +1684,20 @@
             letter-spacing: .2em; color: #4C7EFF;
         }
         .ps-title {
-            font-size: clamp(24px, 2.4vw, 34px); font-weight: 500;
-            letter-spacing: -.02em; line-height: 1.1; margin-top: 12px;
+            font-size: clamp(14px, 1.1vw, 18px); font-weight: 500;
+            letter-spacing: -.02em; line-height: 1.15; margin-top: 8px;
         }
-        .ps-desc { font-size: 13px; line-height: 1.7; color: rgba(16,24,27,.62); margin-top: 14px; max-width: 44ch; }
+        .ps-desc { font-size: 11.5px; line-height: 1.6; color: rgba(16,24,27,.62); margin-top: 10px; }
         .ps-cta {
-            align-self: flex-start; display: inline-flex; align-items: center; gap: 9px;
-            padding: 11px 22px; font-size: 13px; font-weight: 500; margin-top: 20px;
+            align-self: flex-start; display: inline-flex; align-items: center; gap: 7px;
+            padding: 9px 16px; font-size: 12px; font-weight: 500; margin-top: 14px;
         }
         .ps-caps {
-            display: contents; /* caps become direct grid children of .ps-body */
+            display: flex; flex-direction: column; gap: 6px;
         }
         .ps-cap {
             border: 1px solid rgba(16,24,27,.10); border-radius: 11px;
-            background: rgba(255,255,255,.6); padding: 14px 16px;
+            background: rgba(255,255,255,.6); padding: 10px 12px;
             display: flex; flex-direction: column; justify-content: center;
         }
         .ps-cap span { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .16em; color: #4C7EFF; }
