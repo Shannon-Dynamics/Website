@@ -60,7 +60,7 @@
         .sec-head { position: relative; }
         .row-hover { transition: background .3s, padding-left .3s; }
         .row-hover:hover { background: rgba(16, 24, 27, .03); padding-left: 8px; }
-        [data-reveal] { opacity: 0; }
+        [data-reveal] { opacity: 0; will-change: transform, opacity; backface-visibility: hidden; }
 
         /* ═══ HOW WE WORK — infinite marquee ticker ═══ */
         .hww-ticker {
@@ -1543,12 +1543,16 @@
         }
         .ps-track { display: flex;
                     transition: transform .7s cubic-bezier(.76,0,.24,1); will-change: transform; }
-        .ps-panel { flex: 0 0 100%; min-width: 0; display: flex; flex-direction: column; }
-        .ps-shot { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; }
+        .ps-panel { flex: 0 0 100%; min-width: 0;
+                    display: grid; grid-template-columns: 1.15fr 1fr; }
+        .ps-shot { position: relative; overflow: hidden; width: 100%;
+                   background: #000; min-height: 280px; }
         .ps-win { height: 100%; border-radius: 0; border-width: 0; }
         /* all demo panels embed the self-contained demo reel as an iframe */
-        .ps-demo-frame { display: block; width: 100%; height: 100%; border: 0; background: #0B1113;
-                         position: relative; z-index: 1; }
+        .ps-demo-frame { display: block; width: 100%; height: 100%; border: 0; background: #000;
+                         position: relative; z-index: 1; object-fit: contain; }
+        /* skip rendering off-screen / inactive panels to reduce scroll jank */
+        .ps-panel:not(.is-on) { content-visibility: auto; }
 
         /* ── video control bar: appears on hover over the demo shot ── */
         .ps-controls {
@@ -1661,22 +1665,23 @@
            it reads on the white body corner it sits over */
         .ps-detail .ps-counter { position: absolute; top: 18px; right: 20px; z-index: 5;
                                  background: #10181b; border-color: #10181b; color: #fff; }
-        /* ── bento grid: hero left, 2×2 caps right ── */
+        /* ── bento grid: hero on top, 2×2 caps below ── */
         .ps-body {
-            padding: 30px 32px;
+            padding: 24px 26px;
             display: grid;
-            grid-template-columns: 1.4fr 1fr 1fr;
-            grid-template-rows: 1fr 1fr;
-            gap: 10px;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto 1fr 1fr;
+            gap: 8px;
             align-items: stretch;
+            align-content: start;
         }
-        /* panels without caps → hero fills the whole row */
+        /* panels without caps → hero fills everything */
         .ps-body:not(:has(.ps-caps)) { grid-template-columns: 1fr; grid-template-rows: auto; }
         .ps-hero {
-            grid-column: 1; grid-row: 1 / -1;
+            grid-column: 1 / -1; grid-row: 1;
             display: flex; flex-direction: column; justify-content: center;
             background: rgba(16,24,27,.025); border-radius: 14px;
-            padding: 28px 26px;
+            padding: 22px 20px;
         }
         .ps-body:not(:has(.ps-caps)) .ps-hero { background: none; padding: 0; }
         .ps-eyebrow {
@@ -1728,9 +1733,9 @@
                is in the flow */
             .ps-detail { height: auto; }
             .ps-track { display: block; transform: none !important; }
-            .ps-panel { display: none; flex-direction: column; }
-            .ps-panel.is-on { display: flex; }
-            .ps-shot { aspect-ratio: 16/9; height: auto; }
+            .ps-panel { display: none; grid-template-columns: 1fr; }
+            .ps-panel.is-on { display: grid; }
+            .ps-shot { aspect-ratio: 16/9; height: auto; min-height: 0; }
             .ps-body { padding: 24px 20px; grid-template-columns: 1fr; grid-template-rows: auto; }
             .ps-hero { grid-column: 1; grid-row: auto; background: none; padding: 0 0 18px; }
             .ps-counter { display: none; }
@@ -2816,7 +2821,7 @@
 
     <script>
         /* ---------- smooth scroll ---------- */
-        const lenis = new Lenis({ lerp: 0.1 });
+        const lenis = new Lenis({ lerp: 0.12, smoothWheel: true });
         function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
         requestAnimationFrame(raf);
         gsap.registerPlugin(ScrollTrigger);
@@ -2914,11 +2919,16 @@
                 setTimeout(loop, 3000);
             }, 3200);
         })();
-        document.querySelectorAll("[data-reveal]").forEach(el => {
-            gsap.fromTo(el, { y: 22, opacity: 0 }, {
+        /* batch all reveals into one IntersectionObserver instead of N ScrollTriggers */
+        gsap.set("[data-reveal]", { y: 22, opacity: 0 });
+        ScrollTrigger.batch("[data-reveal]", {
+            onEnter: batch => gsap.to(batch, {
                 y: 0, opacity: 1, duration: .7, ease: "power2.out",
-                scrollTrigger: { trigger: el, start: "top 90%" }
-            });
+                stagger: 0.08, overwrite: true,
+                onComplete: function () { this.targets().forEach(el => { el.style.willChange = "auto"; }); }
+            }),
+            start: "top 92%",
+            once: true
         });
 
         /* ---------- About Shannon card animations ---------- */
