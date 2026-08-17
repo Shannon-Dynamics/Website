@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import { Fragment, type ReactNode } from 'react';
 import { Halftone } from './Halftone';
-import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY, SHANNON_SITE } from '@/lib/shannon';
+import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY } from '@/lib/shannon';
 
 export interface Crumb {
   label: string;
   /** Absolute for the marketing site, root-relative for a route in this book. */
   href?: string;
+  /** Use a plain <a> instead of Next.js <Link> — for links outside the book. */
+  external?: boolean;
 }
 
 interface PageBannerProps {
@@ -16,15 +18,6 @@ interface PageBannerProps {
   /** Secondary pages take a shorter plate than the book's front door. */
   small?: boolean;
 }
-
-/**
- * True when href is a route inside this Next.js book app (should use <Link>).
- * Marketing-site links built by `site()` start with SHANNON_SITE when it's a
- * relative path — those must use a plain <a> so Next.js doesn't prepend basePath.
- */
-const isBookRoute = (href: string) =>
-  href.startsWith('/') &&
-  !(SHANNON_SITE.startsWith('/') && (href + '/').startsWith(SHANNON_SITE + '/'));
 
 /**
  * The dark halftone plate every Shannon sub-page opens with. It carries the
@@ -40,7 +33,7 @@ export function PageBanner({ crumb, title, sub, small = false }: PageBannerProps
             <Fragment key={`${c.label}-${i}`}>
               {c.href === undefined ? (
                 <span className="on">{c.label}</span>
-              ) : isBookRoute(c.href) ? (
+              ) : (c.href.startsWith('/') && !c.external) ? (
                 <Link href={c.href}>{c.label}</Link>
               ) : (
                 <a href={c.href}>{c.label}</a>
@@ -62,9 +55,9 @@ export function PageBanner({ crumb, title, sub, small = false }: PageBannerProps
  */
 export function bookCrumb(...tail: Crumb[]): Crumb[] {
   return [
-    { label: 'SHANNON', href: SHANNON_HOME },
-    { label: 'LIBRARY', href: SHANNON_LIBRARY },
-    { label: 'BOOKS', href: SHANNON_BOOKS },
+    { label: 'SHANNON', href: SHANNON_HOME, external: true },
+    { label: 'LIBRARY', href: SHANNON_LIBRARY, external: true },
+    { label: 'BOOKS', href: SHANNON_BOOKS, external: true },
     ...tail,
   ];
 }
