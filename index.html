@@ -3044,6 +3044,29 @@
 
                 let isPaused = false;
                 let position = 0; // 0..1
+                let scrubbing = false;
+
+                const post = (msg) => {
+                    if (iframe.contentWindow) iframe.contentWindow.postMessage(msg, "*");
+                };
+                const updateToggle = () => {
+                    toggleBtn.innerHTML = isPaused ? PLAY_SVG : PAUSE_SVG;
+                    toggleBtn.setAttribute("aria-label", isPaused ? "Play" : "Pause");
+                    toggleBtn.title = isPaused ? "Play" : "Pause";
+                };
+                const updateUI = (pos, time) => {
+                    const pct = (pos * 100) + "%";
+                    fill.style.width = pct;
+                    thumb.style.left = pct;
+                    timeLabel.textContent = fmt(time) + " / 0:45";
+                    // highlight active chapter
+                    chapters.forEach((ch, i) => {
+                        const marks = chapContainer.querySelectorAll(".ps-chap-mark");
+                        const next = chapters[i + 1];
+                        const active = time >= ch.start && (!next || time < next.start);
+                        if (marks[i]) marks[i].classList.toggle("is-active", active);
+                    });
+                };
 
                 // Build chapter markers + pip marks
                 let chapters = [];
@@ -3068,28 +3091,6 @@
                     chapContainer.appendChild(mark);
                 });
 
-                function post(msg) {
-                    if (iframe.contentWindow) iframe.contentWindow.postMessage(msg, "*");
-                }
-                function updateToggle() {
-                    toggleBtn.innerHTML = isPaused ? PLAY_SVG : PAUSE_SVG;
-                    toggleBtn.setAttribute("aria-label", isPaused ? "Play" : "Pause");
-                    toggleBtn.title = isPaused ? "Play" : "Pause";
-                }
-                function updateUI(pos, time) {
-                    const pct = (pos * 100) + "%";
-                    fill.style.width = pct;
-                    thumb.style.left = pct;
-                    timeLabel.textContent = fmt(time) + " / 0:45";
-                    // highlight active chapter
-                    chapters.forEach((ch, i) => {
-                        const marks = chapContainer.querySelectorAll(".ps-chap-mark");
-                        const next = chapters[i + 1];
-                        const active = time >= ch.start && (!next || time < next.start);
-                        if (marks[i]) marks[i].classList.toggle("is-active", active);
-                    });
-                }
-
                 // Play/Pause toggle
                 toggleBtn.addEventListener("click", () => {
                     post({ type: "toggle" });
@@ -3105,12 +3106,11 @@
                 });
 
                 // Scrubber drag
-                let scrubbing = false;
-                function scrubPos(e) {
+                const scrubPos = (e) => {
                     const rect = track.getBoundingClientRect();
                     return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                }
-                function scrubUpdate(e) {
+                };
+                const scrubUpdate = (e) => {
                     const p = scrubPos(e);
                     const t = p * DUR;
                     fill.style.width = (p * 100) + "%";
@@ -3125,7 +3125,7 @@
                         if (marks[i]) marks[i].classList.toggle("is-active", active);
                     });
                     return p;
-                }
+                };
 
                 scrubber.addEventListener("pointerdown", e => {
                     scrubbing = true;
@@ -3159,7 +3159,7 @@
 
                 // Poll iframe for progress via exposed getter (rAF-driven,
                 // avoids throttled setInterval issues in embedded iframes)
-                function pollProgress() {
+                const pollProgress = () => {
                     requestAnimationFrame(pollProgress);
                     if (scrubbing) return;
                     try {
@@ -3170,7 +3170,7 @@
                         if (isPaused !== d.paused) { isPaused = d.paused; updateToggle(); }
                         updateUI(d.position, d.time);
                     } catch (e) { /* cross-origin or not loaded yet */ }
-                }
+                };
                 pollProgress();
             });
         })();

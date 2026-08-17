@@ -1285,5 +1285,51 @@ if (matchMedia("(prefers-reduced-motion: reduce)").matches){
     $("#btnPlay").textContent = "Pause";
   });
 }
+
+const CHAPTERS = [
+  { name: "Dashboard", start: 3250 },
+  { name: "Triage", start: 15300 },
+  { name: "AI Governance", start: 30600 }
+];
+
+/* ── postMessage API for parent page ────────────────────────────── */
+window.addEventListener("message", e => {
+  if (!e.data || typeof e.data !== "object") return;
+  const msg = e.data;
+  if (msg.type === "replay") {
+    reset(); t0 = performance.now(); paused = false;
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "pause") {
+    if (!paused) { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Play";
+  } else if (msg.type === "play") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "toggle") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    else { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = paused ? "Play" : "Pause";
+  } else if (msg.type === "seek") {
+    const target = Math.max(0, Math.min(1, msg.position)) * DUR;
+    reset();
+    t0 = performance.now() - target;
+    // Fire all cues up to the target time
+    for (const c of CUES) {
+      if (c.t <= target) { c.done = true; c.fn(); }
+    }
+    if (paused) pausedAt = performance.now();
+  } else if (msg.type === "getInfo") {
+    // Send back chapter/meta info on request
+    parent.postMessage({ type: "info", id: msg.id, dur: DUR, chapters: CHAPTERS }, "*");
+  }
+});
+
+// Expose progress getter so the parent page can poll via rAF
+window._demoProgress = () => {
+  const now = performance.now();
+  const elapsed = paused ? (pausedAt - t0) : (now - t0);
+  const t = ((elapsed % DUR) + DUR) % DUR;
+  return { position: t / DUR, time: t, duration: DUR, paused: paused };
+};
 })();
 </script>
