@@ -860,17 +860,23 @@
             to   { opacity: 1; transform: translateY(0); }
         }
         .hero-shortcuts {
-            display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px;
-            margin-top: 64px; border-radius: 12px; overflow: hidden;
-            background: rgba(255,255,255,.1);
+            display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+            margin-top: 64px;
             animation: hero-sc-in .7s .55s ease both;
         }
         .hero-shortcut {
             display: flex; align-items: center; gap: 16px;
-            background: rgba(11,17,20,.8); padding: 20px 24px;
-            transition: background .3s ease, padding-left .3s ease;
+            background: rgba(255,255,255,.06);
+            backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,.12);
+            border-radius: 14px; padding: 22px 24px;
+            transition: background .3s ease, border-color .3s ease, padding-left .3s ease;
         }
-        .hero-shortcut:hover { background: rgba(11,17,20,.65); padding-left: 30px; }
+        .hero-shortcut:hover {
+            background: rgba(255,255,255,.1);
+            border-color: rgba(255,255,255,.22);
+            padding-left: 30px;
+        }
         .hero-shortcut b {
             display: block; font-size: 14.5px; font-weight: 600; color: #fff;
             letter-spacing: -.01em;
@@ -1716,7 +1722,7 @@
         @keyframes chart-march { to { stroke-dashoffset: -14; } }
 
         @media (max-width: 1023.98px) {
-            .ps-row { grid-template-columns: 1fr 1fr; }
+            .ps-row { grid-template-columns: 1fr 1fr !important; }
             .ps-card { min-height: 0; }
             /* tap-to-switch below the fold — no strip, only the active panel
                is in the flow */
@@ -1733,7 +1739,7 @@
             /* one column would stack four tall cards above the panel — collapse
                them to compact selector rows, the blurb is redundant once the
                panel below is open anyway */
-            .ps-row { grid-template-columns: 1fr; gap: 8px; }
+            .ps-row { grid-template-columns: 1fr !important; gap: 8px; }
             .ps-card { flex-direction: row; align-items: center; gap: 14px; padding: 14px 16px; }
             .ps-card p { display: none; }
             .ps-card::before { left: 16px; right: 16px; }
@@ -2104,43 +2110,49 @@
                             <span class="sec-num">02</span>
                             <span class="sec-dash"></span>
                             <span class="sec-label">PRODUCTS</span>
-                            <span class="sec-meta">OCT / CND / SEN / SCT / FCT</span>
+                            <span class="sec-meta" id="ps-meta">OCT / CND</span>
                         </div>
                         <h2 class="sec-title">Selected Work</h2>
                     </div>
 
+                    <!-- ── category toggle ── -->
+                    <div class="ps-cat-toggle" data-reveal>
+                        <button type="button" class="ps-cat-btn" data-cat="robotics" aria-selected="true">Robotics</button>
+                        <button type="button" class="ps-cat-btn" data-cat="software" aria-selected="false">Software</button>
+                    </div>
+
                     <!-- ── trigger row: hover/tap a card to load it below ── -->
                     <div class="ps-row" id="ps-row" role="tablist" aria-label="Shannon systems" data-reveal>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-oct">
+                        <button type="button" class="ps-card" role="tab" data-cat="robotics" aria-selected="false" aria-controls="ps-oct">
                             <span class="ps-num">001</span>
                             <span>
                                 <h3>OctoMap Rust</h3>
                                 <p>Pure-Rust 3D occupancy mapping — no unsafe, no C++ toolchain.</p>
                             </span>
                         </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-cnd">
+                        <button type="button" class="ps-card" role="tab" data-cat="robotics" aria-selected="false" aria-controls="ps-cnd">
                             <span class="ps-num">002</span>
                             <span>
                                 <h3>Candi Recon</h3>
                                 <p>A MuJoCo drone reconstructs a temple into a 3D occupancy map.</p>
                             </span>
                         </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sen">
-                            <span class="ps-num">003</span>
+                        <button type="button" class="ps-card" role="tab" data-cat="software" aria-selected="false" aria-controls="ps-sen">
+                            <span class="ps-num">001</span>
                             <span>
                                 <h3>Shannon Sentinel</h3>
                                 <p>An agentic security operations center under governed autonomy.</p>
                             </span>
                         </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-sct">
-                            <span class="ps-num">004</span>
+                        <button type="button" class="ps-card" role="tab" data-cat="software" aria-selected="false" aria-controls="ps-sct">
+                            <span class="ps-num">002</span>
                             <span>
                                 <h3>Shannon Scout</h3>
                                 <p>Interviews recorded, transcribed, and scored — bilingual by design.</p>
                             </span>
                         </button>
-                        <button type="button" class="ps-card" role="tab" aria-selected="false" aria-controls="ps-fct">
-                            <span class="ps-num">005</span>
+                        <button type="button" class="ps-card" role="tab" data-cat="software" aria-selected="false" aria-controls="ps-fct">
+                            <span class="ps-num">003</span>
                             <span>
                                 <h3>Shannon Factory</h3>
                                 <p>A company run by AI agents — org chart, budgets, and approvals.</p>
@@ -2152,7 +2164,7 @@
                     <div class="ps-detail" data-reveal>
                         <!-- filmstrip: the frame stays put, the four panels ride this track -->
                         <div class="ps-track">
-                            <article class="ps-panel" id="ps-oct" role="tabpanel">
+                            <article class="ps-panel" id="ps-oct" data-cat="robotics" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/octomap-rust-demo.html?embed=1"
                                         title="OctoMap Rust demo" loading="lazy"></iframe>
@@ -2191,7 +2203,7 @@
                             </div>
                         </article>
 
-                            <article class="ps-panel" id="ps-cnd" role="tabpanel">
+                            <article class="ps-panel" id="ps-cnd" data-cat="robotics" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/candi-recon-demo.html?embed=1"
                                         title="Candi Recon demo" loading="lazy"></iframe>
@@ -2230,7 +2242,7 @@
                             </div>
                         </article>
 
-                            <article class="ps-panel" id="ps-sen" role="tabpanel">
+                            <article class="ps-panel" id="ps-sen" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-sentinel-demo.html?embed=1"
                                         title="Shannon Sentinel product demo" loading="lazy"></iframe>
@@ -2262,7 +2274,7 @@
                             </div>
                         </article>
 
-                            <article class="ps-panel" id="ps-sct" role="tabpanel">
+                            <article class="ps-panel" id="ps-sct" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-scout-demo.html?embed=1"
                                         title="Shannon Scout product demo" loading="lazy"></iframe>
@@ -2301,7 +2313,7 @@
                             </div>
                         </article>
 
-                            <article class="ps-panel" id="ps-fct" role="tabpanel">
+                            <article class="ps-panel" id="ps-fct" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-factory-demo.html?embed=1"
                                         title="Shannon Factory product demo" loading="lazy"></iframe>
@@ -2998,39 +3010,84 @@
             });
         })();
 
-        /* ---------- product showcase: trigger row slides the filmstrip ----------
-           A tablist where hover counts as selection on a real pointer. The four
-           full panels sit on one horizontal track inside a fixed frame;
-           selecting a product slides the track to it, and the arriving panel's
-           copy staggers in as the strip settles. `inert` keeps off-screen
-           panels out of the tab order. */
+        /* ---------- product showcase: category toggle + filmstrip ----------
+           Two category sub-tabs (Robotics / Software) filter which product
+           cards and panels are visible. Within a category, hovering or clicking
+           a card slides the filmstrip to that product's panel. Panels hidden by
+           a category switch get display:none so they leave the flex flow and
+           translateX works on the remaining visible panels. */
         (function () {
             const row = document.getElementById("ps-row");
             if (!row) return;
-            const tabs = [...row.querySelectorAll(".ps-card")];
-            const panels = tabs.map(t => document.getElementById(t.getAttribute("aria-controls")));
+            const allTabs = [...row.querySelectorAll(".ps-card")];
+            const allPanels = allTabs.map(t => document.getElementById(t.getAttribute("aria-controls")));
             const track = document.querySelector(".ps-track");
             const counter = document.querySelector(".ps-counter");
-            const fine = matchMedia("(hover: hover) and (pointer: fine)");
-            let timer;
+            const meta = document.getElementById("ps-meta");
+            const catBtns = [...document.querySelectorAll(".ps-cat-btn")];
 
-            function show(i) {
-                tabs.forEach((t, j) => t.setAttribute("aria-selected", String(j === i)));
-                if (track) track.style.transform = `translateX(-${i * 100}%)`;
-                panels.forEach((p, j) => {
-                    if (!p) return;
-                    p.classList.toggle("is-on", j === i);
-                    p.toggleAttribute("inert", j !== i);
-                });
-                if (counter) counter.textContent = String(i + 1).padStart(2, "0") + " / 05";
+            const CAT_META = { robotics: "OCT / CND", software: "SEN / SCT / FCT" };
+            let activeCat = "robotics";
+
+            /* return only the tabs/panels in the active category */
+            const visibleTabs = () => allTabs.filter(t => t.dataset.cat === activeCat);
+            const visiblePanels = () => allPanels.filter(p => p && p.dataset.cat === activeCat);
+
+            /* show the Nth product within the current category */
+            function showInCat(catIdx) {
+                const vTabs = visibleTabs();
+                const vPanels = visiblePanels();
+
+                /* deselect everything */
+                allTabs.forEach(t => t.setAttribute("aria-selected", "false"));
+                allPanels.forEach(p => { if (p) { p.classList.remove("is-on"); p.toggleAttribute("inert", true); } });
+
+                /* select the target */
+                if (vTabs[catIdx]) vTabs[catIdx].setAttribute("aria-selected", "true");
+                if (track) track.style.transform = `translateX(-${catIdx * 100}%)`;
+                if (vPanels[catIdx]) {
+                    vPanels[catIdx].classList.add("is-on");
+                    vPanels[catIdx].removeAttribute("inert");
+                }
+                if (counter) counter.textContent = String(catIdx + 1).padStart(2, "0") + " / " + String(vPanels.length).padStart(2, "0");
             }
 
-            tabs.forEach((tab, i) => {
-                tab.addEventListener("click", () => show(i));
-                tab.addEventListener("focus", () => show(i));
+            /* switch category */
+            function switchCat(cat) {
+                activeCat = cat;
+                catBtns.forEach(b => b.setAttribute("aria-selected", String(b.dataset.cat === cat)));
+                if (meta) meta.textContent = CAT_META[cat] || "";
+
+                /* show/hide cards */
+                allTabs.forEach(t => { t.style.display = t.dataset.cat === cat ? "" : "none"; });
+                /* show/hide panels */
+                allPanels.forEach(p => { if (p) p.style.display = p.dataset.cat === cat ? "" : "none"; });
+                /* update grid columns for the visible card count */
+                const cols = visibleTabs().length;
+                row.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+                /* reset track and show first product */
+                showInCat(0);
+            }
+
+            /* wire up category buttons */
+            catBtns.forEach(btn => {
+                btn.addEventListener("click", () => switchCat(btn.dataset.cat));
             });
 
-            show(0);
+            /* wire up product cards — find their index within the active category */
+            allTabs.forEach(tab => {
+                const handler = () => {
+                    const vTabs = visibleTabs();
+                    const idx = vTabs.indexOf(tab);
+                    if (idx >= 0) showInCat(idx);
+                };
+                tab.addEventListener("click", handler);
+                tab.addEventListener("focus", handler);
+            });
+
+            /* initialise to Robotics */
+            switchCat("robotics");
         })();
 
         /* ---------- video controls: play/pause, replay, scrubber ----------
