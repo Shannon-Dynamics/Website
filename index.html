@@ -1543,7 +1543,7 @@
         }
         .ps-track { display: flex;
                     transition: transform .7s cubic-bezier(.76,0,.24,1); will-change: transform; }
-        .ps-panel { flex: 0 0 100%; min-width: 0; position: relative; display: block; }
+        .ps-panel { flex: 0 0 100%; min-width: 0; display: flex; flex-direction: column; }
         .ps-shot { position: relative; overflow: hidden; aspect-ratio: 16/9; width: 100%; }
         .ps-win { height: 100%; border-radius: 0; border-width: 0; }
         /* all demo panels embed the self-contained demo reel as an iframe */
@@ -1552,7 +1552,7 @@
 
         /* ── video control bar: appears on hover over the demo shot ── */
         .ps-controls {
-            position: absolute; left: 0; right: 36%; bottom: 0; z-index: 6;
+            position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
             display: flex; align-items: center; gap: 10px;
             padding: 10px 16px;
             background: linear-gradient(transparent, rgba(11,17,19,.82) 38%, rgba(11,17,19,.92));
@@ -1661,47 +1661,43 @@
            it reads on the white body corner it sits over */
         .ps-detail .ps-counter { position: absolute; top: 18px; right: 20px; z-index: 5;
                                  background: #10181b; border-color: #10181b; color: #fff; }
-        /* ── bento: info panel overlaid on the right of the full-width video ── */
+        /* ── bento grid: hero left, 2×2 caps right ── */
         .ps-body {
-            position: absolute; right: 0; top: 0; bottom: 0;
-            width: 36%;
-            padding: 28px 22px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            gap: 0;
-            overflow-y: auto;
-            background: rgba(255,255,255,.93);
-            backdrop-filter: blur(24px);
-            -webkit-backdrop-filter: blur(24px);
-            border-left: 1px solid rgba(255,255,255,.55);
-            z-index: 4;
+            padding: 30px 32px;
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 10px;
+            align-items: stretch;
         }
+        /* panels without caps → hero fills the whole row */
+        .ps-body:not(:has(.ps-caps)) { grid-template-columns: 1fr; grid-template-rows: auto; }
         .ps-hero {
-            display: flex; flex-direction: column;
+            grid-column: 1; grid-row: 1 / -1;
+            display: flex; flex-direction: column; justify-content: center;
+            background: rgba(16,24,27,.025); border-radius: 14px;
+            padding: 28px 26px;
         }
+        .ps-body:not(:has(.ps-caps)) .ps-hero { background: none; padding: 0; }
         .ps-eyebrow {
             font-family: "JetBrains Mono", monospace; font-size: 10px;
             letter-spacing: .2em; color: #4C7EFF;
         }
         .ps-title {
-            font-size: clamp(18px, 1.7vw, 26px); font-weight: 500;
+            font-size: clamp(24px, 2.4vw, 34px); font-weight: 500;
             letter-spacing: -.02em; line-height: 1.1; margin-top: 12px;
         }
-        .ps-desc { font-size: 12.5px; line-height: 1.65; color: rgba(16,24,27,.62); margin-top: 12px; max-width: 32ch; }
+        .ps-desc { font-size: 13px; line-height: 1.7; color: rgba(16,24,27,.62); margin-top: 14px; max-width: 44ch; }
         .ps-cta {
             align-self: flex-start; display: inline-flex; align-items: center; gap: 9px;
             padding: 11px 22px; font-size: 13px; font-weight: 500; margin-top: 20px;
         }
         .ps-caps {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-            margin-top: 16px;
+            display: contents; /* caps become direct grid children of .ps-body */
         }
         .ps-cap {
             border: 1px solid rgba(16,24,27,.10); border-radius: 11px;
-            background: rgba(255,255,255,.6); padding: 12px 14px;
+            background: rgba(255,255,255,.6); padding: 14px 16px;
             display: flex; flex-direction: column; justify-content: center;
         }
         .ps-cap span { font-family: "JetBrains Mono", monospace; font-size: 9px; letter-spacing: .16em; color: #4C7EFF; }
@@ -1732,15 +1728,11 @@
                is in the flow */
             .ps-detail { height: auto; }
             .ps-track { display: block; transform: none !important; }
-            .ps-panel { display: none; }
-            .ps-panel.is-on { display: block; }
+            .ps-panel { display: none; flex-direction: column; }
+            .ps-panel.is-on { display: flex; }
             .ps-shot { aspect-ratio: 16/9; height: auto; }
-            .ps-body { position: static; width: 100%; padding: 24px 20px;
-                       background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none;
-                       border-left: none; }
-            .ps-controls { right: 0; }
-            .ps-title { font-size: clamp(20px, 3vw, 28px); }
-            .ps-desc { max-width: none; }
+            .ps-body { padding: 24px 20px; grid-template-columns: 1fr; grid-template-rows: auto; }
+            .ps-hero { grid-column: 1; grid-row: auto; background: none; padding: 0 0 18px; }
             .ps-counter { display: none; }
         }
         @media (max-width: 560px) {
