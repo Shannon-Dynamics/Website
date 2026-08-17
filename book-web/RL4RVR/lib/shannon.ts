@@ -57,11 +57,6 @@ export const BOOK_PDF = site('book-pdf/reinforcement-learning-for-robotics.pdf')
 /** The Library submenu, mirroring the marketing site's nav. */
 export const LIBRARY_LINKS = [
   {
-    href: site('library-publications.html'),
-    title: 'Publications',
-    blurb: 'Papers, preprints and field notes',
-  },
-  {
     href: SHANNON_BOOKS,
     title: 'Books',
     blurb: 'Technical books and guides',
@@ -70,5 +65,10 @@ export const LIBRARY_LINKS = [
     href: site('library-open-source.html'),
     title: 'Open Source',
     blurb: 'Repositories, guides and API reference',
+  },
+  {
+    href: site('library-publications.html'),
+    title: 'Publications',
+    blurb: 'Papers, preprints and field notes',
   },
 ];
