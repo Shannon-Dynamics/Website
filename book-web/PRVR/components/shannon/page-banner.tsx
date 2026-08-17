@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { Fragment, type ReactNode } from 'react';
 import { Halftone } from './halftone';
 import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY } from '@/lib/shannon';
@@ -31,8 +30,6 @@ export function PageBanner({ crumb, title, sub, small = false }: PageBannerProps
             <Fragment key={`${c.label}-${i}`}>
               {c.href === undefined ? (
                 <span className="on">{c.label}</span>
-              ) : c.href.startsWith('/') ? (
-                <Link href={c.href}>{c.label}</Link>
               ) : (
                 <a href={c.href}>{c.label}</a>
               )}
