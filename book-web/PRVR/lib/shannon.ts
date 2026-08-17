@@ -3,9 +3,9 @@
  *
  * The book is mounted inside the marketing site — at `/books/<slug>/` — so the
  * links back out are same-origin, and CI passes the site root in through
- * `NEXT_PUBLIC_SHANNON_SITE` (`/web-shannon-26` for a project site, empty for a
- * custom domain). The absolute fallback below keeps those links working when
- * the book is served on its own, as `npm run dev` and `npm run preview` do.
+ * `NEXT_PUBLIC_SHANNON_SITE` (empty string when served at a custom domain root).
+ * The absolute fallback below keeps those links working when the book is served
+ * on its own, as `npm run dev` and `npm run preview` do.
  */
 
 const trimEnd = (s: string) => s.replace(/\/+$/, '');
@@ -14,13 +14,13 @@ const trimStart = (s: string) => s.replace(/^\/+/, '');
 /**
  * The marketing site this book is a Library entry of.
  *
- * A root-relative value ('' or '/web-shannon-26') keeps every link same-origin;
+ * An empty string (custom domain root) keeps every link same-origin;
  * an absolute URL is the fallback for serving the book standalone. `??` rather
  * than `||` on purpose: an empty string is the meaningful "site is at the
  * domain root" value, not a missing one.
  */
 export const SHANNON_SITE = trimEnd(
-  process.env.NEXT_PUBLIC_SHANNON_SITE ?? 'https://shannon-dynamics.github.io/web-shannon-26',
+  process.env.NEXT_PUBLIC_SHANNON_SITE ?? 'https://shannon.id',
 );
 
 /** A URL on the marketing site. */

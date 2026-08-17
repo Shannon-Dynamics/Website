@@ -5,10 +5,12 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   LIBRARY_LINKS,
+  SHANNON_CAPABILITIES,
   SHANNON_CONTACT,
   SHANNON_ECOSYSTEM,
   SHANNON_HOME,
   SHANNON_LIBRARY,
+  SHANNON_PRODUCTS,
   asset,
 } from '@/lib/shannon';
 
@@ -117,6 +119,9 @@ export function SiteHeader({
             ))}
 
             <span className="sd-nav-div" aria-hidden />
+
+            <a className="sd-nav-link" href={SHANNON_CAPABILITIES}>Capabilities</a>
+            <a className="sd-nav-link" href={SHANNON_PRODUCTS}>Products</a>
 
             <div
               ref={menuRef}
