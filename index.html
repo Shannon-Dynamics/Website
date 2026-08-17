@@ -646,10 +646,9 @@
            below); the veil only needs to hold the floor right behind the words. */
         .tex-hero::after {
             background:
-                linear-gradient(90deg, rgba(11,17,20,.56) 0%, rgba(11,17,20,.34) 40%, transparent 60%),
-                radial-gradient(ellipse 46% 62% at 22% 50%, rgba(11,17,20,.6), rgba(11,17,20,.24) 66%, transparent 88%),
-                linear-gradient(to bottom, transparent 0%, transparent 24%,
-                                rgba(11,17,20,.22) 34%, rgba(11,17,20,.3) 68%, transparent 84%);
+                linear-gradient(90deg, rgba(11,17,20,.52) 0%, rgba(11,17,20,.3) 50%, transparent 70%),
+                linear-gradient(to bottom, transparent 0%, transparent 20%,
+                                rgba(11,17,20,.2) 34%, rgba(11,17,20,.28) 72%, rgba(11,17,20,.5) 92%);
         }
         /* CTA form: copy runs the full height of the left column with no big
            illustration gap to leave open, so — unlike .tex-hero — this stays
@@ -782,27 +781,45 @@
         .hero-in {
             position: relative; width: 100%; max-width: 1240px; margin: 0 auto;
             padding: 176px 24px 96px;
-            display: grid; gap: 48px 64px; align-items: end;
+            display: flex; flex-direction: column; justify-content: flex-end; gap: 0;
         }
         @media (min-width: 900px) {
             .hero { min-height: 100vh; }
-            .hero-in { grid-template-columns: minmax(0, 1.4fr) minmax(268px, .6fr); padding-bottom: 120px; }
+            .hero-in { padding-bottom: 80px; }
         }
         .hero-h1 {
-            font-size: clamp(34px, 4.6vw, 64px); font-weight: 500; letter-spacing: -.03em;
-            line-height: 1.08; color: rgba(255,255,255,.42); max-width: 20ch;
-            /* evens the three lines so the sentence never strands a short word
-               on the last one; degrades to normal wrapping where unsupported */
+            font-size: clamp(38px, 5.8vw, 82px); font-weight: 500; letter-spacing: -.03em;
+            line-height: 1.06; color: rgba(255,255,255,.42);
             text-wrap: balance;
         }
-        /* the competencies carry the emphasis; the connective words recede —
-           the two-speed headline the rest of the page already uses */
         .hero-h1 .on { color: #fff; }
         .hero-sub {
             font-size: clamp(14px, 1.15vw, 16px); line-height: 1.7;
-            color: rgba(255,255,255,.94); max-width: 46ch; margin-top: 26px;
+            color: rgba(255,255,255,.94); max-width: 52ch; margin-top: 26px;
         }
         .hero-cta { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; }
+
+        /* ── stat bar ── */
+        .hero-stats {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+            margin-top: 56px; border-radius: 12px; overflow: hidden;
+            background: rgba(255,255,255,.08);
+        }
+        .hero-stat {
+            background: rgba(11,17,20,.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            padding: 22px 24px; text-align: center;
+        }
+        .hero-stat strong {
+            display: block; font-size: clamp(22px, 2.2vw, 32px); font-weight: 600;
+            color: #fff; letter-spacing: -.02em;
+        }
+        .hero-stat span {
+            display: block; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+            color: rgba(255,255,255,.5); margin-top: 6px;
+        }
+        @media (max-width: 600px) {
+            .hero-stats { grid-template-columns: repeat(2, 1fr); }
+        }
 
         /* ── library shortcut ──
            Same hairline row grammar the spec index used, but the rows are
@@ -965,6 +982,157 @@
         /* ═══ geometric capability marks ═══ */
         .cap-mark { display: block; width: 60px; height: 60px; color: #4C7EFF; margin-bottom: 15px; }
 
+        /* ─── capability icon animations ─── */
+
+        /* R.01 — wave ellipses oscillate */
+        @keyframes cap-wave {
+            0%,100% { transform: scaleY(1);   opacity: .85; }
+            50%     { transform: scaleY(.72); opacity: .45; }
+        }
+        .cap-anim-wave ellipse {
+            transform-origin: center center;
+            animation: cap-wave 3s ease-in-out infinite;
+        }
+        .cap-anim-wave ellipse:nth-child(1) { animation-delay: 0s; }
+        .cap-anim-wave ellipse:nth-child(2) { animation-delay: .18s; }
+        .cap-anim-wave ellipse:nth-child(3) { animation-delay: .36s; }
+        .cap-anim-wave ellipse:nth-child(4) { animation-delay: .54s; }
+        .cap-anim-wave ellipse:nth-child(5) { animation-delay: .72s; }
+        .cap-anim-wave ellipse:nth-child(6) { animation-delay: .90s; }
+        .cap-anim-wave ellipse:nth-child(7) { animation-delay: 1.08s; }
+        .cap-anim-wave ellipse:nth-child(8) { animation-delay: 1.26s; }
+
+        /* R.02 — radar sweep rotation */
+        @keyframes cap-radar {
+            to { transform: rotate(360deg); }
+        }
+        .cap-anim-radar .radar-sweep {
+            transform-origin: 16px 54px;
+            animation: cap-radar 4s linear infinite;
+        }
+        @keyframes cap-radar-pulse {
+            0%,100% { opacity: .3; }
+            50%     { opacity: 1; }
+        }
+        .cap-anim-radar .radar-arc {
+            animation: cap-radar-pulse 2s ease-in-out infinite;
+        }
+        .cap-anim-radar .radar-arc:nth-child(2) { animation-delay: .5s; }
+
+        /* R.03 — overlapping circles breathe */
+        @keyframes cap-venn-l {
+            0%,100% { transform: translateX(0); }
+            50%     { transform: translateX(-3px); }
+        }
+        @keyframes cap-venn-r {
+            0%,100% { transform: translateX(0); }
+            50%     { transform: translateX(3px); }
+        }
+        .cap-anim-venn .venn-l { animation: cap-venn-l 3.5s ease-in-out infinite; }
+        .cap-anim-venn .venn-r { animation: cap-venn-r 3.5s ease-in-out infinite; }
+
+        /* R.04 — dot grid pulses */
+        @keyframes cap-dot-on {
+            0%,100% { r: 5.2px; opacity: 1; }
+            50%     { r: 3.8px; opacity: .5; }
+        }
+        @keyframes cap-dot-off {
+            0%,100% { r: 5.2px; opacity: 1; }
+            50%     { r: 6px;   opacity: .7; }
+        }
+        .cap-anim-dots circle[fill="currentColor"] {
+            animation: cap-dot-on 2.4s ease-in-out infinite;
+        }
+        .cap-anim-dots circle:not([fill="currentColor"]) {
+            animation: cap-dot-off 2.4s ease-in-out infinite;
+        }
+        .cap-anim-dots circle:nth-child(odd)  { animation-delay: .3s; }
+        .cap-anim-dots circle:nth-child(3n)   { animation-delay: .6s; }
+
+        /* R.05 — orbit rotation */
+        @keyframes cap-orbit {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes cap-core-pulse {
+            0%,100% { r: 6.5px; }
+            50%     { r: 5px; }
+        }
+        .cap-anim-orbit .orbit-ring {
+            transform-origin: 36px 36px;
+            animation: cap-orbit 8s linear infinite;
+        }
+        .cap-anim-orbit .orbit-core {
+            animation: cap-core-pulse 3s ease-in-out infinite;
+        }
+
+        /* R.06 — square + circle morph / breathe */
+        @keyframes cap-morph-sq {
+            0%,100% { transform: rotate(0deg) scale(1); }
+            50%     { transform: rotate(6deg) scale(.92); }
+        }
+        @keyframes cap-morph-circ {
+            0%,100% { transform: scale(1);   opacity: 1; }
+            50%     { transform: scale(1.06); opacity: .7; }
+        }
+        .cap-anim-morph .morph-sq  { transform-origin: 28px 28px; animation: cap-morph-sq 4s ease-in-out infinite; }
+        .cap-anim-morph .morph-cir { transform-origin: 46px 40px; animation: cap-morph-circ 4s ease-in-out infinite; }
+
+        /* S.01 — triple circles drift */
+        @keyframes cap-tri-1 { 0%,100%{transform:translate(0,0)}50%{transform:translate(-2px,-2px)} }
+        @keyframes cap-tri-2 { 0%,100%{transform:translate(0,0)}50%{transform:translate(2px,-2px)} }
+        @keyframes cap-tri-3 { 0%,100%{transform:translate(0,0)}50%{transform:translate(0,3px)} }
+        .cap-anim-tri .tri-1 { animation: cap-tri-1 3.5s ease-in-out infinite; }
+        .cap-anim-tri .tri-2 { animation: cap-tri-2 3.5s ease-in-out infinite; }
+        .cap-anim-tri .tri-3 { animation: cap-tri-3 3.5s ease-in-out infinite; }
+
+        /* S.02 — diamond spin inside circle */
+        @keyframes cap-dia-spin {
+            0%,100% { transform: rotate(0deg); }
+            50%     { transform: rotate(45deg); }
+        }
+        .cap-anim-diamond .dia-shape {
+            transform-origin: 36px 36px;
+            animation: cap-dia-spin 5s ease-in-out infinite;
+        }
+
+        /* S.03 — crosshair radar + satellite orbit */
+        @keyframes cap-xhair-spin {
+            to { transform: rotate(360deg); }
+        }
+        @keyframes cap-sat-orbit {
+            to { transform: rotate(-360deg); }
+        }
+        .cap-anim-xhair .xhair-ticks {
+            transform-origin: 36px 36px;
+            animation: cap-xhair-spin 12s linear infinite;
+        }
+        .cap-anim-xhair .xhair-sat {
+            transform-origin: 36px 36px;
+            animation: cap-sat-orbit 6s linear infinite;
+        }
+
+        /* S.04 — nested diamonds pulse in */
+        @keyframes cap-nest-outer { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.94)} }
+        @keyframes cap-nest-mid   { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.96)} }
+        @keyframes cap-nest-inner { 0%,100%{opacity:1;transform:scale(1)}50%{opacity:.8;transform:scale(1.04)} }
+        .cap-anim-nest .nest-outer { transform-origin:36px 36px; animation: cap-nest-outer 3s ease-in-out infinite; }
+        .cap-anim-nest .nest-mid   { transform-origin:36px 36px; animation: cap-nest-mid   3s ease-in-out infinite .2s; }
+        .cap-anim-nest .nest-inner { transform-origin:36px 36px; animation: cap-nest-inner 3s ease-in-out infinite .4s; }
+
+        /* S.05 — overlapping circles slide */
+        @keyframes cap-olap-l { 0%,100%{transform:translateX(0)}50%{transform:translateX(-3px)} }
+        @keyframes cap-olap-r { 0%,100%{transform:translateX(0)}50%{transform:translateX(3px)} }
+        .cap-anim-olap .olap-l { animation: cap-olap-l 3.5s ease-in-out infinite; }
+        .cap-anim-olap .olap-r { animation: cap-olap-r 3.5s ease-in-out infinite; }
+
+        /* S.06 — database cylinder breathe */
+        @keyframes cap-cyl-top  { 0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)} }
+        @keyframes cap-cyl-bot  { 0%,100%{transform:translateY(0)}50%{transform:translateY(2px)} }
+        @keyframes cap-cyl-mid  { 0%,100%{opacity:1}50%{opacity:.5} }
+        .cap-anim-cyl .cyl-top  { animation: cap-cyl-top 3.5s ease-in-out infinite; }
+        .cap-anim-cyl .cyl-bot  { animation: cap-cyl-bot 3.5s ease-in-out infinite; }
+        .cap-anim-cyl .cyl-mid  { animation: cap-cyl-mid 3.5s ease-in-out infinite; }
+
         /* ═══ two-speed headlines — lead-in recedes, payoff lands ═══ */
         .hl-soft { color: rgba(16,24,27,.4); font-weight: 400; }
 
@@ -1003,6 +1171,10 @@
         .sec-title {
             font-size: clamp(28px, 3.4vw, 44px); font-weight: 500;
             letter-spacing: -.02em; line-height: 1.08; margin-top: 22px; max-width: 20ch;
+        }
+        .sec-sub {
+            font-size: clamp(15px, 1.3vw, 18px); font-weight: 400;
+            color: rgba(16,24,27,.52); line-height: 1.55; margin-top: 14px; max-width: 42ch;
         }
         /* ═══ hairline cell grid — dividers instead of card surfaces ═══ */
         .hair-grid { display: grid; border-top: 1px solid rgba(16,24,27,.12); }
@@ -1294,7 +1466,7 @@
                 <div class="hero-in" id="hero-copy">
                     <div>
                         <h1 class="hero-h1">
-                            <span class="on">Intelligent</span> Systems.
+                            <span class="on" id="hero-scramble">Intelligent</span> Systems.
                         </h1>
 
                         <p class="hero-sub">
@@ -1307,18 +1479,12 @@
                         </div>
                     </div>
 
-                    <!-- library shortcut — stacks under the copy below 900px -->
-                    <div class="hero-lib">
-                        <p class="hero-lib-label">OPEN ACCESS · THE LIBRARY</p>
-                        <a class="hero-lib-row" href="library-books.html">
-                            <span><b>Books</b><em>Long-form from Shannon Press</em></span>
-                            <i aria-hidden="true">↗</i>
-                        </a>
-                        <a class="hero-lib-row" href="library-open-source.html">
-                            <span><b>Open Source</b><em>Repositories, guides and API reference</em></span>
-                            <i aria-hidden="true">↗</i>
-                        </a>
-                        <a class="hero-lib-all" href="#library">Browse the whole library →</a>
+                    <!-- stat bar — social proof strip at the base of the hero -->
+                    <div class="hero-stats" data-reveal>
+                        <div class="hero-stat"><strong>5</strong><span>Products</span></div>
+                        <div class="hero-stat"><strong>40+</strong><span>Repositories</span></div>
+                        <div class="hero-stat"><strong>5</strong><span>Open-Access Books</span></div>
+                        <div class="hero-stat"><strong>4</strong><span>Ecosystem Companies</span></div>
                     </div>
                 </div>
             </div>
@@ -1414,39 +1580,39 @@
                     <div class="hair-grid">
                         <div class="hair-cell">
                             <span class="cap-num">R.01</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><ellipse cx="17.0" cy="46.0" rx="8" ry="17" transform="rotate(-34 17.0 46.0)"/><ellipse cx="22.2" cy="42.3" rx="8" ry="17" transform="rotate(-34 22.2 42.3)"/><ellipse cx="27.4" cy="38.6" rx="8" ry="17" transform="rotate(-34 27.4 38.6)"/><ellipse cx="32.6" cy="34.9" rx="8" ry="17" transform="rotate(-34 32.6 34.9)"/><ellipse cx="37.8" cy="31.2" rx="8" ry="17" transform="rotate(-34 37.8 31.2)"/><ellipse cx="43.0" cy="27.5" rx="8" ry="17" transform="rotate(-34 43.0 27.5)"/><ellipse cx="48.2" cy="23.8" rx="8" ry="17" transform="rotate(-34 48.2 23.8)"/><ellipse cx="53.4" cy="20.1" rx="8" ry="17" transform="rotate(-34 53.4 20.1)"/></svg>
-                            <h3 class="text-[15px] font-semibold">Simulation & Physics</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Physics-based environments for training and validating robotic systems before physical deployment.</p>
+                            <svg class="cap-mark cap-anim-wave" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><ellipse cx="17.0" cy="46.0" rx="8" ry="17" transform="rotate(-34 17.0 46.0)"/><ellipse cx="22.2" cy="42.3" rx="8" ry="17" transform="rotate(-34 22.2 42.3)"/><ellipse cx="27.4" cy="38.6" rx="8" ry="17" transform="rotate(-34 27.4 38.6)"/><ellipse cx="32.6" cy="34.9" rx="8" ry="17" transform="rotate(-34 32.6 34.9)"/><ellipse cx="37.8" cy="31.2" rx="8" ry="17" transform="rotate(-34 37.8 31.2)"/><ellipse cx="43.0" cy="27.5" rx="8" ry="17" transform="rotate(-34 43.0 27.5)"/><ellipse cx="48.2" cy="23.8" rx="8" ry="17" transform="rotate(-34 48.2 23.8)"/><ellipse cx="53.4" cy="20.1" rx="8" ry="17" transform="rotate(-34 53.4 20.1)"/></svg>
+                            <h3 class="text-[15px] font-semibold">Virtual Sensing</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Simulated sensor streams and digital-twin environments that let robots learn to sense before touching the real world.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.02</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="16" cy="54" r="2.6" fill="currentColor" stroke="none"/><path d="M16 54 L54.99 41.33"/><path d="M16 54 L49.99 31.07"/><path d="M16 54 L42.35 22.59"/><path d="M16 54 L32.68 16.54"/><path d="M36.38 48.92 A21 21 0 0 1 23.18 34.27"/><path d="M48.02 46.02 A33 33 0 0 1 27.29 22.99"/></svg>
-                            <h3 class="text-[15px] font-semibold">Reinforcement Learning</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Massively parallel RL training with curriculum scheduling, domain randomization, and sim-to-real transfer.</p>
+                            <svg class="cap-mark cap-anim-radar" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="16" cy="54" r="2.6" fill="currentColor" stroke="none"/><g class="radar-sweep"><path d="M16 54 L54.99 41.33"/><path d="M16 54 L49.99 31.07"/></g><path d="M16 54 L42.35 22.59"/><path d="M16 54 L32.68 16.54"/><path class="radar-arc" d="M36.38 48.92 A21 21 0 0 1 23.18 34.27"/><path class="radar-arc" d="M48.02 46.02 A33 33 0 0 1 27.29 22.99"/></svg>
+                            <h3 class="text-[15px] font-semibold">Feedback Systems</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Closed-loop feedback architectures — state estimation, observer design, and adaptive control — that keep robots stable under uncertainty.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.03</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="28" cy="36" r="17" fill="url(#gm-hatch)" stroke="none"/><circle cx="28" cy="36" r="17"/><circle cx="46" cy="36" r="17"/></svg>
-                            <h3 class="text-[15px] font-semibold">Robotic Perception</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Sensor systems and perception pipelines — LiDAR, depth cameras, IMUs — that let machines understand their environment.</p>
+                            <svg class="cap-mark cap-anim-venn" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><g class="venn-l"><circle cx="28" cy="36" r="17" fill="url(#gm-hatch)" stroke="none"/><circle cx="28" cy="36" r="17"/></g><circle class="venn-r" cx="46" cy="36" r="17"/></svg>
+                            <h3 class="text-[15px] font-semibold">Sensor Fusion</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Multi-modal perception pipelines — LiDAR, depth cameras, IMUs, force-torque — fused into a coherent world model for decision-making.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.04</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="13.5" r="5.2"/><circle cx="28.5" cy="13.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="43.5" cy="13.5" r="5.2"/><circle cx="58.5" cy="13.5" r="5.2"/><circle cx="13.5" cy="28.5" r="5.2"/><circle cx="28.5" cy="28.5" r="5.2"/><circle cx="43.5" cy="28.5" r="5.2"/><circle cx="58.5" cy="28.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="13.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="28.5" cy="43.5" r="5.2"/><circle cx="43.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="58.5" cy="43.5" r="5.2"/><circle cx="13.5" cy="58.5" r="5.2"/><circle cx="28.5" cy="58.5" r="5.2"/><circle cx="43.5" cy="58.5" r="5.2"/><circle cx="58.5" cy="58.5" r="5.2"/></svg>
-                            <h3 class="text-[15px] font-semibold">Mapping & Localization</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Occupancy mapping, point cloud reconstruction, and probabilistic localization in dynamic environments.</p>
+                            <svg class="cap-mark cap-anim-dots" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="13.5" r="5.2"/><circle cx="28.5" cy="13.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="43.5" cy="13.5" r="5.2"/><circle cx="58.5" cy="13.5" r="5.2"/><circle cx="13.5" cy="28.5" r="5.2"/><circle cx="28.5" cy="28.5" r="5.2"/><circle cx="43.5" cy="28.5" r="5.2"/><circle cx="58.5" cy="28.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="13.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="28.5" cy="43.5" r="5.2"/><circle cx="43.5" cy="43.5" r="5.2" fill="currentColor" stroke="none"/><circle cx="58.5" cy="43.5" r="5.2"/><circle cx="13.5" cy="58.5" r="5.2"/><circle cx="28.5" cy="58.5" r="5.2"/><circle cx="43.5" cy="58.5" r="5.2"/><circle cx="58.5" cy="58.5" r="5.2"/></svg>
+                            <h3 class="text-[15px] font-semibold">Environment Mapping</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Occupancy grids, point-cloud reconstruction, and probabilistic localization that give robots a live spatial understanding of dynamic environments.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.05</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="24"/><circle cx="36" cy="36" r="6.5" fill="currentColor" stroke="none"/><circle cx="36.0" cy="12.0" r="4.2" fill="#fff"/><circle cx="15.22" cy="48.0" r="4.2" fill="#fff"/><circle cx="56.78" cy="48.0" r="4.2" fill="#fff"/></svg>
-                            <h3 class="text-[15px] font-semibold">Motion Planning & Control</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Trajectory generation, whole-body control, and motion planners that operate reliably in contact-rich settings.</p>
+                            <svg class="cap-mark cap-anim-orbit" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="24"/><circle class="orbit-core" cx="36" cy="36" r="6.5" fill="currentColor" stroke="none"/><g class="orbit-ring"><circle cx="36.0" cy="12.0" r="4.2" fill="#fff"/><circle cx="15.22" cy="48.0" r="4.2" fill="#fff"/><circle cx="56.78" cy="48.0" r="4.2" fill="#fff"/></g></svg>
+                            <h3 class="text-[15px] font-semibold">Motion & Control</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Trajectory generation, whole-body control, and compliant motion planners that operate reliably in contact-rich, force-sensitive settings.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">R.06</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><rect x="12" y="12" width="32" height="32" fill="url(#gm-hatch)" stroke="none"/><rect x="12" y="12" width="32" height="32"/><circle cx="46" cy="40" r="16"/></svg>
-                            <h3 class="text-[15px] font-semibold">Autonomous Systems</h3>
-                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">End-to-end autonomous behaviors — from perception and decision-making to action — engineered for real deployments.</p>
+                            <svg class="cap-mark cap-anim-morph" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><g class="morph-sq"><rect x="12" y="12" width="32" height="32" fill="url(#gm-hatch)" stroke="none"/><rect x="12" y="12" width="32" height="32"/></g><circle class="morph-cir" cx="46" cy="40" r="16"/></svg>
+                            <h3 class="text-[15px] font-semibold">Integrated Autonomy</h3>
+                            <p class="text-[13px] leading-6 text-slatebg/60 mt-2">End-to-end sensing-to-action loops — from perception and feedback through decision-making — engineered for real-world robot deployments.</p>
                         </div>
                     </div>
                 </div>
@@ -1455,37 +1621,37 @@
                     <div class="hair-grid">
                         <div class="hair-cell">
                             <span class="cap-num">S.01</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="26" cy="28" r="13"/><circle cx="46" cy="28" r="13"/><circle cx="36" cy="46" r="13" fill="currentColor" stroke="none"/></svg>
+                            <svg class="cap-mark cap-anim-tri" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle class="tri-1" cx="26" cy="28" r="13"/><circle class="tri-2" cx="46" cy="28" r="13"/><circle class="tri-3" cx="36" cy="46" r="13" fill="currentColor" stroke="none"/></svg>
                             <h3 class="text-[15px] font-semibold">Custom Digital Products</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">End-to-end development of digital products built around the way people and businesses actually work.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">S.02</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="25"/><path d="M36 16 L56 36 L36 56 L16 36 Z" fill="url(#gm-hatch)" stroke="none"/><path d="M36 16 L56 36 L36 56 L16 36 Z"/></svg>
+                            <svg class="cap-mark cap-anim-diamond" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="25"/><g class="dia-shape"><path d="M36 16 L56 36 L36 56 L16 36 Z" fill="url(#gm-hatch)" stroke="none"/><path d="M36 16 L56 36 L36 56 L16 36 Z"/></g></svg>
                             <h3 class="text-[15px] font-semibold">AI-Powered Software</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Applications that use AI not as a feature, but as part of the engineering process — faster, more consistent, more scalable.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">S.03</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="9"/><circle cx="36" cy="36" r="17"/><circle cx="36" cy="36" r="25"/><path d="M61.0 36.0 L67.0 36.0"/><path d="M36.0 11.0 L36.0 5.0"/><path d="M11.0 36.0 L5.0 36.0"/><path d="M36.0 61.0 L36.0 67.0"/><circle cx="48" cy="25" r="3.2" fill="currentColor" stroke="none"/></svg>
+                            <svg class="cap-mark cap-anim-xhair" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="9"/><circle cx="36" cy="36" r="17"/><circle cx="36" cy="36" r="25"/><g class="xhair-ticks"><path d="M61.0 36.0 L67.0 36.0"/><path d="M36.0 11.0 L36.0 5.0"/><path d="M11.0 36.0 L5.0 36.0"/><path d="M36.0 61.0 L36.0 67.0"/></g><circle class="xhair-sat" cx="48" cy="25" r="3.2" fill="currentColor" stroke="none"/></svg>
                             <h3 class="text-[15px] font-semibold">Workflow Automation</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Intelligent automation that replaces repetitive decision chains with systems that act, escalate, and learn.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">S.04</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><path d="M36 10 L62 36 L36 62 L10 36 Z"/><path d="M36 17 L55 36 L36 55 L17 36 Z"/><path d="M36 25 L47 36 L36 47 L25 36 Z" fill="currentColor" stroke="none"/></svg>
+                            <svg class="cap-mark cap-anim-nest" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><path class="nest-outer" d="M36 10 L62 36 L36 62 L10 36 Z"/><path class="nest-mid" d="M36 17 L55 36 L36 55 L17 36 Z"/><path class="nest-inner" d="M36 25 L47 36 L36 47 L25 36 Z" fill="currentColor" stroke="none"/></svg>
                             <h3 class="text-[15px] font-semibold">Enterprise Applications</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Scalable platforms and internal systems built to handle real operational complexity, not ideal conditions.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">S.05</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="13" fill="url(#gm-hatch)" stroke="none"/><circle cx="20" cy="36" r="13"/><circle cx="36" cy="36" r="13"/><circle cx="52" cy="36" r="13"/></svg>
+                            <svg class="cap-mark cap-anim-olap" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><circle cx="36" cy="36" r="13" fill="url(#gm-hatch)" stroke="none"/><circle class="olap-l" cx="20" cy="36" r="13"/><circle cx="36" cy="36" r="13"/><circle class="olap-r" cx="52" cy="36" r="13"/></svg>
                             <h3 class="text-[15px] font-semibold">Data & Integration Platforms</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Pipelines, warehouses, and integration layers that connect systems and make data useful across an organization.</p>
                         </div>
                         <div class="hair-cell">
                             <span class="cap-num">S.06</span>
-                            <svg class="cap-mark" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><ellipse cx="36" cy="18" rx="20" ry="7" fill="url(#gm-hatch)" stroke="none"/><ellipse cx="36" cy="18" rx="20" ry="7"/><ellipse cx="36" cy="36" rx="20" ry="7"/><ellipse cx="36" cy="54" rx="20" ry="7"/><path d="M16 18 L16 54"/><path d="M56 18 L56 54"/></svg>
+                            <svg class="cap-mark cap-anim-cyl" viewBox="0 0 72 72" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linejoin="round" aria-hidden="true"><g class="cyl-top"><ellipse cx="36" cy="18" rx="20" ry="7" fill="url(#gm-hatch)" stroke="none"/><ellipse cx="36" cy="18" rx="20" ry="7"/></g><g class="cyl-mid"><ellipse cx="36" cy="36" rx="20" ry="7"/></g><g class="cyl-bot"><ellipse cx="36" cy="54" rx="20" ry="7"/></g><path d="M16 18 L16 54"/><path d="M56 18 L56 54"/></svg>
                             <h3 class="text-[15px] font-semibold">Web & Cloud Applications</h3>
                             <p class="text-[13px] leading-6 text-slatebg/60 mt-2">Modern web applications and cloud-native systems engineered for performance, maintainability, and scale.</p>
                         </div>
@@ -1667,7 +1833,8 @@
                         <span class="sec-label">LIBRARY</span>
                         <span class="sec-meta">OPEN ACCESS</span>
                     </div>
-                    <h2 class="sec-title"><span class="hl-soft">What we have learned,</span> written down.</h2>
+                    <h2 class="sec-title"><span class="hl-soft">Ideas worth</span> building on.</h2>
+                    <p class="sec-sub">Explore the books, research, and open-source work behind what we build at Shannon.</p>
                 </div>
                 <div class="lib-stack" id="lib-stack" data-reveal>
 
@@ -2108,6 +2275,44 @@
         })();
 
         gsap.from("#hero-copy > *", { y: 20, opacity: 0, stagger: .12, duration: .8, delay: .15, ease: "power2.out" });
+
+        /* ---------- Hero word scramble ---------- */
+        (function () {
+            const el = document.getElementById("hero-scramble");
+            if (!el) return;
+            const words = ["Intelligent", "Autonomous", "Adaptive", "Resilient"];
+            const pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+            let idx = 0;
+
+            function scrambleTo(target) {
+                const prev = el.textContent;
+                const len = Math.max(prev.length, target.length);
+                const totalFrames = 16;
+                let frame = 0;
+                const tick = setInterval(() => {
+                    frame++;
+                    let out = "";
+                    for (let i = 0; i < len; i++) {
+                        if (i >= target.length) continue;
+                        /* resolve letters left-to-right: earlier chars settle first */
+                        if (frame >= totalFrames - (len - i)) {
+                            out += target[i];
+                        } else {
+                            out += pool[Math.floor(Math.random() * pool.length)];
+                        }
+                    }
+                    el.textContent = out;
+                    if (frame >= totalFrames) clearInterval(tick);
+                }, 38);
+            }
+
+            /* first swap after the entrance animation finishes + a 2.5s hold */
+            setTimeout(function loop() {
+                idx = (idx + 1) % words.length;
+                scrambleTo(words[idx]);
+                setTimeout(loop, 3000);
+            }, 3200);
+        })();
         document.querySelectorAll("[data-reveal]").forEach(el => {
             gsap.fromTo(el, { y: 22, opacity: 0 }, {
                 y: 0, opacity: 1, duration: .7, ease: "power2.out",
