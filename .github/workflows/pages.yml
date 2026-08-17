@@ -9,6 +9,7 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  deployments: write
 
 concurrency:
   group: pages
@@ -22,6 +23,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Clear stuck deployments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ids=$(gh api "repos/${{ github.repository }}/deployments?environment=github-pages&per_page=20" \
+            --jq '.[].id')
+          for id in $ids; do
+            state=$(gh api "repos/${{ github.repository }}/deployments/$id/statuses" \
+              --jq '.[0].state // "none"' 2>/dev/null || echo "none")
+            if [ "$state" = "none" ] || [ "$state" = "pending" ] || [ "$state" = "in_progress" ]; then
+              gh api --method POST \
+                "repos/${{ github.repository }}/deployments/$id/statuses" \
+                --field state=inactive || true
+            fi
+          done
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
