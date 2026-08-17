@@ -1,0 +1,1157 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shannon Factory — Product Demo Reel</title>
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   SHANNON FACTORY — AGENT COMPANY OS · GUIDED PRODUCT REEL
+   UI built against ui/ (React + shadcn, Tailwind v4).
+   Tokens from ui/src/index.css: neutral oklch scale, brand navy
+   #102745, and --radius-lg/xl: 0 — cards are square-cornered.
+   Screens: Dashboard → Org chart → Approvals
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --us:1;   /* 1 / render scale — keeps caption UI legible at any size */
+  --bg:#fff; --fg:#252525; --mfg:#737373; --border:#e5e5e5; --muted:#f7f7f7;
+  --primary:#102745; --primary-fg:#fbfbfb; --ring:#3a5a86;
+  --destructive:#dc2626; --dest-bg:#fef2f2;
+  --green:#16a34a; --green-bg:#f0fdf4; --amber:#d97706; --amber-bg:#fffbeb;
+  --run:#22d3ee; --act:#4ade80; --pause:#facc15; --err:#f87171; --term:#a3a3a3;
+  --c1:#e8710a; --c2:#009689; --c3:#104e64; --c4:#f5b301;
+  --font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --r-sm:6px; --r-md:8px;   /* cards are 0 — see --radius-lg/xl in index.css */
+  --ease:cubic-bezier(.22,.61,.36,1); --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-cam:cubic-bezier(.62,.02,.24,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#0d1520;height:100%;-webkit-font-smoothing:antialiased;
+          -moz-osx-font-smoothing:grayscale}
+body{font-family:var(--font);display:flex;flex-direction:column;align-items:center;
+     justify-content:center;min-height:100vh;padding:24px;gap:16px}
+.ic{width:16px;height:16px;flex:none;stroke-width:2;fill:none;stroke:currentColor;
+    stroke-linecap:round;stroke-linejoin:round}
+
+/* ── Stage ───────────────────────────────────────────────────────── */
+#wrap{width:100%;max-width:1440px;aspect-ratio:16/9;position:relative;border-radius:14px;
+      overflow:hidden;background:#0d1520;
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.07)}
+#root{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:top left;
+      background:#0d1520;overflow:hidden}
+#cam{position:absolute;top:0;left:0;width:1440px;height:746px;transform-origin:0 0;overflow:hidden;
+     transition:transform 1.4s var(--ease-cam);will-change:transform;backface-visibility:hidden}
+#drift{position:absolute;inset:0;transform-origin:50% 50%;
+       animation:drift 28s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:scale(1.008) translate(-3px,-2px)}
+                 50%{transform:scale(1.018) translate(3px,-3px)}
+                 100%{transform:scale(1.010) translate(3px,3px)}}
+
+#chrome{height:40px;background:#eceef0;display:flex;align-items:center;gap:14px;padding:0 14px;
+        border-bottom:1px solid #e0e2e4}
+.lights{display:flex;gap:7px}.lights i{width:10px;height:10px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}
+.lights i:nth-child(3){background:#28C840}
+#urlpill{flex:1;max-width:500px;height:24px;background:#fff;border-radius:12px;display:flex;
+         align-items:center;padding:0 12px;font-size:11px;color:var(--mfg)}
+#urlpill b{color:var(--fg);font-weight:500}
+#urlpath{transition:opacity .25s}
+
+/* ── App shell: rail(72) + sidebar(240) + inset ──────────────────── */
+#app{height:706px;display:flex;background:var(--bg)}
+#rail{width:72px;flex:none;border-right:1px solid var(--border);display:flex;flex-direction:column;
+      align-items:center;background:var(--bg);
+      transform:translateX(-72px);transition:transform .6s var(--ease-out)}
+#rail.in{transform:none}
+.rail-top{height:48px;display:flex;align-items:center;justify-content:center;width:100%}
+.rail-top .ic{width:19px;height:19px;color:var(--fg)}
+.co{width:44px;height:44px;border-radius:22px;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:600;background:var(--muted);color:var(--mfg);margin-bottom:8px;
+    transition:border-radius .15s,background .15s,color .15s}
+.co.on{border-radius:14px;background:var(--primary);color:var(--primary-fg)}
+.co.add{border:2px dashed var(--border);background:none;color:var(--mfg)}
+
+#nav{width:240px;flex:none;border-right:1px solid var(--border);background:var(--bg);
+     display:flex;flex-direction:column;
+     transform:translateX(-240px);transition:transform .7s var(--ease-out)}
+#nav.in{transform:none}
+.nv-top{height:48px;display:flex;align-items:center;gap:4px;padding:0 12px;flex:none}
+.nv-co{flex:1;display:flex;align-items:center;gap:6px;font-size:13.5px;font-weight:600;
+       min-width:0}
+.nv-co span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nv-co .ic{width:13px;height:13px;color:var(--mfg);flex:none}
+.nv-srch{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+         color:var(--mfg);flex:none}
+.nv-body{flex:1;padding:8px 12px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.nv-grp{display:flex;flex-direction:column;gap:2px}
+.nv-lbl{font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+        color:var(--mfg);padding:0 12px 4px}
+.nv-i{display:flex;align-items:center;gap:10px;padding:7px 12px;font-size:13px;font-weight:500;
+      color:var(--mfg);opacity:0;transform:translateX(-8px);
+      transition:opacity .4s,transform .45s var(--ease-out),background .16s,color .16s}
+.nv-i.in{opacity:1;transform:none}
+.nv-i .ic{width:15px;height:15px}
+.nv-i.hot{background:rgba(247,247,247,.7);color:var(--fg)}
+.nv-i.act{background:var(--muted);color:var(--fg);font-weight:600}
+.nv-i .cnt{margin-left:auto;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;
+           background:var(--muted);color:var(--mfg)}
+.nv-i .cnt.dg{background:var(--dest-bg);color:var(--destructive)}
+.nv-i .live{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10.5px;
+            color:var(--mfg)}
+.nv-i .live i{width:6px;height:6px;border-radius:50%;background:var(--run);display:block;
+              animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.ag{display:flex;align-items:center;gap:9px;padding:6px 12px;font-size:12.5px;color:var(--mfg)}
+.ag .dot{width:7px;height:7px;border-radius:50%;flex:none;transition:background .5s}
+.ag .rl{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--mfg);opacity:.7}
+
+#inset{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+#crumb{height:48px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;
+       border-bottom:1px solid var(--border);font-size:13.5px;opacity:0;transform:translateY(-6px);
+       transition:.5s var(--ease-out)}
+#crumb.in{opacity:1;transform:none}
+#crumb .pg{font-weight:600;transition:opacity .25s}
+#crumb .rt{margin-left:auto;display:flex;align-items:center;gap:8px}
+#stack{flex:1;position:relative;overflow:hidden}
+.scene{position:absolute;inset:0;overflow:hidden;opacity:0;visibility:hidden;
+       transform:translateX(26px) scale(.992);filter:blur(6px);
+       transition:opacity .45s ease,transform .65s var(--ease-out),filter .45s ease,visibility .45s}
+.scene.active{opacity:1;visibility:visible;transform:none;filter:blur(0)}
+.scene.out{transform:translateX(-18px) scale(.994);filter:blur(4px)}
+.pane{padding:20px 24px;transition:transform 1s var(--ease-out)}
+
+/* ── shadcn-ish atoms · note: cards are SQUARE (--radius-lg:0) ───── */
+.card{background:var(--bg);border:1px solid var(--border)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;
+       border-radius:var(--r-sm);font-size:11px;font-weight:500;white-space:nowrap}
+.b-out{border:1px solid var(--border);color:var(--mfg)}
+.b-mut{background:var(--muted);color:var(--fg)}
+.b-pri{background:var(--primary);color:var(--primary-fg)}
+.b-amb{background:var(--amber-bg);color:var(--amber)}
+.b-grn{background:var(--green-bg);color:var(--green)}
+.b-red{background:var(--dest-bg);color:var(--destructive)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 14px;
+     border-radius:var(--r-md);font-size:13px;font-weight:500;background:var(--primary);
+     color:var(--primary-fg);border:1px solid transparent;
+     transition:background .16s,box-shadow .16s,transform .12s,opacity .2s}
+.btn.out{background:var(--bg);color:var(--fg);border-color:var(--border)}
+.btn.out.dg{color:var(--destructive)}
+.btn.sm{height:28px;padding:0 12px;font-size:12.5px}
+.btn.hot{box-shadow:0 3px 12px rgba(16,39,69,.3)} .btn.out.hot{background:var(--muted)}
+.btn.press{transform:scale(.94)}
+
+/* ══ SCENE 1 · DASHBOARD ══════════════════════════════════════════ */
+.paused{background:#7f1d1d;color:#fef2f2;padding:11px 16px;display:flex;align-items:flex-start;
+        gap:11px;margin-bottom:16px;opacity:0;transform:translateY(-8px);
+        transition:.5s var(--ease-out)}
+.paused.in{opacity:1;transform:none}
+.paused.gone{opacity:0;transform:translateY(-8px);height:0;margin:0;padding:0 16px;overflow:hidden}
+.paused .ic{width:16px;height:16px;color:#fca5a5;margin-top:1px}
+.paused .t{font-size:13px;font-weight:500}
+.paused .s{font-size:11.5px;color:rgba(254,242,242,.7);margin-top:2px}
+.paused .lk{margin-left:auto;font-size:12.5px;text-decoration:underline;
+            text-underline-offset:2px;color:#fecaca;flex:none}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}
+.mc{padding:15px 18px;opacity:0;transform:translateY(12px);transition:.5s var(--ease-out);
+    display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.mc.in{opacity:1;transform:none}
+.mc .v{font-size:28px;font-weight:600;letter-spacing:-.025em;font-variant-numeric:tabular-nums;
+       line-height:1.05}
+.mc .l{font-size:12.5px;font-weight:500;color:var(--mfg);margin-top:4px}
+.mc .d{font-size:11px;color:rgba(115,115,115,.75);margin-top:5px}
+.mc .ic{width:15px;height:15px;color:rgba(115,115,115,.5);margin-top:5px}
+.mc.alert .v{color:var(--destructive)}
+.chgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.chc{padding:13px 15px;opacity:0;transform:translateY(12px);transition:.5s var(--ease-out)}
+.chc.in{opacity:1;transform:none}
+.chc .t{font-size:12.5px;font-weight:600} .chc .s{font-size:11px;color:var(--mfg);margin-top:1px}
+.spark{display:flex;align-items:flex-end;gap:3px;height:56px;margin-top:12px}
+.spark i{flex:1;background:var(--primary);height:0;transition:height .7s var(--ease-out)}
+.hbars{margin-top:12px;display:flex;flex-direction:column;gap:7px}
+.hb{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mfg)}
+.hb .nm{width:52px;flex:none} .hb .tr{flex:1;height:7px;background:var(--muted)}
+.hb .tr i{display:block;height:100%;width:0;transition:width .8s var(--ease-out)}
+.hb b{width:16px;text-align:right;color:var(--fg);font-weight:600}
+.ring{display:flex;align-items:center;gap:14px;margin-top:14px}
+.ring .big{font-size:30px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.ring .sub{font-size:11px;color:var(--mfg);line-height:1.45}
+.tasks{padding:0;opacity:0;transform:translateY(12px);transition:.5s var(--ease-out)}
+.tasks.in{opacity:1;transform:none}
+.tasks h3{font-size:11.5px;font-weight:600;color:var(--mfg);text-transform:uppercase;
+          letter-spacing:.06em;padding:12px 16px 8px}
+.tr-row{display:flex;align-items:center;gap:12px;padding:9px 16px;font-size:13px;
+        border-top:1px solid var(--border);opacity:0;transform:translateY(6px);
+        transition:.4s var(--ease-out)}
+.tr-row.in{opacity:1;transform:none}
+.tr-row .id{font-family:var(--mono);font-size:11px;color:var(--mfg);flex:none;width:64px}
+.tr-row .ti{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tr-row .ag2{font-size:11.5px;color:var(--mfg);flex:none}
+
+/* ══ SCENE 2 · ORG CHART ══════════════════════════════════════════ */
+.orgwrap{position:absolute;inset:0;overflow:hidden;
+         background-image:radial-gradient(circle,#e5e5e5 1px,transparent 1px);
+         background-size:24px 24px}
+.orgtools{position:absolute;right:18px;top:16px;display:flex;flex-direction:column;gap:0;
+          z-index:3;border:1px solid var(--border);background:var(--bg)}
+.orgtools span{width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+               color:var(--mfg);border-bottom:1px solid var(--border)}
+.orgtools span:last-child{border-bottom:0}
+#orgcanvas{position:absolute;inset:0}
+.edge{position:absolute;background:var(--border);opacity:0;transition:opacity .5s}
+.edge.in{opacity:1}
+.node{position:absolute;width:196px;padding:11px 13px;background:var(--bg);
+      border:1px solid var(--border);opacity:0;transform:translateY(14px) scale(.97);
+      transition:opacity .5s,transform .6s var(--ease-out),border-color .3s,box-shadow .3s}
+.node.in{opacity:1;transform:none}
+.node.hot{border-color:var(--primary);box-shadow:0 4px 18px -6px rgba(16,39,69,.3)}
+.node .hd{display:flex;align-items:center;gap:9px}
+.node .av{width:28px;height:28px;border-radius:var(--r-sm);background:var(--primary);
+          color:var(--primary-fg);display:flex;align-items:center;justify-content:center;
+          font-size:10.5px;font-weight:600;flex:none}
+.node .nm{font-size:13px;font-weight:600;line-height:1.2}
+.node .rl{font-size:11px;color:var(--mfg);margin-top:1px}
+.node .st{display:flex;align-items:center;gap:6px;margin-top:9px;padding-top:8px;
+          border-top:1px solid var(--border);font-size:10.5px;color:var(--mfg)}
+.node .st .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--pause);
+               transition:background .5s}
+.node.running .st .dot{background:var(--run);animation:pulse 1.6s ease-in-out infinite}
+.node .st .ad{margin-left:auto;font-family:var(--mono);font-size:9.5px;opacity:.7}
+.node .bar{margin-top:8px;height:4px;background:var(--muted)}
+.node .bar i{display:block;height:100%;width:0;background:var(--primary);
+             transition:width .9s var(--ease-out)}
+
+/* ══ SCENE 3 · APPROVALS ══════════════════════════════════════════ */
+.tabs{display:inline-flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:16px;
+      opacity:0;transition:opacity .45s}
+.tabs.in{opacity:1}
+.tabs span{padding:0 14px 9px;font-size:13px;font-weight:500;color:var(--mfg);
+           border-bottom:2px solid transparent;display:flex;align-items:center;gap:7px}
+.tabs span.on{color:var(--fg);border-bottom-color:var(--primary)}
+.ap{padding:16px 18px;opacity:0;transform:translateY(14px);
+    transition:opacity .5s,transform .6s var(--ease-out),border-color .35s,background .35s}
+.ap.in{opacity:1;transform:none}
+.ap.live{border-color:var(--amber);animation:apPulse 1.8s ease-in-out infinite}
+@keyframes apPulse{0%,100%{box-shadow:0 0 0 1px rgba(217,119,6,.25)}
+                   50%{box-shadow:0 0 0 6px rgba(217,119,6,.09)}}
+.ap.done{border-color:var(--green);background:var(--green-bg);animation:none}
+.ap .top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.ap .ico{width:34px;height:34px;border-radius:50%;border:1px solid var(--border);display:flex;
+         align-items:center;justify-content:center;flex:none;color:var(--mfg)}
+.ap .meta{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+.ap .kind{font-size:10.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;
+          color:var(--mfg);border:1px solid var(--border);padding:2px 8px;border-radius:var(--r-sm)}
+.ap .req{font-size:11.5px;color:var(--mfg);display:inline-flex;align-items:center;gap:6px}
+.ap .req .av{width:17px;height:17px;border-radius:var(--r-sm);background:var(--primary);
+             color:var(--primary-fg);font-size:8.5px;font-weight:600;display:flex;
+             align-items:center;justify-content:center}
+.ap h3{font-size:15.5px;font-weight:600;line-height:1.35}
+.ap .ago{font-size:11.5px;color:var(--mfg);margin-top:3px}
+.ap .stat{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
+          border-radius:999px;padding:4px 11px;font-size:11.5px;color:var(--mfg);flex:none;
+          transition:.35s}
+.ap.done .stat{border-color:var(--green);color:var(--green);background:var(--bg)}
+.fields{margin-top:13px;display:flex;flex-direction:column;gap:6px;font-size:12.5px}
+.fld{display:flex;gap:10px}
+.fld .k{width:74px;flex:none;color:var(--mfg)}
+.fld .v{font-weight:500}
+.limit{background:var(--muted);padding:9px 12px;margin-top:10px;font-size:11.5px;
+       color:var(--mfg);display:flex;align-items:center;gap:16px}
+.limit b{color:var(--fg);font-family:var(--mono);font-weight:500}
+.limit .over{color:var(--destructive)}
+.limit .barw{flex:1;height:7px;background:var(--border);position:relative;overflow:hidden}
+.limit .barw i{display:block;height:100%;width:0;background:var(--destructive);
+               transition:width 1s var(--ease-out)}
+.limit .barw em{position:absolute;top:-3px;bottom:-3px;width:1.5px;background:var(--fg);
+                left:0;transition:left 1s var(--ease-out)}
+.guide{font-size:12px;color:var(--mfg);margin-top:9px;line-height:1.5}
+.apacts{display:flex;gap:9px;margin-top:14px;padding-top:13px;border-top:1px solid var(--border);
+        transition:.3s}
+.ap.done .apacts{opacity:0;transform:translateY(-4px);height:0;margin:0;padding:0;overflow:hidden}
+.stamp{display:none;align-items:center;gap:7px;margin-top:13px;padding-top:12px;
+       border-top:1px solid rgba(22,163,74,.25);font-size:12.5px;font-weight:500;color:var(--green)}
+.ap.done .stamp{display:flex;animation:pop .45s var(--ease-out)}
+@keyframes pop{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.resume{margin-top:16px;padding:14px 16px;opacity:0;transform:translateY(12px);
+        transition:.55s var(--ease-out)}
+.resume.in{opacity:1;transform:none}
+.resume h3{font-size:11.5px;font-weight:600;color:var(--mfg);text-transform:uppercase;
+           letter-spacing:.06em;margin-bottom:10px;display:flex;align-items:center;gap:7px}
+.rr{display:flex;align-items:center;gap:11px;padding:7px 0;font-size:12.5px;
+    border-top:1px solid var(--border);opacity:0;transform:translateX(-8px);
+    transition:.45s var(--ease-out)}
+.rr.in{opacity:1;transform:none}
+.rr:first-of-type{border-top:0}
+.rr .dot{width:8px;height:8px;border-radius:50%;background:var(--pause);flex:none;
+         transition:background .5s}
+.rr.up .dot{background:var(--run)}
+.rr .rl{color:var(--mfg);font-size:11.5px}
+.rr .fromto{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--mfg)}
+.rr.up .fromto{color:var(--green)}
+
+#toast{position:absolute;right:22px;bottom:22px;z-index:8;display:flex;align-items:center;gap:11px;
+       background:var(--fg);color:#fff;padding:11px 15px;box-shadow:0 10px 30px rgba(0,0,0,.25);
+       transform:translateY(140%);opacity:0;
+       transition:transform .6s cubic-bezier(.18,1.25,.4,1),opacity .4s}
+#toast.on{transform:none;opacity:1}
+#toast .ok{width:21px;height:21px;border-radius:50%;background:var(--green);flex:none;
+           display:flex;align-items:center;justify-content:center}
+#toast p{font-size:12.5px;font-weight:500}
+#toast span{font-size:11px;color:#a3a3a3;display:block;margin-top:2px}
+
+/* ══ PRESENTATION LAYER ═══════════════════════════════════════════ */
+#spot{position:absolute;box-shadow:0 0 0 9999px rgba(9,16,26,.54);opacity:0;pointer-events:none;
+      z-index:14;transition:left .6s var(--ease-out),top .6s var(--ease-out),
+      width .6s var(--ease-out),height .6s var(--ease-out),opacity .45s ease}
+#spot.on{opacity:1}
+#cur{position:absolute;top:0;left:0;z-index:20;pointer-events:none;opacity:0;
+     transform:translate(720px,380px);transition:transform 1s var(--ease),opacity .35s}
+#cur.on{opacity:1}
+#cur svg{width:21px;height:21px;filter:drop-shadow(0 3px 5px rgba(0,0,0,.35))}
+#clab{position:absolute;left:19px;top:19px;white-space:nowrap;background:var(--primary);color:#fff;
+      font-size:11.5px;font-weight:500;padding:4px 9px;border-radius:var(--r-sm);
+      box-shadow:0 4px 14px rgba(0,0,0,.3);opacity:0;transform:translateY(-4px) scale(.94);
+      transform-origin:0 0;transition:.28s var(--ease-out)}
+#clab.on{opacity:1;transform:none}
+.ripple{position:absolute;width:32px;height:32px;border-radius:50%;border:2px solid var(--primary);
+        margin:-16px 0 0 -16px;z-index:19;pointer-events:none;opacity:0}
+.ripple.go{animation:rip .6s var(--ease-out) forwards}
+@keyframes rip{0%{transform:scale(.25);opacity:.85}100%{transform:scale(1.4);opacity:0}}
+
+#stagebar{display:none!important;position:absolute;left:0;right:0;bottom:0;height:64px;background:#0d1520;z-index:12;
+          align-items:center;padding:0 calc(21px * var(--us));
+          gap:calc(19px * var(--us));border-top:1px solid rgba(255,255,255,.07)}
+#capwrap{flex:1;min-width:0;display:flex;align-items:center;
+         gap:calc(9px * var(--us));overflow:hidden}
+#capdot{width:calc(6px * var(--us));height:calc(6px * var(--us));border-radius:50%;
+        background:#4ade80;flex:none;animation:capbeat 2.4s ease-out infinite}
+@keyframes capbeat{0%{box-shadow:0 0 0 0 rgba(74,222,128,.55)}
+                   70%{box-shadow:0 0 0 8px rgba(74,222,128,0)}
+                   100%{box-shadow:0 0 0 0 rgba(74,222,128,0)}}
+#cap{font-size:calc(13px * var(--us));font-weight:500;color:#fff;letter-spacing:-.01em;
+     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#cap i{display:inline-block;font-style:normal;opacity:0;transform:translateY(9px);
+       transition:opacity .34s,transform .44s var(--ease-out)}
+#cap.on i{opacity:1;transform:none}
+#chaps{display:flex;align-items:center;gap:6px;flex:none}
+.chp{display:flex;align-items:center;gap:calc(6px * var(--us));height:calc(21px * var(--us));
+     padding:0 calc(9px * var(--us));border-radius:999px;font-size:calc(9.5px * var(--us));
+     font-weight:500;color:#5d6a7a;transition:color .4s,background .4s}
+.chp b{font-family:var(--mono);font-size:calc(8.2px * var(--us));font-weight:400;opacity:.65}
+.chp.on{color:#fff;background:rgba(255,255,255,.10)} .chp.done{color:#8695a6}
+#chline{width:calc(96px * var(--us));height:calc(2px * var(--us));
+        background:rgba(255,255,255,.12);border-radius:2px;flex:none;overflow:hidden;
+        margin-left:calc(4px * var(--us))}
+#chline i{display:block;height:100%;width:0;background:#fff;border-radius:2px}
+
+/* ══ Bookends ═════════════════════════════════════════════════════ */
+.overlay{position:absolute;inset:0;z-index:16;background:#0d1520;color:#fff;opacity:0;
+         visibility:hidden;transition:opacity .6s ease,visibility .6s}
+.overlay.active{opacity:1;visibility:visible}
+.overlay::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(760px 480px at 50% 44%,rgba(58,90,134,.30),transparent 70%)}
+.overlay::after{content:"";position:absolute;inset:0;opacity:.55;
+  background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+  background-size:48px 48px}
+.ostage{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;transform-origin:50% 48%}
+#open.active .ostage{animation:pullBack 3.4s var(--ease-out) forwards}
+#end.active .ostage{animation:pushIn 5.2s var(--ease-out) forwards}
+@keyframes pullBack{from{transform:scale(1.085)}to{transform:scale(1)}}
+@keyframes pushIn{from{transform:scale(1)}to{transform:scale(1.05)}}
+.omark{width:74px;height:74px;background:var(--primary);display:flex;align-items:center;
+       justify-content:center;opacity:0;transform:scale(.72) rotate(-7deg);
+       transition:opacity .6s,transform .95s var(--ease-out);
+       box-shadow:0 22px 60px -18px rgba(58,90,134,.9);border:1px solid rgba(255,255,255,.14)}
+.omark.in{opacity:1;transform:none}
+.omark .ic{width:34px;height:34px;stroke-width:1.9;color:#fff}
+.owm{margin-top:24px;font-size:41px;font-weight:600;letter-spacing:-.035em;display:flex;
+     overflow:hidden}
+.owm i{display:inline-block;font-style:normal;opacity:0;transform:translateY(24px);
+       transition:opacity .45s,transform .6s var(--ease-out)}
+.owm.in i{opacity:1;transform:none}
+.rule{width:0;height:1px;background:rgba(255,255,255,.18);margin-top:22px;
+      transition:width .9s var(--ease-out)}
+.rule.in{width:340px}
+.oeb{margin-top:20px;font-size:11.5px;letter-spacing:.24em;color:#93a4b6;font-weight:500;
+     display:flex;align-items:center;gap:10px;opacity:0;transform:translateY(8px);
+     transition:.6s var(--ease-out)}
+.oeb.in{opacity:1;transform:none}
+.oeb i{width:6px;height:6px;border-radius:50%;background:#4ade80;display:block}
+#end .tag{margin-top:24px;font-size:32px;font-weight:600;letter-spacing:-.03em;text-align:center;
+          line-height:1.34;max-width:880px;opacity:0;transform:translateY(14px);
+          transition:.7s var(--ease-out)}
+#end .tag.in{opacity:1;transform:none}
+#end .tag b{font-weight:600;box-shadow:inset 0 -3px 0 #4ade80}
+#end .sb{margin-top:16px;font-size:14px;color:#93a4b6;max-width:640px;text-align:center;
+         line-height:1.6;opacity:0;transform:translateY(10px);transition:.7s var(--ease-out)}
+#end .sb.in{opacity:1;transform:none}
+#end .url{margin-top:30px;display:flex;align-items:center;gap:9px;padding:10px 22px;
+          border:1px solid rgba(255,255,255,.16);font-size:13px;font-weight:500;opacity:0;
+          transform:translateY(10px);transition:.7s var(--ease-out)}
+#end .url.in{opacity:1;transform:none}
+
+#bar{display:flex;align-items:center;gap:14px;color:#8697a8;font-size:12px;width:100%;
+     max-width:1440px}
+#bar button{background:#16202e;border:1px solid #263447;color:#d4dde6;height:32px;padding:0 14px;
+            border-radius:8px;font:500 12px var(--font);cursor:pointer;transition:.15s}
+#bar button:hover{background:#1c2836;border-color:#35485f}
+#bar button:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#track{flex:1;height:3px;background:#1b2634;border-radius:2px;overflow:hidden}
+#fill{height:100%;width:0;background:#e5e5e5}
+#bar .t{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+body.embed #bar{display:none}
+body.embed{padding:0;height:100%;gap:0;display:block}
+/* In a host panel the reel fills the box: no aspect lock, no matting. */
+body.embed #wrap{width:100%;height:100%;max-width:none;aspect-ratio:auto;
+                 border-radius:0;box-shadow:none}
+/* Short panels drop the chapter rail, then the whole caption bar. */
+#wrap[data-mode="slim"] #chaps{display:none}
+#wrap[data-mode="none"] #stagebar{display:none}
+#poster{position:absolute;inset:0;z-index:30;background:rgba(13,21,32,.94);display:none;
+        align-items:center;justify-content:center;flex-direction:column;gap:18px}
+#poster.on{display:flex}
+#poster p{font-size:14px;color:#93a4b6;max-width:380px;text-align:center;line-height:1.6}
+#poster button{height:44px;padding:0 26px;border-radius:999px;background:#fff;color:#0d1520;
+               border:0;font:600 14px var(--font);cursor:pointer;display:flex;align-items:center;
+               gap:9px}
+@media (prefers-reduced-motion:reduce){
+  #drift,#capdot,.ap.live,.nv-i .live i,.node.running .st .dot{animation:none!important}
+  #cam{transition:none!important;transform:none!important}
+  .ostage{animation:none!important} .scene{filter:none!important}
+}
+</style>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-clip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2 2 0 0 1 3 3L12 15l-4 1 1-4z"/></symbol>
+  <symbol id="i-dash" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></symbol>
+  <symbol id="i-net" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></symbol>
+  <symbol id="i-boxes" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+  <symbol id="i-dollar" viewBox="0 0 24 24"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v2.5M12 19v2.5M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M2.5 12H5M19 12h2.5M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></symbol>
+  <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="i-pause-c" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M10 15V9M14 15V9"/></symbol>
+  <symbol id="i-check-c" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-zin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6M8 11h6"/></symbol>
+  <symbol id="i-zout" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m5 3 16 9-16 9z"/></symbol>
+</svg>
+
+<div id="wrap"><div id="root">
+
+  <div id="cam"><div id="drift">
+
+    <div id="chrome">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div id="urlpill"><b>factory.shannondynamics.com</b><span id="urlpath">/dashboard</span></div>
+    </div>
+
+    <div id="app">
+
+      <!-- ── company rail ────────────────────────────────────── -->
+      <div id="rail">
+        <div class="rail-top"><svg class="ic"><use href="#i-clip"/></svg></div>
+        <div class="co on">SF</div>
+        <div class="co">NB</div>
+        <div class="co">AT</div>
+        <div class="co add"><svg class="ic" style="width:15px;height:15px"><use href="#i-plus"/></svg></div>
+      </div>
+
+      <!-- ── sidebar ─────────────────────────────────────────── -->
+      <aside id="nav">
+        <div class="nv-top">
+          <div class="nv-co"><span>Shannon Software Factory</span>
+            <svg class="ic"><use href="#i-chev-d"/></svg></div>
+          <div class="nv-srch"><svg class="ic" style="width:15px;height:15px"><use href="#i-search"/></svg></div>
+        </div>
+        <div class="nv-body">
+          <div class="nv-grp">
+            <a class="nv-i"><svg class="ic"><use href="#i-pen"/></svg>New Issue</a>
+            <a class="nv-i" data-nav="dash"><svg class="ic"><use href="#i-dash"/></svg>Dashboard
+              <span class="live"><i></i>1</span></a>
+            <a class="nv-i"><svg class="ic"><use href="#i-inbox"/></svg>Inbox
+              <span class="cnt dg">3</span></a>
+          </div>
+          <div class="nv-grp">
+            <div class="nv-lbl">Work</div>
+            <a class="nv-i"><svg class="ic"><use href="#i-dot"/></svg>Issues</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-repeat"/></svg>Routines</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-target"/></svg>Goals</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-branch"/></svg>Workspaces</a>
+          </div>
+          <div class="nv-grp">
+            <div class="nv-lbl">Agents</div>
+            <div class="ag"><span class="dot ag-d" style="background:var(--run)"></span>CEO
+              <span class="rl">claude</span></div>
+            <div class="ag"><span class="dot ag-d" style="background:var(--pause)"></span>PM
+              <span class="rl">codex</span></div>
+            <div class="ag"><span class="dot ag-d" style="background:var(--pause)"></span>SWE Lead
+              <span class="rl">claude</span></div>
+            <div class="ag"><span class="dot ag-d" style="background:var(--pause)"></span>Designer
+              <span class="rl">cursor</span></div>
+          </div>
+          <div class="nv-grp">
+            <div class="nv-lbl">Company</div>
+            <a class="nv-i" id="navorg" data-nav="org"><svg class="ic"><use href="#i-net"/></svg>Org</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-boxes"/></svg>Skills</a>
+            <a class="nv-i" data-nav="costs"><svg class="ic"><use href="#i-dollar"/></svg>Costs</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-history"/></svg>Activity</a>
+            <a class="nv-i"><svg class="ic"><use href="#i-settings"/></svg>Settings</a>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ── inset ───────────────────────────────────────────── -->
+      <div id="inset">
+        <div id="crumb">
+          <span style="color:var(--mfg)">Shannon Software Factory</span>
+          <svg class="ic" style="width:13px;height:13px;color:var(--mfg)"><use href="#i-chev-r"/></svg>
+          <span class="pg" id="pgname">Dashboard</span>
+          <div class="rt"><span class="badge b-out">v0.6.0</span></div>
+        </div>
+
+        <div id="stack">
+
+          <!-- ══ DASHBOARD ══════════════════════════════════════ -->
+          <section class="scene" id="dash"><div class="pane" id="dashpane">
+            <div class="paused" id="paused">
+              <svg class="ic"><use href="#i-pause-c"/></svg>
+              <div><div class="t">Spending paused — month budget reached</div>
+                <div class="s">3 agents paused mid-sprint. A budget override is waiting for board review.</div></div>
+              <span class="lk">View costs</span>
+            </div>
+
+            <div class="mgrid" id="mgrid">
+              <div class="card mc"><div>
+                <div class="v" data-to="4">0</div><div class="l">Agents Enabled</div>
+                <div class="d">1 running, 3 paused, 0 errors</div></div>
+                <svg class="ic"><use href="#i-bot"/></svg></div>
+              <div class="card mc"><div>
+                <div class="v" data-to="7">0</div><div class="l">Tasks In Progress</div>
+                <div class="d">12 open, 2 blocked</div></div>
+                <svg class="ic"><use href="#i-dot"/></svg></div>
+              <div class="card mc alert" id="mcSpend"><div>
+                <div class="v" data-to="437" data-prefix="$" data-suffix=".20">$0</div>
+                <div class="l">Month Spend</div>
+                <div class="d">109% of $400.00 budget</div></div>
+                <svg class="ic"><use href="#i-dollar"/></svg></div>
+              <div class="card mc" id="mcAppr"><div>
+                <div class="v" data-to="1">0</div><div class="l">Pending Approvals</div>
+                <div class="d">1 budget override awaiting board review</div></div>
+                <svg class="ic"><use href="#i-shield-check"/></svg></div>
+            </div>
+
+            <div class="chgrid" id="chgrid">
+              <div class="card chc"><div class="t">Run Activity</div><div class="s">Last 14 days</div>
+                <div class="spark">
+                  <i data-h="38"></i><i data-h="52"></i><i data-h="44"></i><i data-h="66"></i>
+                  <i data-h="58"></i><i data-h="80"></i><i data-h="72"></i><i data-h="90"></i>
+                  <i data-h="84"></i><i data-h="100"></i><i data-h="76"></i><i data-h="48"></i>
+                  <i data-h="22"></i><i data-h="10"></i></div></div>
+              <div class="card chc"><div class="t">Issues by Priority</div><div class="s">Last 14 days</div>
+                <div class="hbars">
+                  <div class="hb"><span class="nm">Urgent</span><span class="tr">
+                    <i data-w="25" style="background:var(--c1)"></i></span><b>2</b></div>
+                  <div class="hb"><span class="nm">High</span><span class="tr">
+                    <i data-w="63" style="background:var(--c4)"></i></span><b>5</b></div>
+                  <div class="hb"><span class="nm">Medium</span><span class="tr">
+                    <i data-w="100" style="background:var(--c2)"></i></span><b>8</b></div>
+                  <div class="hb"><span class="nm">Low</span><span class="tr">
+                    <i data-w="38" style="background:var(--c3)"></i></span><b>3</b></div></div></div>
+              <div class="card chc"><div class="t">Issues by Status</div><div class="s">Last 14 days</div>
+                <div class="hbars">
+                  <div class="hb"><span class="nm">Open</span><span class="tr">
+                    <i data-w="100" style="background:var(--c3)"></i></span><b>12</b></div>
+                  <div class="hb"><span class="nm">Active</span><span class="tr">
+                    <i data-w="58" style="background:var(--c2)"></i></span><b>7</b></div>
+                  <div class="hb"><span class="nm">Blocked</span><span class="tr">
+                    <i data-w="17" style="background:var(--c1)"></i></span><b>2</b></div>
+                  <div class="hb"><span class="nm">Done</span><span class="tr">
+                    <i data-w="75" style="background:var(--c4)"></i></span><b>9</b></div></div></div>
+              <div class="card chc"><div class="t">Success Rate</div><div class="s">Last 14 days</div>
+                <div class="ring"><span class="big" data-to="92" data-suffix="%">0%</span>
+                  <span class="sub">41 of 45 runs<br>completed clean</span></div></div>
+            </div>
+
+            <div class="card tasks" id="tasks">
+              <h3>Recent tasks</h3>
+              <div class="tr-row"><span class="id">FR-014</span>
+                <span class="ti">Sprint 0 · Compile URS into functional requirement tickets</span>
+                <span class="ag2">PM</span></div>
+              <div class="tr-row"><span class="id">FR-013</span>
+                <span class="ti">Roundtable: validate PM brief against technical constraints</span>
+                <span class="ag2">SWE Lead</span></div>
+              <div class="tr-row"><span class="id">FR-011</span>
+                <span class="ti">Implement auth flow — blocked on budget</span>
+                <span class="ag2">SWE Lead</span></div>
+              <div class="tr-row"><span class="id">FR-009</span>
+                <span class="ti">Design tokens and component inventory</span>
+                <span class="ag2">Designer</span></div>
+            </div>
+          </div></section>
+
+          <!-- ══ ORG CHART ══════════════════════════════════════ -->
+          <section class="scene" id="org">
+            <div class="orgwrap">
+              <div class="orgtools">
+                <span><svg class="ic" style="width:14px;height:14px"><use href="#i-zin"/></svg></span>
+                <span><svg class="ic" style="width:14px;height:14px"><use href="#i-zout"/></svg></span>
+                <span><svg class="ic" style="width:14px;height:14px"><use href="#i-fit"/></svg></span>
+              </div>
+              <div id="orgcanvas">
+                <!-- edges (positioned in stage px) -->
+                <div class="edge" id="e1" style="left:519px;top:158px;width:2px;height:44px"></div>
+                <div class="edge" id="e2" style="left:328px;top:200px;width:384px;height:2px"></div>
+                <div class="edge" id="e3" style="left:328px;top:200px;width:2px;height:42px"></div>
+                <div class="edge" id="e4" style="left:710px;top:200px;width:2px;height:42px"></div>
+                <div class="edge" id="e5" style="left:519px;top:334px;width:2px;height:44px"></div>
+
+                <div class="node running" id="nCeo" style="left:422px;top:60px">
+                  <div class="hd"><div class="av">CE</div>
+                    <div><div class="nm">CEO</div><div class="rl">Structures the URS, sets strategy</div></div></div>
+                  <div class="st"><span class="dot"></span>running<span class="ad">claude-local</span></div>
+                </div>
+                <div class="node" id="nPm" style="left:231px;top:242px">
+                  <div class="hd"><div class="av">PM</div>
+                    <div><div class="nm">PM</div><div class="rl">Compiles URS → sprint plan</div></div></div>
+                  <div class="st"><span class="dot"></span><span class="sl">paused</span><span class="ad">codex-local</span></div>
+                  <div class="bar"><i data-w="72"></i></div>
+                </div>
+                <div class="node" id="nDes" style="left:613px;top:242px">
+                  <div class="hd"><div class="av">DS</div>
+                    <div><div class="nm">Designer</div><div class="rl">UI/UX review in roundtable</div></div></div>
+                  <div class="st"><span class="dot"></span><span class="sl">paused</span><span class="ad">cursor</span></div>
+                  <div class="bar"><i data-w="34"></i></div>
+                </div>
+                <div class="node" id="nSwe" style="left:422px;top:378px">
+                  <div class="hd"><div class="av">SW</div>
+                    <div><div class="nm">SWE Lead</div><div class="rl">Validates briefs, ships code</div></div></div>
+                  <div class="st"><span class="dot"></span><span class="sl">paused</span><span class="ad">claude-local</span></div>
+                  <div class="bar"><i data-w="58"></i></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ══ APPROVALS ══════════════════════════════════════ -->
+          <section class="scene" id="appr"><div class="pane">
+            <div class="tabs" id="tabs">
+              <span class="on">Pending <span class="badge b-red" id="pcount">1</span></span>
+              <span>All</span>
+            </div>
+
+            <div class="card ap" id="apCard">
+              <div class="top">
+                <div style="display:flex;gap:13px;min-width:0;flex:1">
+                  <div class="ico"><svg class="ic"><use href="#i-shield-alert"/></svg></div>
+                  <div style="min-width:0">
+                    <div class="meta"><span class="kind">Budget Override</span>
+                      <span class="req">Requested by <span class="av">CE</span> CEO</span></div>
+                    <h3>Month budget exceeded — raise limit to resume the sprint</h3>
+                    <div class="ago">Approval request created 4 minutes ago</div>
+                  </div>
+                </div>
+                <div class="stat" id="apStat"><svg class="ic" style="width:13px;height:13px"><use href="#i-clock"/></svg>
+                  <span id="apStatT">Pending</span></div>
+              </div>
+
+              <div class="fields">
+                <div class="fld"><span class="k">Scope</span><span class="v">Shannon Software Factory</span></div>
+                <div class="fld"><span class="k">Window</span><span class="v">month</span></div>
+                <div class="fld"><span class="k">Metric</span><span class="v">spend</span></div>
+              </div>
+
+              <div class="limit" id="limitRow">
+                <span>Limit <b>$400.00</b></span>
+                <span class="barw"><i id="limBar"></i><em id="limMark"></em></span>
+                <span>Observed <b class="over">$437.20</b></span>
+              </div>
+              <p class="guide">Runs are paused until the board raises the ceiling or the window
+                 resets. Approving raises the month limit to $600.00 and resumes the paused agents.</p>
+
+              <div class="apacts" id="apActs">
+                <span class="btn" id="btnApprove">Approve</span>
+                <span class="btn out dg" id="btnReject">Reject</span>
+                <span class="btn out">Open detail</span>
+              </div>
+              <div class="stamp"><svg class="ic" style="width:14px;height:14px"><use href="#i-check-c"/></svg>
+                Approved — budget raised to $600.00 · board · just now</div>
+            </div>
+
+            <div class="card resume" id="resume">
+              <h3><svg class="ic" style="width:13px;height:13px"><use href="#i-bot"/></svg>Agents resumed</h3>
+              <div class="rr" id="rr1"><span class="dot"></span><span>PM</span>
+                <span class="rl">compiling sprint plan</span>
+                <span class="fromto">paused → running</span></div>
+              <div class="rr" id="rr2"><span class="dot"></span><span>SWE Lead</span>
+                <span class="rl">FR-011 implement auth flow</span>
+                <span class="fromto">paused → running</span></div>
+              <div class="rr" id="rr3"><span class="dot"></span><span>Designer</span>
+                <span class="rl">component inventory</span>
+                <span class="fromto">paused → running</span></div>
+            </div>
+          </div></section>
+
+        </div>
+
+        <div id="toast">
+          <div class="ok"><svg class="ic" style="width:12px;height:12px;stroke:#fff;stroke-width:3"><use href="#i-check"/></svg></div>
+          <div><p>Budget raised — 3 agents resumed</p>
+            <span>Logged to Activity · board · month limit $600.00</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="spot"></div>
+    <div id="cur"><svg viewBox="0 0 24 24" fill="#102745" stroke="#fff" stroke-width="1.4"
+         stroke-linejoin="round"><path d="M4.5 2.5 19 12.2l-6.4 1-3.3 6.1z"/></svg>
+      <span id="clab"></span></div>
+
+  </div></div>
+
+  <div id="stagebar">
+    <div id="capwrap"><span id="capdot"></span><span id="cap"></span></div>
+    <div id="chaps">
+      <span class="chp" data-ch="1"><b>01</b>Dashboard</span>
+      <span class="chp" data-ch="2"><b>02</b>Org chart</span>
+      <span class="chp" data-ch="3"><b>03</b>Approvals</span>
+      <span id="chline"><i></i></span>
+    </div>
+  </div>
+
+  <div class="overlay active" id="open"><div class="ostage">
+    <div class="omark" id="omark"><svg class="ic"><use href="#i-clip"/></svg></div>
+    <div class="owm" id="owm"></div>
+    <div class="rule" id="orule"></div>
+    <div class="oeb" id="oeb"><i></i> AGENT COMPANY OS · SHANNON DYNAMICS</div>
+  </div></div>
+
+  <div class="overlay" id="end"><div class="ostage">
+    <div class="omark" id="emark"><svg class="ic"><use href="#i-clip"/></svg></div>
+    <div class="tag" id="etag">Manage the company,<br>not the <b>pull requests</b>.</div>
+    <div class="sb" id="esub">Org charts, budgets, and board approvals for a team of AI agents —
+      so the work runs on its own, and the money doesn't.</div>
+  </div></div>
+
+  <div id="poster">
+    <button id="pplay"><svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:currentColor">
+      <path d="M6 3l14 9-14 9z"/></svg> Play the demo</button>
+    <p>Motion is reduced in your system settings, so the reel doesn't start on its own.</p>
+  </div>
+
+</div></div>
+
+<div id="bar">
+  <button id="btnPlay">Pause</button>
+  <button id="btnReplay">Replay</button>
+  <div id="track"><div id="fill"></div></div>
+  <span class="t" id="clock">0:00 / 0:45</span>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const DUR = 45000;
+let APPH = 746, MINZ = 1, BARH = 64;   /* set by layout() */
+
+const wrap = $("#wrap"), root = $("#root");
+/* Embed mode: an explicit flag, or simply being inside an iframe. */
+if (location.hash === "#clean" || /[?&]embed=1/.test(location.search)
+    || window.self !== window.top)
+  document.body.classList.add("embed");
+
+const timers = [];
+const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+const on  = (sel, c="in") => $$(sel).forEach(e => e.classList.add(c));
+const off = (sel, c="in") => $$(sel).forEach(e => e.classList.remove(c));
+const stag = (sel, step, c="in") => $$(sel).forEach((e,i) => later(i*step, () => e.classList.add(c)));
+
+function count(el, to, ms){
+  const pre = el.dataset.prefix || "", sfx = el.dataset.suffix || "", t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1,(now-t0)/ms);
+    el.textContent = pre + Math.round(to*(1-Math.pow(1-p,3))) + sfx;
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function scene(id){
+  $$(".scene").forEach(s => {
+    const isIn = s.id === id;
+    if (!isIn && s.classList.contains("active")){
+      s.classList.remove("active"); s.classList.add("out");
+      later(680, () => s.classList.remove("out"));
+    }
+    s.classList.toggle("active", isIn);
+  });
+}
+const nav = n => $$(".nv-i").forEach(e => e.classList.toggle("act", e.dataset.nav === n));
+function url(path, page){
+  const u = $("#urlpath"), p = $("#pgname");
+  u.style.opacity = 0; p.style.opacity = 0;
+  later(220, () => {
+    u.textContent = path; p.textContent = page;
+    u.style.opacity = 1; p.style.opacity = 1;
+  });
+}
+
+/* ── geometry: measure any element in stage space ───────────────── */
+const camEl = $("#cam"), drift = $("#drift");
+function rectIn(el){
+  const a = el.getBoundingClientRect(), b = drift.getBoundingClientRect();
+  const s = b.width / 1440;
+  return { x:(a.left-b.left)/s, y:(a.top-b.top)/s, w:a.width/s, h:a.height/s,
+           cx:(a.left-b.left)/s + a.width/(2*s), cy:(a.top-b.top)/s + a.height/(2*s) };
+}
+const clamp = (v,lo,hi) => Math.min(hi, Math.max(lo,v));
+
+/* ── responsive fit ───────────────────────────────────────────────
+   The design space keeps a fixed 1440 WIDTH; its HEIGHT is derived
+   from the host box, so the reel fills a 56%x500 desktop panel or a
+   100%x236 mobile one exactly — never letterboxed, never cropped.
+   Caption typography is divided by the render scale so it stays
+   readable, and short panels shed the chapter rail, then the bar. */
+const appEl = $("#app"), barEl = $("#stagebar");
+function layout(){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!w || !h) return;
+  let dh = clamp(Math.round(h / (w/1440)), 690, 1260);
+  const s = Math.min(w/1440, h/dh), shown = dh * s;
+  const mode = shown >= 380 ? "full" : shown >= 292 ? "slim" : "none";
+  BARH = 0;
+  APPH = dh - BARH;
+  /* a small panel is useless at 1:1 — hold a floor zoom so the UI reads */
+  MINZ = w < 620 ? 1.5 : w < 900 ? 1.16 : 1;
+  root.style.height = dh + "px";
+  root.style.transform = `translate(${(w-1440*s)/2}px, ${(h-dh*s)/2}px) scale(${s})`;
+  camEl.style.height = APPH + "px";
+  appEl.style.height = (APPH - 40) + "px";
+  barEl.style.height = BARH + "px";
+  wrap.dataset.mode = mode;
+  document.documentElement.style.setProperty("--us", (1/s).toFixed(3));
+}
+new ResizeObserver(layout).observe(wrap);
+layout();
+
+function cam(z, x, y, ms=1400){
+  camEl.style.transitionDuration = ms + "ms";
+  camEl.style.transform = `translate(${clamp(720-x*z,1440-1440*z,0)}px,` +
+                          `${clamp(APPH/2-y*z, APPH-APPH*z, 0)}px) scale(${z})`;
+}
+const camWide = (ms=1300) => cam(MINZ, MINZ > 1 ? 880 : 720, APPH/2, ms);
+function focus(sel, pad=70, ms=1450, maxZ=1.65){
+  const r = rectIn($(sel));
+  const lim = MINZ > 1 ? maxZ * 1.3 : maxZ;
+  const z = clamp(Math.min(1440/(r.w+pad*2), APPH/(r.h+pad*2)), MINZ, lim);
+  cam(z, r.cx, r.cy, ms);
+}
+
+const spotEl = $("#spot");
+function spot(sel, pad=10){
+  const r = rectIn($(sel));
+  spotEl.style.left = (r.x-pad)+"px"; spotEl.style.top = (r.y-pad)+"px";
+  spotEl.style.width = (r.w+pad*2)+"px"; spotEl.style.height = (r.h+pad*2)+"px";
+  spotEl.classList.add("on");
+}
+const unspot = () => spotEl.classList.remove("on");
+
+const cur = $("#cur"), clab = $("#clab");
+function moveTo(sel, ms=900){
+  const r = rectIn($(sel));
+  cur.classList.add("on");
+  cur.style.transitionDuration = ms+"ms";
+  cur.style.transform = `translate(${r.cx}px, ${r.cy}px)`;
+}
+function label(t){ if(!t){ clab.classList.remove("on"); return; } clab.textContent = t; clab.classList.add("on"); }
+function clickOn(sel){
+  const el = $(sel), r = rectIn(el);
+  el.classList.add("press"); later(150, () => el.classList.remove("press"));
+  cur.style.transform = `translate(${r.cx}px, ${r.cy}px) scale(.82)`;
+  later(130, () => cur.style.transform = `translate(${r.cx}px, ${r.cy}px)`);
+  const rp = document.createElement("div");
+  rp.className = "ripple"; rp.style.left = r.cx+"px"; rp.style.top = r.cy+"px";
+  drift.appendChild(rp);
+  requestAnimationFrame(() => rp.classList.add("go"));
+  later(800, () => rp.remove());
+}
+const hide = () => { cur.classList.remove("on"); label(""); };
+function gesture(t, sel, text, hot){
+  at(t,        () => { moveTo(sel, 850); spot(sel, 10); });
+  at(t + 780,  () => { label(text); if (hot) $(sel).classList.add("hot"); });
+  at(t + 1180, () => clickOn(sel));
+  at(t + 1330, () => { label(""); if (hot) $(sel).classList.remove("hot"); });
+}
+
+const capEl = $("#cap");
+function cap(text){
+  capEl.classList.remove("on");
+  later(180, () => {
+    capEl.innerHTML = "";
+    if (!text) return;
+    text.split(" ").forEach((w,i) => {
+      const s = document.createElement("i");
+      /* non-breaking space: a trailing normal space inside an
+         inline-block is collapsed away, jamming the words together */
+      s.textContent = w + "\u00A0";
+      s.style.transitionDelay = (i*26)+"ms";
+      capEl.appendChild(s);
+    });
+    requestAnimationFrame(() => capEl.classList.add("on"));
+  });
+}
+function chap(n){
+  $$(".chp").forEach(c => {
+    const i = +c.dataset.ch;
+    c.classList.toggle("on", i === n); c.classList.toggle("done", i < n);
+  });
+}
+const scrollPane = (sel, px) => $(sel).style.transform = `translateY(${-px}px)`;
+
+/* ══ CUE SHEET ════════════════════════════════════════════════════ */
+const CUES = [];
+const at = (t, fn) => CUES.push({ t, fn, done:false });
+
+/* ─ COLD OPEN ─ */
+at(300, () => on("#omark"));
+at(800, () => {
+  const wm = $("#owm"); wm.innerHTML = "";
+  "Shannon Factory".split("").forEach((ch,i) => {
+    const s = document.createElement("i");
+    s.textContent = ch === " " ? "\u00A0" : ch;
+    s.style.transitionDelay = (i*36)+"ms";
+    wm.appendChild(s);
+  });
+  requestAnimationFrame(() => wm.classList.add("in"));
+});
+at(1700, () => on("#orule"));
+at(1950, () => on("#oeb"));
+at(3150, () => $("#open").classList.remove("active"));
+
+/* ─ CHAPTER 1 · DASHBOARD ─ */
+at(3250, () => { scene("dash"); nav("dash"); on("#rail"); chap(1);
+                 cap("A company of four agents — not a chat window"); });
+at(3450, () => on("#nav"));
+at(3650, () => stag(".nv-i", 38));
+at(4150, () => on("#crumb"));
+at(4400, () => { cap("Except this morning, the company has stopped");
+                 on("#paused"); focus("#paused", 46); spot("#paused", 8); });
+at(5900, () => { unspot(); cap("Four agents enabled — only one is still running");
+                 on(".mc");
+                 $$(".mc .v").forEach((el,i) => later(140+i*110, () => count(el, +el.dataset.to, 900)));
+                 focus("#mgrid", 40); });
+at(7400, () => { cap("$437.20 against a $400 month budget — that's why");
+                 focus("#mcSpend", 60, 1500); spot("#mcSpend", 8); });
+at(8900, () => { cap("One approval is sitting between here and work resuming");
+                 focus("#mcAppr", 60, 1400); spot("#mcAppr", 8); });
+at(10300, () => { unspot(); cap("Meanwhile the sprint charts flatten out");
+                  on(".chc"); focus("#chgrid", 34, 1500); });
+at(10600, () => {
+  $$(".spark i").forEach((b,i) => later(i*55, () => b.style.height = b.dataset.h+"%"));
+  later(300, () => $$(".hb .tr i").forEach((b,i) => later(i*70, () => b.style.width = b.dataset.w+"%")));
+  later(400, () => count($(".ring .big"), 92, 900));
+});
+at(12200, () => { cap("Two tickets already blocked on it"); on("#tasks");
+                  later(150, () => stag(".tr-row", 90)); focus("#tasks", 34, 1400); });
+at(13900, () => { camWide(1300); cap("So — who exactly is stalled?"); });
+
+/* ─ CHAPTER 2 · ORG CHART ─ */
+gesture(14400, "#navorg", "Open the org chart", true);
+at(15900, () => {
+  chap(2); nav("org"); scene("org"); url("/org", "Org Chart");
+  hide(); unspot(); camWide(900);
+  cap("This is the company — an actual org chart of agents");
+});
+at(16300, () => { stag(".edge", 90); later(200, () => stag(".node", 170)); });
+at(17400, () => { cap("The CEO agent is still running — it structures the brief");
+                  focus("#nCeo", 60, 1500); spot("#nCeo", 10); });
+at(19000, () => { unspot(); cap("PM, SWE Lead and Designer are paused mid-task");
+                  focus("#orgcanvas", 30, 1600); });
+at(19400, () => $$(".node .bar i").forEach((b,i) =>
+  later(i*140, () => b.style.width = b.dataset.w+"%")));
+at(20900, () => { cap("Each reports upward, each holds a share of the sprint");
+                  focus("#nSwe", 60, 1500); spot("#nSwe", 10); });
+at(22600, () => { unspot(); cap("Nothing here restarts itself. That's the design.");
+                  focus("#orgcanvas", 26, 1500); });
+at(24300, () => { camWide(1200); cap("The board decides whether the money moves"); });
+
+/* ─ CHAPTER 3 · APPROVALS ─ */
+at(24900, () => { scene("appr"); chap(3); nav(""); url("/approvals", "Approvals");
+                  cap("One request, from the CEO agent, waiting on a human"); });
+at(25400, () => { on("#tabs"); on("#apCard"); });
+at(25900, () => { $("#apCard").classList.add("live"); focus("#apCard", 34, 1500); });
+at(26400, () => { $("#limBar").style.width = "100%"; $("#limMark").style.left = "91.5%"; });
+/* ★ SIGNATURE: the budget ceiling, and who is allowed to move it */
+at(27400, () => { cap("The ceiling is $400. The agents want $600.");
+                  focus("#limitRow", 60, 1500, 1.8); spot("#limitRow", 10); });
+at(29400, () => { unspot(); cap("An agent cannot raise its own budget");
+                  focus("#apActs", 70, 1400, 1.7); });
+gesture(30300, "#btnApprove", "Approve the override");
+at(31800, () => {
+  $("#apCard").classList.remove("live"); $("#apCard").classList.add("done");
+  $("#apStatT").textContent = "Approved";
+  $("#apStat").innerHTML = '<svg class="ic" style="width:13px;height:13px"><use href="#i-check-c"/></svg>Approved';
+  $("#pcount").textContent = "0";
+  cap("Approved — and the company starts moving again");
+  hide(); unspot();
+});
+at(32300, () => { on("#resume"); focus("#resume", 46, 1500); });
+at(32800, () => {
+  ["#rr1","#rr2","#rr3"].forEach((id,i) => later(i*420, () => {
+    $(id).classList.add("in");
+    later(320, () => $(id).classList.add("up"));
+  }));
+});
+at(34600, () => $("#toast").classList.add("on"));
+at(35400, () => {                                  /* the sidebar agrees */
+  cap("Three agents back to running — logged to Activity");
+  const dots = $$(".ag .ag-d");
+  [1,2,3].forEach((n,i) => later(i*260, () => dots[n].style.background = "var(--run)"));
+  camWide(1500);
+});
+at(37200, () => $("#toast").classList.remove("on"));
+at(37400, () => { cap("Budgets, org, approvals — the parts a company actually needs");
+                  focus("#nav", 40, 1600, 1.5); });
+at(39200, () => camWide(1400));
+
+/* ─ END CARD ─ */
+at(40400, () => { $("#end").classList.add("active"); on("#emark"); cap(""); });
+at(41000, () => on("#etag"));
+at(41500, () => on("#esub"));
+at(42100, () => on("#eurl"));
+
+/* ── reset ───────────────────────────────────────────────────────── */
+function reset(){
+  timers.forEach(clearTimeout); timers.length = 0;
+  off("#rail"); off("#nav"); off(".nv-i"); off("#crumb"); off("#paused"); off(".mc");
+  off(".chc"); off("#tasks"); off(".tr-row"); off(".edge"); off(".node"); off("#tabs");
+  off("#apCard"); off("#resume"); off(".rr");
+  off("#omark"); off("#orule"); off("#oeb");
+  off("#emark"); off("#etag"); off("#esub"); off("#eurl");
+  $$(".nv-i").forEach(n => n.classList.remove("act","hot"));
+  $$(".rr").forEach(r => r.classList.remove("up"));
+  $$(".spark i").forEach(b => b.style.height = "0");
+  $$(".hb .tr i, .node .bar i").forEach(b => b.style.width = "0");
+  $$(".mc .v").forEach(v => v.textContent = (v.dataset.prefix||"") + "0" + (v.dataset.suffix||""));
+  $(".ring .big").textContent = "0%";
+  $("#limBar").style.width = "0"; $("#limMark").style.left = "0";
+  $("#apCard").classList.remove("live","done");
+  $("#apStat").innerHTML = '<svg class="ic" style="width:13px;height:13px"><use href="#i-clock"/></svg><span id="apStatT">Pending</span>';
+  $("#pcount").textContent = "1";
+  $("#btnApprove").classList.remove("hot","press");
+  const dots = $$(".ag .ag-d");
+  dots.forEach((d,i) => d.style.background = i === 0 ? "var(--run)" : "var(--pause)");
+  $("#toast").classList.remove("on");
+  $("#owm").innerHTML = "";
+  $("#end").classList.remove("active"); $("#open").classList.add("active");
+  $$(".scene").forEach(s => s.classList.remove("active","out"));
+  scrollPane("#dashpane", 0);
+  url("/dashboard", "Dashboard");
+  cap(""); chap(0); unspot(); hide();
+  cam(MINZ, MINZ > 1 ? 880 : 720, APPH/2, 0);
+  cur.style.transitionDuration = "0ms";
+  cur.style.transform = "translate(720px,380px)";
+  requestAnimationFrame(() => {
+    camEl.style.transitionDuration = "1400ms";
+    cur.style.transitionDuration = "1000ms";
+  });
+  CUES.forEach(c => c.done = false);
+}
+
+/* ── clock ───────────────────────────────────────────────────────── */
+let t0 = performance.now(), paused = false, pausedAt = 0;
+const fill = $("#fill"), clock = $("#clock"), chline = $("#chline i");
+const fmt = ms => Math.floor(ms/60000)+":"+String(Math.floor(ms/1000)%60).padStart(2,"0");
+function frame(now){
+  requestAnimationFrame(frame);
+  if (paused) return;
+  let t = now - t0;
+  if (t >= DUR){ reset(); t0 = now; t = 0; }
+  for (const c of CUES) if (!c.done && t >= c.t){ c.done = true; c.fn(); }
+  const p = t/DUR*100;
+  fill.style.width = p+"%"; chline.style.width = p+"%";
+  clock.textContent = fmt(t)+" / 0:45";
+}
+requestAnimationFrame(frame);
+
+$("#btnPlay").addEventListener("click", e => {
+  paused = !paused;
+  if (paused) pausedAt = performance.now(); else t0 += performance.now()-pausedAt;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+$("#btnReplay").addEventListener("click", () => {
+  reset(); t0 = performance.now(); paused = false; $("#btnPlay").textContent = "Pause";
+});
+if (matchMedia("(prefers-reduced-motion: reduce)").matches){
+  paused = true; pausedAt = performance.now();
+  $("#poster").classList.add("on"); $("#btnPlay").textContent = "Play";
+  $("#pplay").addEventListener("click", () => {
+    $("#poster").classList.remove("on");
+    t0 += performance.now()-pausedAt; paused = false;
+    $("#btnPlay").textContent = "Pause";
+  });
+}
+
+const CHAPTERS = [
+  { name: "Dashboard", start: 3250 },
+  { name: "Org chart", start: 15900 },
+  { name: "Approvals", start: 24900 }
+];
+
+/* ── postMessage API for parent page ────────────────────────────── */
+window.addEventListener("message", e => {
+  if (!e.data || typeof e.data !== "object") return;
+  const msg = e.data;
+  if (msg.type === "replay") {
+    reset(); t0 = performance.now(); paused = false;
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "pause") {
+    if (!paused) { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Play";
+  } else if (msg.type === "play") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "toggle") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    else { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = paused ? "Play" : "Pause";
+  } else if (msg.type === "seek") {
+    const target = Math.max(0, Math.min(1, msg.position)) * DUR;
+    reset();
+    t0 = performance.now() - target;
+    // Fire all cues up to the target time
+    for (const c of CUES) {
+      if (c.t <= target) { c.done = true; c.fn(); }
+    }
+    if (paused) pausedAt = performance.now();
+  } else if (msg.type === "getInfo") {
+    // Send back chapter/meta info on request
+    parent.postMessage({ type: "info", id: msg.id, dur: DUR, chapters: CHAPTERS }, "*");
+  }
+});
+
+// Expose progress getter so the parent page can poll via rAF
+window._demoProgress = () => {
+  const now = performance.now();
+  const elapsed = paused ? (pausedAt - t0) : (now - t0);
+  const t = ((elapsed % DUR) + DUR) % DUR;
+  return { position: t / DUR, time: t, duration: DUR, paused: paused };
+};
+})();
+</script>

@@ -1,0 +1,1059 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo_map_rust — Product Demo Reel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   octo_map_rust — GUIDED PRODUCT REEL
+   A library has no screens, so this reel shows the three things a
+   library actually has: the API you write, the thing it computes,
+   and the evidence it is correct.
+   Chapters: The API → The map → The proof
+   All figures are from README.md / Cargo.toml — nothing invented.
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --us:1;   /* 1 / render scale — keeps caption UI legible at any size */
+  --bg:#0d1420; --panel:#121b29; --panel2:#16202f; --raise:#1b2739;
+  --border:#24334a; --border2:#2e3f5a;
+  --fg:#e6edf5; --mfg:#8496ad; --dim:#5f7089;
+  --rust:#EA6A2B; --amber:#F2C14E; --blue:#58A6E8; --green:#4ADE80;
+  --red:#F87171; --violet:#A78BFA;
+  --kw:#FF7B72; --fnc:#D2A8FF; --typ:#FFA657; --str:#A5D6FF; --num:#79C0FF;
+  --cmt:#7d8ea3; --pun:#c9d1d9;
+  --occ:#EA6A2B; --free:rgba(88,166,232,.26); --free-b:rgba(88,166,232,.42);
+  --unk:rgba(255,255,255,.045);
+  --font:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+  --ease:cubic-bezier(.22,.61,.36,1); --ease-out:cubic-bezier(.16,1,.3,1);
+  --ease-cam:cubic-bezier(.62,.02,.24,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#080d15;height:100%;-webkit-font-smoothing:antialiased;
+          -moz-osx-font-smoothing:grayscale}
+body{font-family:var(--font);display:flex;flex-direction:column;align-items:center;
+     justify-content:center;min-height:100vh;padding:24px;gap:16px}
+.ic{width:16px;height:16px;flex:none;stroke-width:2;fill:none;stroke:currentColor;
+    stroke-linecap:round;stroke-linejoin:round}
+
+/* ── Stage ───────────────────────────────────────────────────────── */
+#wrap{width:100%;max-width:1440px;aspect-ratio:16/9;position:relative;border-radius:14px;
+      overflow:hidden;background:#080d15;
+      box-shadow:0 40px 90px -20px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.07)}
+#root{position:absolute;top:0;left:0;width:1440px;height:810px;transform-origin:top left;
+      background:#080d15;overflow:hidden}
+#cam{position:absolute;top:0;left:0;width:1440px;height:746px;transform-origin:0 0;
+     overflow:hidden;transition:transform 1.4s var(--ease-cam);will-change:transform;
+     backface-visibility:hidden}
+#drift{position:absolute;inset:0;transform-origin:50% 50%;
+       animation:drift 28s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:scale(1.008) translate(-3px,-2px)}
+                 50%{transform:scale(1.018) translate(3px,-3px)}
+                 100%{transform:scale(1.010) translate(3px,3px)}}
+
+/* ── Window frame ────────────────────────────────────────────────── */
+#titlebar{height:38px;background:var(--panel);border-bottom:1px solid var(--border);
+          display:flex;align-items:center;gap:14px;padding:0 14px}
+.lights{display:flex;gap:7px}.lights i{width:10px;height:10px;border-radius:50%;display:block}
+.lights i:nth-child(1){background:#FF5F57}.lights i:nth-child(2){background:#FEBC2E}
+.lights i:nth-child(3){background:#28C840}
+#wtitle{flex:1;text-align:center;font-family:var(--mono);font-size:11.5px;color:var(--mfg);
+        transition:opacity .25s}
+#wtitle b{color:var(--fg);font-weight:500}
+.wbadge{font-family:var(--mono);font-size:10px;color:var(--mfg);border:1px solid var(--border);
+        padding:2px 7px;border-radius:5px}
+
+#app{height:708px;background:var(--bg);position:relative;overflow:hidden}
+.scene{position:absolute;inset:0;overflow:hidden;opacity:0;visibility:hidden;
+       transform:translateX(24px) scale(.993);filter:blur(6px);
+       transition:opacity .45s ease,transform .65s var(--ease-out),filter .45s ease,visibility .45s}
+.scene.active{opacity:1;visibility:visible;transform:none;filter:blur(0)}
+.scene.out{transform:translateX(-16px) scale(.995);filter:blur(4px)}
+
+/* ══ CHAPTER 1 · THE API ══════════════════════════════════════════ */
+#api{display:grid;grid-template-columns:1fr 440px}
+.editor{border-right:1px solid var(--border);display:flex;flex-direction:column;min-width:0}
+.etabs{height:36px;display:flex;align-items:stretch;border-bottom:1px solid var(--border);
+       background:var(--panel)}
+.etab{display:flex;align-items:center;gap:8px;padding:0 16px;font-size:12px;color:var(--mfg);
+      border-right:1px solid var(--border)}
+.etab.on{background:var(--bg);color:var(--fg);box-shadow:inset 0 -1px 0 var(--rust)}
+.etab .d{width:7px;height:7px;border-radius:50%;background:var(--rust)}
+.code{flex:1;padding:18px 0 0;overflow:hidden;font-family:var(--mono);font-size:13.5px;
+      line-height:1.72}
+.cl{display:flex;gap:0;padding:0 22px;opacity:0;transform:translateY(4px);
+    transition:opacity .3s,transform .35s var(--ease-out),background .3s}
+.cl.in{opacity:1;transform:none}
+.cl.lit{background:rgba(234,106,43,.09)}
+.cl .n{width:34px;flex:none;color:#455770;text-align:right;padding-right:16px;
+       user-select:none;font-size:12px}
+.cl .s{white-space:pre;min-width:0}
+.kw{color:var(--kw)} .fnc{color:var(--fnc)} .typ{color:var(--typ)} .str{color:var(--str)}
+.num{color:var(--num)} .cmt{color:var(--cmt);font-style:normal} .pun{color:var(--pun)}
+.blink{display:inline-block;width:7px;height:15px;background:var(--rust);vertical-align:-3px;
+       animation:bl .9s steps(1) infinite}
+@keyframes bl{0%,100%{opacity:1}50%{opacity:0}}
+
+.outp{background:var(--panel);display:flex;flex-direction:column;min-width:0}
+.ohd{height:36px;display:flex;align-items:center;gap:9px;padding:0 18px;
+     border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.08em;
+     text-transform:uppercase;color:var(--mfg);font-weight:600}
+.obody{flex:1;padding:18px}
+.qrow{padding:12px 14px;background:var(--panel2);border:1px solid var(--border);
+      border-radius:8px;margin-bottom:11px;opacity:0;transform:translateY(10px);
+      transition:opacity .45s,transform .5s var(--ease-out),border-color .4s,background .4s}
+.qrow.in{opacity:1;transform:none}
+.qrow .q{font-family:var(--mono);font-size:11.5px;color:var(--mfg);
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qrow .a{display:flex;align-items:center;gap:9px;margin-top:9px}
+.qrow .val{font-family:var(--mono);font-size:15px;font-weight:600;opacity:0;
+           transform:translateX(-6px);transition:.4s var(--ease-out)}
+.qrow.done .val{opacity:1;transform:none}
+.qrow .mean{font-size:11.5px;color:var(--mfg);margin-left:auto;opacity:0;
+            transition:opacity .4s}
+.qrow.done .mean{opacity:1}
+.qrow.occ.done{border-color:rgba(234,106,43,.5)} .qrow.occ .val{color:var(--occ)}
+.qrow.fre.done{border-color:rgba(88,166,232,.5)} .qrow.fre .val{color:var(--blue)}
+.qrow.unk.done{border-color:rgba(167,139,250,.55);background:rgba(167,139,250,.07)}
+.qrow.unk .val{color:var(--violet)}
+.note{margin-top:16px;padding:13px 15px;border-left:2px solid var(--rust);
+      background:rgba(234,106,43,.07);font-size:12.5px;line-height:1.62;color:var(--fg);
+      opacity:0;transform:translateX(-8px);transition:.55s var(--ease-out)}
+.note.in{opacity:1;transform:none}
+.note b{color:var(--rust);font-weight:600}
+.deps{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.dep{font-family:var(--mono);font-size:10.5px;color:var(--mfg);border:1px solid var(--border);
+     padding:3px 9px;border-radius:5px;opacity:0;transform:translateY(6px);
+     transition:.4s var(--ease-out)}
+.dep.in{opacity:1;transform:none}
+.dep b{color:var(--green);font-weight:500}
+
+/* ══ CHAPTER 2 · THE MAP ══════════════════════════════════════════ */
+#map{display:grid;grid-template-columns:1fr 336px}
+.mapwrap{position:relative;display:flex;align-items:center;justify-content:center;
+         border-right:1px solid var(--border);overflow:hidden}
+#grid{position:relative;width:560px;height:520px}
+.cell{position:absolute;width:20px;height:20px;background:var(--unk);
+      box-shadow:inset 0 0 0 .5px rgba(255,255,255,.05);
+      opacity:0;transform:scale(.6);
+      transition:opacity .35s var(--ease-out),transform .35s var(--ease-out),
+                 background .4s ease,box-shadow .4s ease}
+.cell.in{opacity:1;transform:none}
+.cell.free{background:var(--free);box-shadow:inset 0 0 0 .5px var(--free-b)}
+.cell.occ{background:var(--occ);box-shadow:inset 0 0 0 .5px rgba(234,106,43,.9),
+          0 0 12px rgba(234,106,43,.45)}
+.cell.hit{background:rgba(242,193,78,.75);box-shadow:inset 0 0 0 .5px rgba(242,193,78,.9)}
+.cell.merged{background:rgba(88,166,232,.10);box-shadow:none}
+.blk{position:absolute;background:rgba(88,166,232,.20);
+     box-shadow:inset 0 0 0 1px rgba(88,166,232,.55);opacity:0;transform:scale(.85);
+     transition:opacity .45s var(--ease-out),transform .5s var(--ease-out)}
+.blk.in{opacity:1;transform:none}
+#sensor{position:absolute;width:20px;height:20px;display:flex;align-items:center;
+        justify-content:center;opacity:0;transform:scale(.4);
+        transition:.5s var(--ease-out);z-index:4}
+#sensor.in{opacity:1;transform:none}
+#sensor i{width:9px;height:9px;border-radius:50%;background:var(--amber);display:block;
+          box-shadow:0 0 0 3px rgba(242,193,78,.25),0 0 16px rgba(242,193,78,.7);
+          animation:ping 2s ease-out infinite}
+@keyframes ping{0%{box-shadow:0 0 0 3px rgba(242,193,78,.3),0 0 16px rgba(242,193,78,.7)}
+                70%{box-shadow:0 0 0 16px rgba(242,193,78,0),0 0 16px rgba(242,193,78,.4)}
+                100%{box-shadow:0 0 0 3px rgba(242,193,78,0),0 0 16px rgba(242,193,78,.7)}}
+#shadow{position:absolute;border:1px dashed rgba(167,139,250,.75);
+        background:rgba(167,139,250,.10);opacity:0;transition:opacity .6s;z-index:3;
+        display:flex;align-items:flex-start;justify-content:center;padding-top:6px}
+#shadow.on{opacity:1}
+#shadow span{font-family:var(--mono);font-size:10.5px;color:#c7b8fb;
+             background:rgba(13,20,32,.85);padding:2px 7px;border-radius:4px}
+.mpanel{padding:24px 22px;display:flex;flex-direction:column;gap:18px;background:var(--panel)}
+.plbl{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mfg);
+      font-weight:600;margin-bottom:11px}
+.lgd{padding:14px 15px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+     opacity:0;transform:translateX(10px);transition:.5s var(--ease-out)}
+.lgd.in{opacity:1;transform:none}
+.lg{display:flex;align-items:center;gap:11px;padding:7px 0;opacity:0;transform:translateX(-6px);
+    transition:.4s var(--ease-out)}
+.lg.in{opacity:1;transform:none}
+.lg .sw{width:16px;height:16px;flex:none;border-radius:3px}
+.lg .nm{font-size:12.5px;color:var(--fg)}
+.lg .cd{margin-left:auto;font-family:var(--mono);font-size:11.5px;font-weight:600}
+.stats{padding:14px 15px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+       opacity:0;transform:translateX(10px);transition:.5s var(--ease-out)}
+.stats.in{opacity:1;transform:none}
+.srow{display:flex;align-items:center;justify-content:space-between;padding:5px 0;font-size:12px}
+.srow .k{color:var(--mfg)}
+.srow .v{font-family:var(--mono);font-weight:600;color:var(--fg);
+         font-variant-numeric:tabular-nums}
+.srow .v.dn{color:var(--green)}
+.mcode{padding:13px 15px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+       font-family:var(--mono);font-size:11px;line-height:1.7;color:var(--mfg);
+       opacity:0;transform:translateX(10px);transition:.5s var(--ease-out)}
+.mcode.in{opacity:1;transform:none}
+
+/* ══ CHAPTER 3 · THE PROOF ════════════════════════════════════════ */
+#proof{padding:26px 30px;display:flex;flex-direction:column;gap:18px}
+.term{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px 17px;
+      font-family:var(--mono);font-size:12.5px;line-height:1.75;flex:none;
+      opacity:0;transform:translateY(10px);transition:.5s var(--ease-out)}
+.term.in{opacity:1;transform:none}
+.tl{opacity:0;transform:translateY(4px);transition:.3s var(--ease-out);white-space:pre}
+.tl.in{opacity:1;transform:none}
+.tl .p{color:var(--green)} .tl .c{color:var(--fg)} .tl .m{color:var(--mfg)}
+.tl .ok{color:var(--green);font-weight:600} .tl .hl{color:var(--amber)}
+.pgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;flex:1;min-height:0}
+.pc{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px 18px;
+    opacity:0;transform:translateY(14px);transition:.5s var(--ease-out);
+    display:flex;flex-direction:column}
+.pc.in{opacity:1;transform:none}
+.pc .h{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.pc .h .ic{width:15px;height:15px}
+.pc .t{font-size:13px;font-weight:600;color:var(--fg)}
+.pc .big{font-family:var(--mono);font-size:26px;font-weight:600;letter-spacing:-.02em;
+         font-variant-numeric:tabular-nums;line-height:1.1}
+.pc .sm{font-size:11.5px;color:var(--mfg);line-height:1.55;margin-top:6px}
+.pc .sm b{color:var(--fg);font-weight:500}
+.breakdown{display:flex;gap:5px;margin-top:11px}
+.breakdown span{flex:1;height:5px;border-radius:2px;transform:scaleX(0);transform-origin:left;
+                transition:transform .7s var(--ease-out)}
+.breakdown.in span{transform:none}
+.hex{font-family:var(--mono);font-size:10.5px;line-height:1.8;margin-top:8px}
+.hex .r{display:flex;gap:14px;opacity:0;transform:translateX(-6px);
+        transition:.35s var(--ease-out)}
+.hex .r.in{opacity:1;transform:none}
+.hex .lb{width:38px;color:var(--mfg);flex:none}
+.hex .by{color:var(--fg);letter-spacing:.04em}
+.hex .eq{margin-left:auto;color:var(--green);font-weight:600}
+.forbid{font-family:var(--mono);font-size:12px;background:var(--panel2);border-radius:6px;
+        padding:9px 12px;margin-top:9px;color:var(--mfg)}
+.forbid b{color:var(--red)}
+.zero{display:flex;align-items:baseline;gap:9px;margin-top:10px}
+.zero .z{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--green)}
+.zero .zl{font-size:11.5px;color:var(--mfg)}
+
+/* ══ PRESENTATION LAYER ═══════════════════════════════════════════ */
+#spot{position:absolute;border-radius:8px;box-shadow:0 0 0 9999px rgba(4,8,14,.62);opacity:0;
+      pointer-events:none;z-index:14;transition:left .6s var(--ease-out),top .6s var(--ease-out),
+      width .6s var(--ease-out),height .6s var(--ease-out),opacity .45s ease}
+#spot.on{opacity:1}
+#stagebar{display:none!important;position:absolute;left:0;right:0;bottom:0;height:64px;background:#080d15;z-index:12;
+          align-items:center;padding:0 calc(21px * var(--us));
+          gap:calc(19px * var(--us));border-top:1px solid rgba(255,255,255,.07)}
+#capwrap{flex:1;min-width:0;display:flex;align-items:center;gap:calc(9px * var(--us));
+         overflow:hidden}
+#capdot{width:calc(6px * var(--us));height:calc(6px * var(--us));border-radius:50%;
+        background:var(--rust);flex:none;animation:capbeat 2.4s ease-out infinite}
+@keyframes capbeat{0%{box-shadow:0 0 0 0 rgba(234,106,43,.6)}
+                   70%{box-shadow:0 0 0 8px rgba(234,106,43,0)}
+                   100%{box-shadow:0 0 0 0 rgba(234,106,43,0)}}
+#cap{font-size:calc(13px * var(--us));font-weight:500;color:#fff;letter-spacing:-.01em;
+     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#cap i{display:inline-block;font-style:normal;opacity:0;transform:translateY(9px);
+       transition:opacity .34s,transform .44s var(--ease-out)}
+#cap.on i{opacity:1;transform:none}
+#chaps{display:flex;align-items:center;gap:6px;flex:none}
+.chp{display:flex;align-items:center;gap:calc(6px * var(--us));height:calc(21px * var(--us));
+     padding:0 calc(9px * var(--us));border-radius:999px;font-size:calc(9.5px * var(--us));
+     font-weight:500;color:#5b6b80;transition:color .4s,background .4s}
+.chp b{font-family:var(--mono);font-size:calc(8.2px * var(--us));font-weight:400;opacity:.65}
+.chp.on{color:#fff;background:rgba(255,255,255,.10)} .chp.done{color:#8496ad}
+#chline{width:calc(96px * var(--us));height:calc(2px * var(--us));
+        background:rgba(255,255,255,.12);border-radius:2px;flex:none;overflow:hidden;
+        margin-left:calc(4px * var(--us))}
+#chline i{display:block;height:100%;width:0;background:#fff;border-radius:2px}
+
+/* ══ Bookends ═════════════════════════════════════════════════════ */
+.overlay{position:absolute;inset:0;z-index:16;background:#080d15;color:#fff;opacity:0;
+         visibility:hidden;transition:opacity .6s ease,visibility .6s}
+.overlay.active{opacity:1;visibility:visible}
+.overlay::before{content:"";position:absolute;inset:0;
+  background:radial-gradient(760px 480px at 50% 44%,rgba(234,106,43,.20),transparent 70%)}
+.overlay::after{content:"";position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px);
+  background-size:40px 40px}
+.ostage{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+        justify-content:center;transform-origin:50% 48%}
+#open.active .ostage{animation:pullBack 3.4s var(--ease-out) forwards}
+#end.active .ostage{animation:pushIn 5.2s var(--ease-out) forwards}
+@keyframes pullBack{from{transform:scale(1.085)}to{transform:scale(1)}}
+@keyframes pushIn{from{transform:scale(1)}to{transform:scale(1.05)}}
+/* the mark is an octree: one cube subdividing */
+.omark{width:78px;height:78px;position:relative;opacity:0;transform:scale(.72) rotate(-7deg);
+       transition:opacity .6s,transform .95s var(--ease-out)}
+.omark.in{opacity:1;transform:none}
+.omark .q{position:absolute;width:37px;height:37px;border:1.5px solid var(--rust);
+          background:rgba(234,106,43,.14)}
+.omark .q:nth-child(1){left:0;top:0}
+.omark .q:nth-child(2){right:0;top:0;background:rgba(234,106,43,.55)}
+.omark .q:nth-child(3){left:0;bottom:0}
+.omark .q:nth-child(4){right:0;bottom:0;display:grid;grid-template-columns:1fr 1fr;
+                       background:none}
+.omark .q:nth-child(4) i{border:.75px solid rgba(234,106,43,.7);display:block}
+.omark .q:nth-child(4) i:nth-child(2){background:rgba(234,106,43,.55)}
+.owm{margin-top:26px;font-family:var(--mono);font-size:40px;font-weight:600;
+     letter-spacing:-.02em;display:flex;overflow:hidden}
+.owm i{display:inline-block;font-style:normal;opacity:0;transform:translateY(24px);
+       transition:opacity .45s,transform .6s var(--ease-out)}
+.owm.in i{opacity:1;transform:none}
+.rule{width:0;height:1px;background:rgba(255,255,255,.18);margin-top:22px;
+      transition:width .9s var(--ease-out)}
+.rule.in{width:360px}
+.oeb{margin-top:20px;font-size:11.5px;letter-spacing:.22em;color:#93a4b6;font-weight:500;
+     display:flex;align-items:center;gap:10px;opacity:0;transform:translateY(8px);
+     transition:.6s var(--ease-out)}
+.oeb.in{opacity:1;transform:none}
+.oeb i{width:6px;height:6px;border-radius:50%;background:var(--rust);display:block}
+#end .tag{margin-top:24px;font-size:33px;font-weight:600;letter-spacing:-.03em;text-align:center;
+          line-height:1.32;max-width:900px;opacity:0;transform:translateY(14px);
+          transition:.7s var(--ease-out)}
+#end .tag.in{opacity:1;transform:none}
+#end .tag b{font-weight:600;box-shadow:inset 0 -3px 0 var(--rust)}
+#end .sb{margin-top:18px;font-size:14px;color:#93a4b6;max-width:660px;text-align:center;
+         line-height:1.6;opacity:0;transform:translateY(10px);transition:.7s var(--ease-out)}
+#end .sb.in{opacity:1;transform:none}
+#end .url{margin-top:30px;display:flex;align-items:center;gap:9px;padding:10px 22px;
+          border:1px solid rgba(255,255,255,.16);border-radius:6px;font-family:var(--mono);
+          font-size:12.5px;opacity:0;transform:translateY(10px);transition:.7s var(--ease-out)}
+#end .url.in{opacity:1;transform:none}
+
+#bar{display:flex;align-items:center;gap:14px;color:#8496ad;font-size:12px;width:100%;
+     max-width:1440px}
+#bar button{background:#131c2b;border:1px solid #24334a;color:#d4dde6;height:32px;padding:0 14px;
+            border-radius:8px;font:500 12px var(--font);cursor:pointer;transition:.15s}
+#bar button:hover{background:#1a2436;border-color:#33455f}
+#bar button:focus-visible{outline:2px solid var(--rust);outline-offset:2px}
+#track{flex:1;height:3px;background:#18202e;border-radius:2px;overflow:hidden}
+#fill{height:100%;width:0;background:var(--rust)}
+#bar .t{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+body.embed #bar{display:none}
+body.embed{padding:0;height:100%;gap:0;display:block}
+/* In a host panel the reel fills the box: no aspect lock, no matting. */
+body.embed #wrap{width:100%;height:100%;max-width:none;aspect-ratio:auto;
+                 border-radius:0;box-shadow:none}
+/* Short panels drop the chapter rail, then the whole caption bar. */
+#wrap[data-mode="slim"] #chaps{display:none}
+#wrap[data-mode="none"] #stagebar{display:none}
+#poster{position:absolute;inset:0;z-index:30;background:rgba(8,13,21,.94);display:none;
+        align-items:center;justify-content:center;flex-direction:column;gap:18px}
+#poster.on{display:flex}
+#poster p{font-size:14px;color:#93a4b6;max-width:380px;text-align:center;line-height:1.6}
+#poster button{height:44px;padding:0 26px;border-radius:999px;background:var(--rust);color:#fff;
+               border:0;font:600 14px var(--font);cursor:pointer;display:flex;
+               align-items:center;gap:9px}
+@media (prefers-reduced-motion:reduce){
+  #drift,#capdot,.blink,#sensor i{animation:none!important}
+  #cam{transition:none!important;transform:none!important}
+  .ostage{animation:none!important} .scene{filter:none!important}
+}
+</style>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-flask" viewBox="0 0 24 24"><path d="M10 2v6.3a2 2 0 0 1-.3 1L4 19a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-5.7-9.7a2 2 0 0 1-.3-1V2"/><path d="M8.5 2h7M6.3 15h11.4"/></symbol>
+  <symbol id="i-binary" viewBox="0 0 24 24"><rect x="4" y="3" width="6" height="7" rx="1"/><rect x="14" y="14" width="6" height="7" rx="1"/><path d="M4 21h6M7 14v7M14 3h3v7M14 10h6"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></symbol>
+  <symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 1 0 6.99 20.5"/><path d="M12 12 8 8"/><circle cx="12" cy="12" r="2"/><path d="M15.5 8.5a5 5 0 1 0-7 7"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></symbol>
+</svg>
+
+<div id="wrap"><div id="root">
+
+  <div id="cam"><div id="drift">
+
+    <div id="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div id="wtitle"><b>octo_map_rust</b> — cargo run --example insert_and_query</div>
+      <span class="wbadge">rustc 1.75+</span>
+    </div>
+
+    <div id="app">
+
+      <!-- ══ CHAPTER 1 · THE API ══════════════════════════════ -->
+      <section class="scene" id="api">
+        <div class="editor">
+          <div class="etabs">
+            <div class="etab on"><span class="d"></span>insert_and_query.rs</div>
+            <div class="etab">Cargo.toml</div>
+          </div>
+          <div class="code" id="code"></div>
+        </div>
+        <div class="outp">
+          <div class="ohd"><svg class="ic" style="width:13px;height:13px"><use href="#i-radar"/></svg>
+            Three-state query</div>
+          <div class="obody">
+            <div class="qrow occ" id="q1">
+              <div class="q">is_occupied_at(1.05, 0.05, 0.05)</div>
+              <div class="a"><span class="val">Some(true)</span>
+                <span class="mean">the wall the ray hit</span></div>
+            </div>
+            <div class="qrow fre" id="q2">
+              <div class="q">is_occupied_at(0.55, 0.05, 0.05)</div>
+              <div class="a"><span class="val">Some(false)</span>
+                <span class="mean">swept clear by the ray</span></div>
+            </div>
+            <div class="qrow unk" id="q3">
+              <div class="q">is_occupied_at(5.05, 0.05, 0.05)</div>
+              <div class="a"><span class="val">None</span>
+                <span class="mean">never observed</span></div>
+            </div>
+            <div class="note" id="note">
+              Occupancy is <b>Option&lt;bool&gt;</b>, so <b>unknown</b> cannot be mistaken for free.
+              The compiler makes you handle the third case.
+            </div>
+            <div class="deps">
+              <span class="dep">octomap-core <b>0.1.0</b></span>
+              <span class="dep">deps: <b>0</b></span>
+              <span class="dep">std <b>only</b></span>
+              <span class="dep">no <b>C++</b> in the build</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ CHAPTER 2 · THE MAP ══════════════════════════════ -->
+      <section class="scene" id="map">
+        <div class="mapwrap">
+          <div id="grid">
+            <div id="sensor"><i></i></div>
+            <div id="shadow"><span>unknown</span></div>
+          </div>
+        </div>
+        <div class="mpanel">
+          <div>
+            <div class="plbl">Legend</div>
+            <div class="lgd" id="legend">
+              <div class="lg" id="lg1"><span class="sw" style="background:var(--occ)"></span>
+                <span class="nm">Occupied</span><span class="cd" style="color:var(--occ)">Some(true)</span></div>
+              <div class="lg" id="lg2"><span class="sw" style="background:rgba(88,166,232,.4)"></span>
+                <span class="nm">Free</span><span class="cd" style="color:var(--blue)">Some(false)</span></div>
+              <div class="lg" id="lg3"><span class="sw" style="background:rgba(255,255,255,.07);
+                box-shadow:inset 0 0 0 1px rgba(167,139,250,.5)"></span>
+                <span class="nm">Never observed</span><span class="cd" style="color:var(--violet)">None</span></div>
+            </div>
+          </div>
+          <div>
+            <div class="plbl">Map</div>
+            <div class="stats" id="stats">
+              <div class="srow"><span class="k">Resolution</span><span class="v">0.10 m</span></div>
+              <div class="srow"><span class="k">Rays cast</span><span class="v" id="sRays">0</span></div>
+              <div class="srow"><span class="k">Leaf nodes</span><span class="v" id="sNodes">0</span></div>
+              <div class="srow"><span class="k">After prune</span><span class="v dn" id="sPruned">—</span></div>
+            </div>
+          </div>
+          <div class="mcode" id="mcode">
+map.insert_point_cloud(<br>
+&nbsp;&nbsp;&amp;scan, sensor,<br>
+&nbsp;&nbsp;-1.0, <span style="color:var(--cmt)">// no range limit</span><br>
+&nbsp;&nbsp;false, false,<br>
+);<br>
+map.<span style="color:var(--fnc)">prune</span>();
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ CHAPTER 3 · THE PROOF ════════════════════════════ -->
+      <section class="scene" id="proof">
+        <div class="term" id="term">
+          <div class="tl" id="t1"><span class="p">$</span> <span class="c">cargo test --workspace</span></div>
+          <div class="tl" id="t2"><span class="m">   Compiling octomap-core v0.1.0, octomap-ros v0.1.0</span></div>
+          <div class="tl" id="t3"><span class="m">    Running </span><span class="c">differential/</span><span class="m"> — 6 suites against C++ fixtures</span></div>
+          <div class="tl" id="t4"><span class="ok">test result: ok. 284 passed; 0 failed; 0 ignored</span><span class="m">   finished in 2.41s</span></div>
+        </div>
+
+        <div class="pgrid">
+          <div class="pc" id="p1">
+            <div class="h"><svg class="ic" style="color:var(--green)"><use href="#i-flask"/></svg>
+              <span class="t">Measured against the C++ reference</span></div>
+            <div class="big" style="color:var(--green)">284<span style="font-size:14px;color:var(--mfg)"> tests</span></div>
+            <div class="breakdown" id="bd">
+              <span style="background:var(--green)"></span><span style="background:var(--blue)"></span>
+              <span style="background:var(--amber)"></span><span style="background:var(--violet)"></span>
+            </div>
+            <div class="sm"><b>206</b> unit · <b>63</b> differential · <b>12</b> parser-robustness ·
+              <b>3</b> doc-tests. The reference is built, driven through the same inputs, and its
+              answers captured as fixtures.</div>
+          </div>
+
+          <div class="pc" id="p2">
+            <div class="h"><svg class="ic" style="color:var(--amber)"><use href="#i-binary"/></svg>
+              <span class="t">Compared as raw IEEE-754 bits</span></div>
+            <div class="sm" style="margin-top:0">Not a tolerance — both implementations do the same
+              operations in the same order, so anything less than bit equality is a real divergence.</div>
+            <div class="zero"><span class="z">3</span>
+              <span class="zl">real bugs caught this way —<br>all three would have passed any epsilon</span></div>
+          </div>
+
+          <div class="pc" id="p3">
+            <div class="h"><svg class="ic" style="color:var(--blue)"><use href="#i-file"/></svg>
+              <span class="t">Byte-identical <span style="font-family:var(--mono)">.bt</span> /
+                <span style="font-family:var(--mono)">.ot</span></span></div>
+            <div class="hex" id="hex">
+              <div class="r"><span class="lb">c++</span><span class="by">8f 12 00 4a c3 7e 01 ff</span>
+                <span class="eq"></span></div>
+              <div class="r"><span class="lb">rust</span><span class="by">8f 12 00 4a c3 7e 01 ff</span>
+                <span class="eq">identical</span></div>
+              <div class="r"><span class="lb">diff</span><span class="by" style="color:var(--green)">0 bytes differ across the file</span>
+                <span class="eq">✓</span></div>
+            </div>
+            <div class="sm">Verified both directions: Rust reads C++ files, and Rust's own output is
+              byte-for-byte what the reference produces.</div>
+          </div>
+
+          <div class="pc" id="p4">
+            <div class="h"><svg class="ic" style="color:var(--red)"><use href="#i-shield"/></svg>
+              <span class="t">No unsafe, anywhere</span></div>
+            <div class="forbid">[workspace.lints.rust]<br>
+              unsafe_code = <b>"forbid"</b></div>
+            <div class="sm">Not "we avoid unsafe" — the compiler rejects an <b>unsafe</b> block
+              anywhere in the repository. No FFI, no raw pointers, no C++ toolchain in the build.</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <div id="spot"></div>
+
+  </div></div>
+
+  <div id="stagebar">
+    <div id="capwrap"><span id="capdot"></span><span id="cap"></span></div>
+    <div id="chaps">
+      <span class="chp" data-ch="1"><b>01</b>The API</span>
+      <span class="chp" data-ch="2"><b>02</b>The map</span>
+      <span class="chp" data-ch="3"><b>03</b>The proof</span>
+      <span id="chline"><i></i></span>
+    </div>
+  </div>
+
+  <div class="overlay active" id="open"><div class="ostage">
+    <div class="omark" id="omark">
+      <div class="q"></div><div class="q"></div><div class="q"></div>
+      <div class="q"><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="owm" id="owm"></div>
+    <div class="rule" id="orule"></div>
+    <div class="oeb" id="oeb"><i></i> 3D OCCUPANCY MAPPING · A PORT, NOT A WRAPPER</div>
+  </div></div>
+
+  <div class="overlay" id="end"><div class="ostage">
+    <div class="omark" id="emark">
+      <div class="q"></div><div class="q"></div><div class="q"></div>
+      <div class="q"><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="tag" id="etag">Occupied. Free.<br><b>Never observed.</b></div>
+    <div class="sb" id="esub">A Rust-native port of OctoMap — byte-identical files, 284 tests
+      against the C++ reference, and no unsafe code anywhere in the repository.</div>
+  </div></div>
+
+  <div id="poster">
+    <button id="pplay"><svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:currentColor">
+      <path d="M6 3l14 9-14 9z"/></svg> Play the demo</button>
+    <p>Motion is reduced in your system settings, so the reel doesn't start on its own.</p>
+  </div>
+
+</div></div>
+
+<div id="bar">
+  <button id="btnPlay">Pause</button>
+  <button id="btnReplay">Replay</button>
+  <div id="track"><div id="fill"></div></div>
+  <span class="t" id="clock">0:00 / 0:45</span>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const DUR = 45000;
+let APPH = 746, MINZ = 1, BARH = 64;   /* set by layout() */
+
+const wrap = $("#wrap"), root = $("#root");
+/* Embed mode: an explicit flag, or simply being inside an iframe. */
+if (location.hash === "#clean" || /[?&]embed=1/.test(location.search)
+    || window.self !== window.top)
+  document.body.classList.add("embed");
+
+const timers = [];
+const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+const on  = (sel, c="in") => $$(sel).forEach(e => e.classList.add(c));
+const off = (sel, c="in") => $$(sel).forEach(e => e.classList.remove(c));
+const stag = (sel, step, c="in") => $$(sel).forEach((e,i) => later(i*step, () => e.classList.add(c)));
+
+function count(el, to, ms){
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1,(now-t0)/ms);
+    el.textContent = Math.round(to*(1-Math.pow(1-p,3))).toLocaleString();
+    if (p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function scene(id){
+  $$(".scene").forEach(s => {
+    const isIn = s.id === id;
+    if (!isIn && s.classList.contains("active")){
+      s.classList.remove("active"); s.classList.add("out");
+      later(680, () => s.classList.remove("out"));
+    }
+    s.classList.toggle("active", isIn);
+  });
+}
+function title(t){
+  const w = $("#wtitle");
+  w.style.opacity = 0;
+  later(220, () => { w.innerHTML = t; w.style.opacity = 1; });
+}
+
+/* ── geometry ────────────────────────────────────────────────────── */
+const camEl = $("#cam"), drift = $("#drift");
+function rectIn(el){
+  const a = el.getBoundingClientRect(), b = drift.getBoundingClientRect();
+  const s = b.width / 1440;
+  return { x:(a.left-b.left)/s, y:(a.top-b.top)/s, w:a.width/s, h:a.height/s,
+           cx:(a.left-b.left)/s + a.width/(2*s), cy:(a.top-b.top)/s + a.height/(2*s) };
+}
+const clamp = (v,lo,hi) => Math.min(hi, Math.max(lo,v));
+
+/* ── responsive fit ───────────────────────────────────────────────
+   The design space keeps a fixed 1440 WIDTH; its HEIGHT is derived
+   from the host box, so the reel fills a 56%x500 desktop panel or a
+   100%x236 mobile one exactly — never letterboxed, never cropped. */
+const appEl = $("#app"), barEl = $("#stagebar");
+function layout(){
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (!w || !h) return;
+  let dh = clamp(Math.round(h / (w/1440)), 690, 1260);
+  const s = Math.min(w/1440, h/dh), shown = dh * s;
+  const mode = shown >= 380 ? "full" : shown >= 292 ? "slim" : "none";
+  BARH = 0;
+  APPH = dh - BARH;
+  MINZ = w < 620 ? 1.5 : w < 900 ? 1.16 : 1;
+  root.style.height = dh + "px";
+  root.style.transform = `translate(${(w-1440*s)/2}px, ${(h-dh*s)/2}px) scale(${s})`;
+  camEl.style.height = APPH + "px";
+  appEl.style.height = (APPH - 38) + "px";
+  barEl.style.height = BARH + "px";
+  wrap.dataset.mode = mode;
+  document.documentElement.style.setProperty("--us", (1/s).toFixed(3));
+}
+new ResizeObserver(layout).observe(wrap);
+layout();
+
+function cam(z, x, y, ms=1400){
+  camEl.style.transitionDuration = ms + "ms";
+  camEl.style.transform = `translate(${clamp(720-x*z,1440-1440*z,0)}px,` +
+                          `${clamp(APPH/2-y*z, APPH-APPH*z, 0)}px) scale(${z})`;
+}
+const camWide = (ms=1300) => cam(MINZ, MINZ > 1 ? 800 : 720, APPH/2, ms);
+function focus(sel, pad=70, ms=1450, maxZ=1.65){
+  const r = rectIn($(sel));
+  const lim = MINZ > 1 ? maxZ * 1.3 : maxZ;
+  const z = clamp(Math.min(1440/(r.w+pad*2), APPH/(r.h+pad*2)), MINZ, lim);
+  cam(z, r.cx, r.cy, ms);
+}
+const spotEl = $("#spot");
+function spot(sel, pad=10){
+  const r = rectIn($(sel));
+  spotEl.style.left = (r.x-pad)+"px"; spotEl.style.top = (r.y-pad)+"px";
+  spotEl.style.width = (r.w+pad*2)+"px"; spotEl.style.height = (r.h+pad*2)+"px";
+  spotEl.classList.add("on");
+}
+const unspot = () => spotEl.classList.remove("on");
+
+const capEl = $("#cap");
+function cap(text){
+  capEl.classList.remove("on");
+  later(180, () => {
+    capEl.innerHTML = "";
+    if (!text) return;
+    text.split(" ").forEach((w,i) => {
+      const s = document.createElement("i");
+      /* non-breaking space: a trailing normal space inside an
+         inline-block is collapsed away, jamming the words together */
+      s.textContent = w + "\u00A0";
+      s.style.transitionDelay = (i*26)+"ms";
+      capEl.appendChild(s);
+    });
+    requestAnimationFrame(() => capEl.classList.add("on"));
+  });
+}
+function chap(n){
+  $$(".chp").forEach(c => {
+    const i = +c.dataset.ch;
+    c.classList.toggle("on", i === n); c.classList.toggle("done", i < n);
+  });
+}
+
+/* ── the quick-start source, verbatim from README.md ─────────────── */
+const CODE = [
+  ['kw','use'],[null,' '],['typ','octomap_core'],['pun','::{'],['typ','OcTree'],['pun',', '],
+    ['typ','Point3'],['pun',', '],['typ','PointCloud'],['pun','};'],['\n'],
+  ['\n'],
+  ['cmt','// 10 cm voxels. Fails only if the resolution is not finite and positive.'],['\n'],
+  ['kw','let'],[null,' '],['kw','mut'],[null,' map = '],['typ','OcTree'],['pun','::'],
+    ['fnc','new'],['pun','('],['num','0.1'],['pun',')?;'],['\n'],
+  ['\n'],
+  ['kw','let'],[null,' sensor = '],['typ','Point3'],['pun','::'],['fnc','new'],['pun','('],
+    ['num','0.05'],['pun',', '],['num','0.05'],['pun',', '],['num','0.05'],['pun',');'],['\n'],
+  ['kw','let'],[null,' scan: '],['typ','PointCloud'],[null,' = '],['fnc','vec!'],['pun','['],['\n'],
+  [null,'    '],['typ','Point3'],['pun','::'],['fnc','new'],['pun','('],['num','1.05'],['pun',', '],
+    ['num','0.05'],['pun',', '],['num','0.05'],['pun','),'],['\n'],
+  [null,'    '],['typ','Point3'],['pun','::'],['fnc','new'],['pun','('],['num','0.05'],['pun',', '],
+    ['num','1.05'],['pun',', '],['num','0.05'],['pun','),'],['\n'],
+  ['pun',']'],['pun','.'],['fnc','into_iter'],['pun','().'],['fnc','collect'],['pun','();'],['\n'],
+  ['\n'],
+  ['cmt','// Each ray frees the space it crosses and marks its endpoint occupied.'],['\n'],
+  [null,'map.'],['fnc','insert_point_cloud'],['pun','(&'],[null,'scan, sensor, '],['num','-1.0'],
+    ['pun',', '],['kw','false'],['pun',', '],['kw','false'],['pun',');'],['\n'],
+  ['\n'],
+  ['cmt','// Three states — and the third is the one that matters.'],['\n'],
+  ['fnc','assert_eq!'],['pun','('],[null,'map.'],['fnc','is_occupied_at'],['pun','(p_wall),  '],
+    ['typ','Some'],['pun','('],['kw','true'],['pun','));'],['\n'],
+  ['fnc','assert_eq!'],['pun','('],[null,'map.'],['fnc','is_occupied_at'],['pun','(p_mid),   '],
+    ['typ','Some'],['pun','('],['kw','false'],['pun','));'],['\n'],
+  ['fnc','assert_eq!'],['pun','('],[null,'map.'],['fnc','is_occupied_at'],['pun','(p_far),   '],
+    ['typ','None'],['pun',');'],['\n'],
+];
+/* Build the editor lines, then reveal them one at a time. */
+(function buildCode(){
+  const box = $("#code");
+  let line = document.createElement("div"), inner = document.createElement("span"), n = 1;
+  line.className = "cl";
+  const push = () => {
+    const num = document.createElement("span");
+    num.className = "n"; num.textContent = n++;
+    inner.className = "s";
+    line.appendChild(num); line.appendChild(inner);
+    box.appendChild(line);
+    line = document.createElement("div"); line.className = "cl";
+    inner = document.createElement("span");
+  };
+  for (const tok of CODE){
+    if (tok[0] === '\n'){ push(); continue; }
+    const s = document.createElement("span");
+    if (tok[0]) s.className = tok[0];
+    s.textContent = tok[1];
+    inner.appendChild(s);
+  }
+  push();
+})();
+
+/* ── the occupancy grid ──────────────────────────────────────────── */
+const COLS = 28, ROWS = 26, CS = 20;
+const SX = 2, SY = 2;                      /* sensor cell */
+const WALL_X = 22, GAP = [11,12,13];       /* vertical wall with a doorway */
+const WALL_Y = 22;                         /* horizontal wall */
+const cells = [];
+(function buildGrid(){
+  const g = $("#grid");
+  for (let y = 0; y < ROWS; y++){
+    for (let x = 0; x < COLS; x++){
+      const d = document.createElement("div");
+      d.className = "cell";
+      d.style.left = (x*CS)+"px"; d.style.top = (y*CS)+"px";
+      d.dataset.x = x; d.dataset.y = y;
+      g.appendChild(d);
+      cells.push(d);
+    }
+  }
+  $("#sensor").style.left = (SX*CS)+"px";
+  $("#sensor").style.top  = (SY*CS)+"px";
+  /* the occluded wedge behind the closed part of the wall */
+  const sh = $("#shadow");
+  sh.style.left = ((WALL_X+1)*CS)+"px"; sh.style.top = (2*CS)+"px";
+  sh.style.width = ((COLS-WALL_X-1)*CS)+"px"; sh.style.height = ((WALL_Y-1)*CS)+"px";
+})();
+const cellAt = (x,y) => (x<0||y<0||x>=COLS||y>=ROWS) ? null : cells[y*COLS + x];
+const isWall = (x,y) =>
+  (x === WALL_X && y >= 2 && y <= WALL_Y && !GAP.includes(y)) ||
+  (y === WALL_Y && x >= 2 && x <= WALL_X);
+
+/* supercover traversal — the cells a ray actually crosses */
+function rayCells(x0,y0,x1,y1){
+  const out = [], seen = new Set();
+  const dx = x1-x0, dy = y1-y0;
+  const steps = Math.ceil(Math.hypot(dx,dy) * 4);
+  for (let i = 0; i <= steps; i++){
+    const x = Math.round(x0 + dx*i/steps), y = Math.round(y0 + dy*i/steps);
+    const k = y*COLS+x;
+    if (!seen.has(k)){ seen.add(k); out.push([x,y]); }
+  }
+  return out;
+}
+let rayCount = 0, nodeCount = 0;
+/* Cast one ray: free along the way, occupied at the endpoint it stops on. */
+function castRay(tx, ty, stepMs){
+  const path = rayCells(SX, SY, tx, ty);
+  let hit = false;
+  path.forEach(([x,y], i) => {
+    if (hit) return;
+    const c = cellAt(x,y);
+    if (!c) return;
+    if (isWall(x,y)){
+      hit = true;
+      later(i*stepMs, () => {
+        if (!c.classList.contains("occ")){ c.classList.add("occ"); nodeCount++; }
+      });
+      return;
+    }
+    later(i*stepMs, () => {
+      c.classList.add("hit");
+      later(140, () => {
+        c.classList.remove("hit");
+        if (!c.classList.contains("free") && !c.classList.contains("occ")){
+          c.classList.add("free"); nodeCount++;
+        }
+      });
+    });
+  });
+  rayCount++;
+  return path.length * stepMs;
+}
+function sweep(startDelay, perRay){
+  const targets = [];
+  for (let y = 2; y <= WALL_Y; y++) targets.push(GAP.includes(y) ? [COLS-1, y] : [WALL_X, y]);
+  for (let x = WALL_X-1; x >= 3; x--) targets.push([x, WALL_Y]);
+  targets.forEach((t,i) => later(startDelay + i*perRay, () => {
+    castRay(t[0], t[1], 9);
+    $("#sRays").textContent = rayCount;
+    $("#sNodes").textContent = nodeCount.toLocaleString();
+  }));
+  return targets.length * perRay;
+}
+/* Prune: uniform 2x2 blocks of free cells collapse into their parent. */
+function prune(){
+  const g = $("#grid");
+  let blocks = 0, consumed = 0;
+  for (let y = 0; y < ROWS-1; y += 2){
+    for (let x = 0; x < COLS-1; x += 2){
+      const quad = [[x,y],[x+1,y],[x,y+1],[x+1,y+1]].map(([a,b]) => cellAt(a,b));
+      if (quad.every(c => c && c.classList.contains("free"))){
+        const b = document.createElement("div");
+        b.className = "blk";
+        b.style.left = (x*CS)+"px"; b.style.top = (y*CS)+"px";
+        b.style.width = (CS*2)+"px"; b.style.height = (CS*2)+"px";
+        g.appendChild(b);
+        const d = (x+y) * 7;
+        later(d, () => { b.classList.add("in"); quad.forEach(c => c.classList.add("merged")); });
+        blocks++; consumed += 4;
+      }
+    }
+  }
+  return nodeCount - consumed + blocks;
+}
+
+/* ══ CUE SHEET ════════════════════════════════════════════════════ */
+const CUES = [];
+const at = (t, fn) => CUES.push({ t, fn, done:false });
+
+/* ─ COLD OPEN ─ */
+at(300, () => on("#omark"));
+at(800, () => {
+  const wm = $("#owm"); wm.innerHTML = "";
+  "octo_map_rust".split("").forEach((ch,i) => {
+    const s = document.createElement("i");
+    s.textContent = ch;
+    s.style.transitionDelay = (i*38)+"ms";
+    wm.appendChild(s);
+  });
+  requestAnimationFrame(() => wm.classList.add("in"));
+});
+at(1750, () => on("#orule"));
+at(2000, () => on("#oeb"));
+at(3150, () => $("#open").classList.remove("active"));
+
+/* ─ CHAPTER 1 · THE API ─ */
+at(3250, () => { scene("api"); chap(1);
+                 cap("A sensor at the origin sees a wall two metres away"); });
+at(3500, () => $$("#code .cl").forEach((l,i) => later(i*115, () => l.classList.add("in"))));
+at(3600, () => focus(".editor", 30, 1500, 1.3));
+at(6200, () => { cap("One call integrates the scan — each ray frees what it crosses");
+                 $$("#code .cl")[13].classList.add("lit");
+                 $$("#code .cl")[14].classList.add("lit"); });
+at(7800, () => { $$("#code .cl").forEach(l => l.classList.remove("lit"));
+                 cap("Then you ask the map about three places");
+                 focus(".outp", 34, 1500, 1.5); });
+at(8300, () => { on("#q1"); later(420, () => $("#q1").classList.add("done")); });
+at(9200, () => { on("#q2"); later(420, () => $("#q2").classList.add("done")); });
+/* ★ SIGNATURE: the third state */
+at(10100, () => { on("#q3"); later(420, () => $("#q3").classList.add("done"));
+                  cap("The third answer is None — never observed, not empty");
+                  later(600, () => { focus("#q3", 90, 1300, 1.9); spot("#q3", 10); }); });
+at(12000, () => { unspot(); on("#note"); focus(".outp", 34, 1400, 1.5);
+                  cap("Unknown is a different value, so you cannot read it as free"); });
+at(13400, () => { stag(".dep", 110);
+                  cap("Zero runtime dependencies. No C++ compiled into the build."); });
+at(14400, () => { camWide(1200); cap("So what does that map actually look like?"); });
+
+/* ─ CHAPTER 2 · THE MAP ─ */
+at(15000, () => {
+  scene("map"); chap(2); title('<b>octo_map_rust</b> — occupancy grid, z = 0.05 m, res 0.10 m');
+  cap("A room the sensor has never seen — every cell unknown");
+});
+at(15300, () => cells.forEach((c,i) => {
+  const x = +c.dataset.x, y = +c.dataset.y;
+  later(Math.hypot(x-SX, y-SY) * 22, () => c.classList.add("in"));
+}));
+at(16000, () => { on("#sensor"); on("#legend"); on("#stats"); on("#mcode"); });
+at(16400, () => focus("#grid", 34, 1600, 1.35));
+at(16800, () => { cap("One ray: free where it passes, occupied where it stops");
+                  castRay(WALL_X, 2, 34); later(120, () => $("#sRays").textContent = rayCount); });
+at(18400, () => { cap("A second ray, the other way"); castRay(6, WALL_Y, 34);
+                  later(120, () => { $("#sRays").textContent = rayCount;
+                                     $("#sNodes").textContent = nodeCount; }); });
+at(20000, () => { cap("A real scan is thousands of rays — this one is forty");
+                  sweep(0, 78); });
+at(23400, () => {
+  $("#sRays").textContent = rayCount;
+  $("#sNodes").textContent = nodeCount.toLocaleString();
+  cap("There is a doorway in that wall, and the rays go through it");
+});
+/* ★ SIGNATURE: occlusion — the shadow stays unknown */
+at(24600, () => { cap("Behind the closed wall: never observed, not free");
+                  $("#shadow").classList.add("on");
+                  focus("#shadow", 80, 1500, 1.7); spot("#shadow", 6); });
+at(26800, () => { unspot(); cap("That distinction is the whole reason for Option<bool>");
+                  focus("#legend", 70, 1400, 1.8); stag(".lg", 160); });
+at(28600, () => { cap("Uniform sibling blocks collapse into their parent");
+                  focus("#grid", 34, 1500, 1.35);
+                  const after = prune();
+                  later(700, () => {
+                    $("#sPruned").textContent = after.toLocaleString() + " nodes";
+                  }); });
+at(30400, () => { camWide(1300); cap("Node count is not voxel count — that is the octree"); });
+
+/* ─ CHAPTER 3 · THE PROOF ─ */
+at(31200, () => {
+  scene("proof"); chap(3); title('<b>octo_map_rust</b> — cargo test --workspace');
+  cap("A port is only worth anything if it behaves like the original");
+});
+at(31600, () => on("#term"));
+at(31900, () => ["#t1","#t2","#t3"].forEach((id,i) => later(i*420, () => $(id).classList.add("in"))));
+at(33300, () => { $("#t4").classList.add("in"); focus("#term", 44, 1400, 1.7);
+                  cap("284 tests, run against fixtures the C++ binary produced"); });
+at(34600, () => { on("#p1"); on("#bd"); focus("#p1", 60, 1400, 1.7);
+                  cap("206 unit, 63 differential, 12 parser-robustness, 3 doc-tests"); });
+at(36100, () => { on("#p2"); focus("#p2", 60, 1400, 1.7);
+                  cap("Floats compared as raw bits — a tolerance would hide the bugs"); });
+at(37300, () => { on("#p3"); focus("#p3", 60, 1400, 1.7);
+                  later(200, () => stag("#hex .r", 260));
+                  cap("Files it writes are byte-identical to the reference's"); });
+at(38700, () => { on("#p4"); focus("#p4", 60, 1400, 1.7);
+                  cap("And the compiler rejects unsafe anywhere in the repository"); });
+at(40000, () => { camWide(1300); cap("Memory safety is the reason this is a port, not a binding"); });
+
+/* ─ END CARD ─ */
+at(40900, () => { $("#end").classList.add("active"); on("#emark"); cap(""); });
+at(41500, () => on("#etag"));
+at(42000, () => on("#esub"));
+at(42600, () => on("#eurl"));
+
+/* ── reset ───────────────────────────────────────────────────────── */
+function reset(){
+  timers.forEach(clearTimeout); timers.length = 0;
+  off("#code .cl"); $$("#code .cl").forEach(l => l.classList.remove("lit"));
+  ["#q1","#q2","#q3"].forEach(id => $(id).classList.remove("in","done"));
+  off("#note"); off(".dep"); off("#sensor"); off("#legend"); off("#stats"); off("#mcode");
+  off(".lg"); off("#term"); off(".tl"); off(".pc"); off("#bd"); off("#hex .r");
+  off("#omark"); off("#orule"); off("#oeb");
+  off("#emark"); off("#etag"); off("#esub"); off("#eurl");
+  cells.forEach(c => c.className = "cell");
+  $$(".blk").forEach(b => b.remove());
+  $("#shadow").classList.remove("on");
+  rayCount = 0; nodeCount = 0;
+  $("#sRays").textContent = "0"; $("#sNodes").textContent = "0"; $("#sPruned").textContent = "—";
+  $("#owm").innerHTML = "";
+  $("#end").classList.remove("active"); $("#open").classList.add("active");
+  $$(".scene").forEach(s => s.classList.remove("active","out"));
+  title('<b>octo_map_rust</b> — cargo run --example insert_and_query');
+  cap(""); chap(0); unspot();
+  cam(MINZ, MINZ > 1 ? 800 : 720, APPH/2, 0);
+  requestAnimationFrame(() => camEl.style.transitionDuration = "1400ms");
+  CUES.forEach(c => c.done = false);
+}
+
+/* ── clock ───────────────────────────────────────────────────────── */
+let t0 = performance.now(), paused = false, pausedAt = 0;
+const fill = $("#fill"), clock = $("#clock"), chline = $("#chline i");
+const fmt = ms => Math.floor(ms/60000)+":"+String(Math.floor(ms/1000)%60).padStart(2,"0");
+function frame(now){
+  requestAnimationFrame(frame);
+  if (paused) return;
+  let t = now - t0;
+  if (t >= DUR){ reset(); t0 = now; t = 0; }
+  for (const c of CUES) if (!c.done && t >= c.t){ c.done = true; c.fn(); }
+  const p = t/DUR*100;
+  fill.style.width = p+"%"; chline.style.width = p+"%";
+  clock.textContent = fmt(t)+" / 0:45";
+}
+requestAnimationFrame(frame);
+
+$("#btnPlay").addEventListener("click", e => {
+  paused = !paused;
+  if (paused) pausedAt = performance.now(); else t0 += performance.now()-pausedAt;
+  e.target.textContent = paused ? "Play" : "Pause";
+});
+$("#btnReplay").addEventListener("click", () => {
+  reset(); t0 = performance.now(); paused = false; $("#btnPlay").textContent = "Pause";
+});
+if (matchMedia("(prefers-reduced-motion: reduce)").matches){
+  paused = true; pausedAt = performance.now();
+  $("#poster").classList.add("on"); $("#btnPlay").textContent = "Play";
+  $("#pplay").addEventListener("click", () => {
+    $("#poster").classList.remove("on");
+    t0 += performance.now()-pausedAt; paused = false;
+    $("#btnPlay").textContent = "Pause";
+  });
+}
+
+const CHAPTERS = [
+  { name: "The API", start: 3250 },
+  { name: "The map", start: 15000 },
+  { name: "The proof", start: 31200 }
+];
+
+/* ── postMessage API for parent page ────────────────────────────── */
+window.addEventListener("message", e => {
+  if (!e.data || typeof e.data !== "object") return;
+  const msg = e.data;
+  if (msg.type === "replay") {
+    reset(); t0 = performance.now(); paused = false;
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "pause") {
+    if (!paused) { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Play";
+  } else if (msg.type === "play") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = "Pause";
+  } else if (msg.type === "toggle") {
+    if (paused) { t0 += performance.now() - pausedAt; paused = false; }
+    else { paused = true; pausedAt = performance.now(); }
+    const bp = $("#btnPlay"); if (bp) bp.textContent = paused ? "Play" : "Pause";
+  } else if (msg.type === "seek") {
+    const target = Math.max(0, Math.min(1, msg.position)) * DUR;
+    reset();
+    t0 = performance.now() - target;
+    // Fire all cues up to the target time
+    for (const c of CUES) {
+      if (c.t <= target) { c.done = true; c.fn(); }
+    }
+    if (paused) pausedAt = performance.now();
+  } else if (msg.type === "getInfo") {
+    // Send back chapter/meta info on request
+    parent.postMessage({ type: "info", id: msg.id, dur: DUR, chapters: CHAPTERS }, "*");
+  }
+});
+
+// Expose progress getter so the parent page can poll via rAF
+window._demoProgress = () => {
+  const now = performance.now();
+  const elapsed = paused ? (pausedAt - t0) : (now - t0);
+  const t = ((elapsed % DUR) + DUR) % DUR;
+  return { position: t / DUR, time: t, duration: DUR, paused: paused };
+};
+})();
+</script>
