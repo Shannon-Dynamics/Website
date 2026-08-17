@@ -2176,7 +2176,7 @@
                             <article class="ps-panel" id="ps-oct" data-cat="robotics" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/octomap-rust-demo.html?embed=1"
-                                        title="OctoMap Rust demo" loading="lazy"></iframe>
+                                        title="OctoMap Rust demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"The API","start":3250},{"name":"The map","start":15000},{"name":"The proof","start":31200}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -2215,7 +2215,7 @@
                             <article class="ps-panel" id="ps-cnd" data-cat="robotics" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/candi-recon-demo.html?embed=1"
-                                        title="Candi Recon demo" loading="lazy"></iframe>
+                                        title="Candi Recon demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"The flight","start":3500},{"name":"The map","start":15200},{"name":"The cross-check","start":30000}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -2254,7 +2254,7 @@
                             <article class="ps-panel" id="ps-agd" data-cat="robotics" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-autograd-demo.html?embed=1"
-                                        title="Shannon Autograd demo" loading="lazy"></iframe>
+                                        title="Shannon Autograd demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"The kernel","start":3250},{"name":"The gradient","start":15000},{"name":"The proof","start":31200}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -2293,7 +2293,7 @@
                             <article class="ps-panel" id="ps-sen" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-sentinel-demo.html?embed=1"
-                                        title="Shannon Sentinel product demo" loading="lazy"></iframe>
+                                        title="Shannon Sentinel product demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Triage","start":15300},{"name":"AI Governance","start":30600}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -2332,7 +2332,7 @@
                             <article class="ps-panel" id="ps-sct" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-scout-demo.html?embed=1"
-                                        title="Shannon Scout product demo" loading="lazy"></iframe>
+                                        title="Shannon Scout product demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Live interview","start":10450},{"name":"AI ranking","start":25650}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -2371,7 +2371,7 @@
                             <article class="ps-panel" id="ps-fct" data-cat="software" role="tabpanel">
                             <div class="ps-shot">
                                 <iframe class="ps-demo-frame" src="video-demo/shannon-factory-demo.html?embed=1"
-                                        title="Shannon Factory product demo" loading="lazy"></iframe>
+                                        title="Shannon Factory product demo" loading="eager"></iframe>
                                 <div class="ps-controls" data-chapters='[{"name":"Dashboard","start":3250},{"name":"Org chart","start":15900},{"name":"Approvals","start":24900}]'>
                                     <button class="ps-ctrl-btn ps-btn-toggle" aria-label="Pause" title="Pause">
                                         <svg viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
@@ -3117,6 +3117,8 @@
                 if (vPanels[catIdx]) {
                     vPanels[catIdx].classList.add("is-on");
                     vPanels[catIdx].removeAttribute("inert");
+                    const iframe = vPanels[catIdx].querySelector(".ps-demo-frame");
+                    if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage({ type: "replay" }, "*");
                 }
                 if (counter) counter.textContent = String(catIdx + 1).padStart(2, "0") + " / " + String(vPanels.length).padStart(2, "0");
             }
