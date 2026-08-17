@@ -2,4 +2,4 @@
 :HL["/books/probabilistic-robotics-via-rust/_next/static/chunks/0n_nezv4jg0eh.css","style"]
 :HC["/",""]
 :HL["/books/probabilistic-robotics-via-rust/shannon/logo-horizontal-white.png","image"]
-0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"chapters","param":null,"prefetchHints":4128,"slots":{"children":{"name":"slug","param":{"type":"oc","key":"ch25-learning","siblings":[]},"prefetchHints":4160,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}}}},"staleTime":300,"buildId":"nRDUFhiq_jNzctAHkxu9Z"}
+0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"chapters","param":null,"prefetchHints":4128,"slots":{"children":{"name":"slug","param":{"type":"oc","key":"ch25-learning","siblings":[]},"prefetchHints":4160,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}}}},"staleTime":300,"buildId":"Q1XDaGpY-jfqAcxiam6C2"}
