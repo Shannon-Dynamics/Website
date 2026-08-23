@@ -1,0 +1,45 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "bash scripts/build-site.sh",
+  "outputDirectory": "dist",
+  "installCommand": "echo 'the marketing site has no dependencies of its own'",
+  "trailingSlash": false,
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ':(exclude)book-web'",
+  "redirects": [
+    {
+      "source": "/books/probabilistic-robotics-via-rust",
+      "destination": "https://prvr.shannon.id/",
+      "permanent": true
+    },
+    {
+      "source": "/books/probabilistic-robotics-via-rust/:path*",
+      "destination": "https://prvr.shannon.id/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/books/reinforcement-learning-for-robotics",
+      "destination": "https://rl4rvr.shannon.id/",
+      "permanent": true
+    },
+    {
+      "source": "/books/reinforcement-learning-for-robotics/:path*",
+      "destination": "https://rl4rvr.shannon.id/:path*",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/book-pdf/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=604800" }
+      ]
+    },
+    {
+      "source": "/(src|book-cover)/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=604800" }
+      ]
+    }
+  ]
+}
