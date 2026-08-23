@@ -17,6 +17,9 @@ import { BookHeader } from '@/components/shannon/BookHeader';
 import { SiteFooter } from '@/components/shannon/SiteFooter';
 
 export const metadata: Metadata = {
+  // The book has its own origin, so relative OG and canonical URLs resolve
+  // against it rather than against the marketing site it used to live under.
+  metadataBase: new URL('https://rl4rvr.shannon.id'),
   title: {
     default: 'Reinforcement Learning for Robotics — The FCP Way',
     template: '%s · RL for Robotics',

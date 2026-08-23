@@ -2,8 +2,9 @@ import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 import type { BookLink } from '@/components/shannon/site-header';
 
 /**
- * The book's own routes, shown in the Shannon bar ahead of the links back out
- * to the site.
+ * The book's own routes — the whole of the top bar's navigation now that the
+ * book is a site of its own rather than a directory of the marketing site.
+ * `Overview` is added by the bar itself, since every book has one.
  */
 export const BOOK_LINKS: BookLink[] = [
   { label: 'Chapters', href: '/chapters' },
@@ -22,8 +23,7 @@ export const bookNav: BaseLayoutProps = {
     title: <span className="text-[0.9rem] font-semibold tracking-tight">Probabilistic Robotics</span>,
     url: '/',
   },
-  // Search needs an index served at request time; this book is a static export
-  // with no such endpoint, so the trigger would open a dialog that can never
-  // return a result.
-  searchToggle: { enabled: false },
+  // Search is live again: the book has a server, so `app/api/search/route.ts`
+  // answers from an index built off the same source as the page tree. It was
+  // disabled for as long as the book was a static export with no endpoint.
 };

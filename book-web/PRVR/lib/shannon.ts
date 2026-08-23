@@ -1,26 +1,23 @@
 /**
- * Where the book sits inside Shannon Dynamics.
+ * Where the book sits relative to Shannon Dynamics.
  *
- * The book is mounted inside the marketing site — at `/books/<slug>/` — so the
- * links back out are same-origin, and CI passes the site root in through
- * `NEXT_PUBLIC_SHANNON_SITE` (empty string when served at a custom domain root).
- * The absolute fallback below keeps those links working when the book is served
- * on its own, as `npm run dev` and `npm run preview` do.
+ * The book is its own site now — prvr.shannon.id — not a subdirectory of the
+ * marketing site. Its navigation is the book's own; the only links back out are
+ * the wordmark, the footer, and the PDF, and those are absolute cross-origin
+ * URLs rather than the same-origin paths this file used to build.
  */
 
 const trimEnd = (s: string) => s.replace(/\/+$/, '');
 const trimStart = (s: string) => s.replace(/^\/+/, '');
 
 /**
- * The marketing site this book is a Library entry of.
+ * The marketing site.
  *
- * An empty string (custom domain root) keeps every link same-origin;
- * an absolute URL is the fallback for serving the book standalone. `??` rather
- * than `||` on purpose: an empty string is the meaningful "site is at the
- * domain root" value, not a missing one.
+ * Overridable so a staging deployment of the site can be linked instead of
+ * production; unset — the normal case — means shannon.id.
  */
 export const SHANNON_SITE = trimEnd(
-  process.env.NEXT_PUBLIC_SHANNON_SITE ?? 'https://shannon.id',
+  process.env.NEXT_PUBLIC_SHANNON_SITE || 'https://shannon.id',
 );
 
 /** A URL on the marketing site. */
@@ -29,12 +26,11 @@ export const site = (path: string) => `${SHANNON_SITE}/${trimStart(path)}`;
 /**
  * A URL for a file in `public/`.
  *
- * `next/link` and `next/image` apply `basePath` on their own; a plain `<img>`
- * does not, so anything served straight out of `public/` has to be prefixed by
- * hand or it 404s on a project site.
+ * Served from the origin root now that the book has no `basePath`. The helper
+ * stays so that `public/` references read the same everywhere and there is one
+ * place to change if the book is ever mounted under a prefix again.
  */
-export const asset = (path: string) =>
-  `${trimEnd(process.env.NEXT_PUBLIC_BASE_PATH ?? '')}/${trimStart(path)}`;
+export const asset = (path: string) => `/${trimStart(path)}`;
 
 export const SHANNON_HOME = site('index.html');
 export const SHANNON_CAPABILITIES = site('index.html#capabilities');
@@ -45,16 +41,21 @@ export const SHANNON_CONTACT = site('index.html#contact');
 export const SHANNON_BOOKS = site('library-books.html');
 export const SHANNON_EMAIL = 'hello@shannon.id';
 
+/** This book's own front door — what the in-book navigation points home to. */
+export const BOOK_HOME = '/';
+
+/** The book's title, as the breadcrumb and the mobile bar say it. */
+export const BOOK_TITLE = 'PROBABILISTIC ROBOTICS';
+
 /**
  * The PDF edition.
  *
- * It used to hang off the static landing page this book replaced; that page is
- * now a redirect, so the download lives here — this is the only route to the
- * PDF the site still has.
+ * The file itself is published by the marketing site, so this stays an absolute
+ * URL to it rather than a copy of a 3 MB asset in this deployment.
  */
 export const BOOK_PDF = site('book-pdf/probabilistic-robotics-via-rust.pdf');
 
-/** The Library submenu, mirroring the marketing site's nav. */
+/** The Library sections, for the footer's column back to the site. */
 export const LIBRARY_LINKS = [
   {
     href: SHANNON_BOOKS,

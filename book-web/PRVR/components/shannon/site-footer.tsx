@@ -13,9 +13,10 @@ import {
 /**
  * The Shannon Dynamics footer.
  *
- * The marketing site puts a contact form here; this book is a static export
- * with no endpoint behind it, so the same pitch sends the reader to the form on
- * the main site rather than shipping one that cannot submit.
+ * The top bar is the book's own navigation; the walk back to the company lives
+ * down here instead. The marketing site puts a contact form in this slot — the
+ * book sends the reader to that one form rather than standing up a second
+ * endpoint for the same enquiry.
  */
 export function SiteFooter() {
   return (

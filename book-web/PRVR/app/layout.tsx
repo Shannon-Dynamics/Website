@@ -16,6 +16,9 @@ import { RootProvider } from 'fumadocs-ui/provider/next';
 import { SiteFooter } from '@/components/shannon/site-footer';
 
 export const metadata: Metadata = {
+  // The book has its own origin, so relative OG and canonical URLs resolve
+  // against it rather than against the marketing site it used to live under.
+  metadataBase: new URL('https://prvr.shannon.id'),
   title: {
     default: 'Probabilistic Robotics via Rust',
     template: '%s · Probabilistic Robotics via Rust',

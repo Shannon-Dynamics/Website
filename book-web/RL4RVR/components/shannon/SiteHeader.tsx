@@ -2,17 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import {
-  LIBRARY_LINKS,
-  SHANNON_CAPABILITIES,
-  SHANNON_CONTACT,
-  SHANNON_ECOSYSTEM,
-  SHANNON_HOME,
-  SHANNON_LIBRARY,
-  SHANNON_PRODUCTS,
-  asset,
-} from '@/lib/shannon';
+import { useEffect, useState, type ReactNode } from 'react';
+import { BOOK_HOME, SHANNON_HOME, asset } from '@/lib/shannon';
 
 export interface BookLink {
   label: string;
@@ -22,7 +13,7 @@ export interface BookLink {
 }
 
 interface SiteHeaderProps {
-  /** The book's own routes, shown ahead of the links back out to the site. */
+  /** The book's own routes — the whole of the bar's navigation. */
   bookLinks: BookLink[];
   /**
    * True on pages that open with a banner. The bar then starts transparent over
@@ -34,18 +25,26 @@ interface SiteHeaderProps {
   /**
    * Whether to reserve the bar's height in the flow. Defaults to true on a
    * solid bar, which is what a normal page wants; pass false where the layout
-   * underneath already offsets itself (the docs grid does, through
-   * `--fd-banner-height`).
+   * underneath already offsets itself.
    */
   spacer?: boolean;
   /** Slot at the far left, before the logo — the sidebar trigger. */
   leading?: ReactNode;
-  /** Slot at the far right, before the CTA — the theme switch. */
+  /** Slot at the far right — the theme switch. */
   trailing?: ReactNode;
   /** Full-width slot pinned along the bar's bottom edge — the progress bar. */
   under?: ReactNode;
 }
 
+/**
+ * The book's top bar.
+ *
+ * The book reads as its own site on its own subdomain, so the bar carries only
+ * the book's routes. The wordmark is the one way back to Shannon Dynamics —
+ * everything else that used to sit here (Capabilities, Products, the Library
+ * submenu, Ecosystem, the Contact CTA) belongs to the marketing site's own
+ * navigation and only made sense while the book was a directory inside it.
+ */
 export function SiteHeader({
   bookLinks,
   overlay = false,
@@ -56,8 +55,6 @@ export function SiteHeader({
 }: SiteHeaderProps) {
   const pathname = usePathname();
   const [stuck, setStuck] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!overlay) return;
@@ -67,29 +64,13 @@ export function SiteHeader({
     return () => window.removeEventListener('scroll', onScroll);
   }, [overlay]);
 
-  // CSS handles hover and keyboard focus-within on its own; this covers only
-  // what CSS cannot — a tap on touch, where there is no hover state to open it —
-  // plus closing on an outside click or Escape.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: PointerEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
-
-  useEffect(() => setMenuOpen(false), [pathname]);
-
-  const isOn = (link: BookLink) =>
-    link.exact ? pathname === link.href : pathname === link.href || pathname.startsWith(`${link.href}/`);
+  // `trailingSlash` is on, so routes arrive as `/chapters/`; normalise both
+  // sides or every comparison here misses.
+  const route = pathname.replace(/\/+$/, '') || '/';
+  const isOn = (link: BookLink) => {
+    const href = link.href.replace(/\/+$/, '') || '/';
+    return link.exact ? route === href : route === href || route.startsWith(`${href}/`);
+  };
 
   return (
     <>
@@ -107,6 +88,13 @@ export function SiteHeader({
           </div>
 
           <nav className="sd-nav-links sd-glass-dark">
+            <Link
+              href={BOOK_HOME}
+              className={`sd-nav-link${route === '/' ? ' is-on' : ''}`}
+              aria-current={route === '/' ? 'page' : undefined}
+            >
+              Overview
+            </Link>
             {bookLinks.map((link) => (
               <Link
                 key={link.href}
@@ -117,70 +105,9 @@ export function SiteHeader({
                 {link.label}
               </Link>
             ))}
-
-            <span className="sd-nav-div" aria-hidden />
-
-            <a className="sd-nav-link" href={SHANNON_CAPABILITIES}>Capabilities</a>
-            <a className="sd-nav-link" href={SHANNON_PRODUCTS}>Products</a>
-
-            <div
-              ref={menuRef}
-              className={`sd-nav-item${menuOpen ? ' is-open' : ''}`}
-              onPointerLeave={() => setMenuOpen(false)}
-            >
-              <a
-                className="sd-nav-link sd-nav-link-sub"
-                href={SHANNON_LIBRARY}
-                aria-haspopup="true"
-                aria-expanded={menuOpen}
-                onClick={(e) => {
-                  // Touch has no hover, so the first tap opens the menu rather
-                  // than leaving the page.
-                  if (e.nativeEvent.detail === 0 || window.matchMedia('(hover: hover)').matches)
-                    return;
-                  e.preventDefault();
-                  setMenuOpen((v) => !v);
-                }}
-              >
-                Library
-                <svg
-                  className="sd-nav-chev"
-                  width="8"
-                  height="8"
-                  viewBox="0 0 8 8"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M1 2.5L4 5.5L7 2.5"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </a>
-              <div className="sd-nav-sub" role="menu" aria-label="Library">
-                {LIBRARY_LINKS.map((item) => (
-                  <a key={item.href} className="sd-nav-sub-link" href={item.href} role="menuitem">
-                    <b>{item.title}</b>
-                    <small>{item.blurb}</small>
-                  </a>
-                ))}
-              </div>
-            </div>
-
-            <a className="sd-nav-link" href={SHANNON_ECOSYSTEM}>
-              Ecosystem
-            </a>
           </nav>
 
-          <div className="sd-nav-end">
-            {trailing}
-            <a className="sd-nav-cta" href={SHANNON_CONTACT}>
-              Contact Us <span aria-hidden="true">→</span>
-            </a>
-          </div>
+          <div className="sd-nav-end">{trailing}</div>
         </div>
         {under && <div className="sd-nav-under">{under}</div>}
       </header>
