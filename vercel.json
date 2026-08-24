@@ -4,7 +4,6 @@
   "buildCommand": "bash scripts/build-site.sh",
   "outputDirectory": "dist",
   "installCommand": "echo 'the marketing site has no dependencies of its own'",
-  "trailingSlash": false,
   "ignoreCommand": "if [ -z \"$VERCEL_GIT_PREVIOUS_SHA\" ]; then exit 1; fi; git diff --quiet \"$VERCEL_GIT_PREVIOUS_SHA\" HEAD -- . \":(exclude)book-web\"",
   "redirects": [
     {
@@ -13,8 +12,13 @@
       "permanent": true
     },
     {
+      "source": "/books/probabilistic-robotics-via-rust/",
+      "destination": "https://prvr.shannon.id/",
+      "permanent": true
+    },
+    {
       "source": "/books/probabilistic-robotics-via-rust/:path*",
-      "destination": "https://prvr.shannon.id/:path*",
+      "destination": "https://prvr.shannon.id/:path*/",
       "permanent": true
     },
     {
@@ -23,8 +27,13 @@
       "permanent": true
     },
     {
+      "source": "/books/reinforcement-learning-for-robotics/",
+      "destination": "https://rl4rvr.shannon.id/",
+      "permanent": true
+    },
+    {
       "source": "/books/reinforcement-learning-for-robotics/:path*",
-      "destination": "https://rl4rvr.shannon.id/:path*",
+      "destination": "https://rl4rvr.shannon.id/:path*/",
       "permanent": true
     }
   ],
