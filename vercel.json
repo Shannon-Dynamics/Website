@@ -5,7 +5,7 @@
   "outputDirectory": "dist",
   "installCommand": "echo 'the marketing site has no dependencies of its own'",
   "trailingSlash": false,
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ':(exclude)book-web'",
+  "ignoreCommand": "if [ -z \"$VERCEL_GIT_PREVIOUS_SHA\" ]; then exit 1; fi; git diff --quiet \"$VERCEL_GIT_PREVIOUS_SHA\" HEAD -- . \":(exclude)book-web\"",
   "redirects": [
     {
       "source": "/books/probabilistic-robotics-via-rust",
@@ -32,13 +32,19 @@
     {
       "source": "/book-pdf/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=604800" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, s-maxage=604800"
+        }
       ]
     },
     {
       "source": "/(src|book-cover)/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=3600, s-maxage=604800" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, s-maxage=604800"
+        }
       ]
     }
   ]
