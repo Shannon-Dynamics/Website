@@ -60,7 +60,13 @@
         .sec-head { position: relative; }
         .row-hover { transition: background .3s, padding-left .3s; }
         .row-hover:hover { background: rgba(16, 24, 27, .03); padding-left: 8px; }
-        [data-reveal] { opacity: 0; will-change: transform, opacity; backface-visibility: hidden; }
+        /* `will-change` is set by the reveal batch while it animates and cleared
+           when it lands (see ScrollTrigger.batch). Declaring it here promoted
+           every reveal on the page to its own compositor layer for the whole
+           session — dozens of them, permanently — and layers that never stop
+           being candidates for compositing are a flicker source next to the
+           section-sized gradients behind them. */
+        [data-reveal] { opacity: 0; backface-visibility: hidden; }
 
         /* ═══ HOW WE WORK — infinite marquee ticker ═══ */
         .hww-ticker {
@@ -148,7 +154,12 @@
             background:
                 radial-gradient(ellipse 40% 45% at 18% 25%, rgba(76,126,255,.16), transparent 65%),
                 radial-gradient(ellipse 35% 40% at 82% 70%, rgba(76,126,255,.11), transparent 65%);
-            filter: blur(10px);
+            /* No `filter: blur()` here. This pseudo-element is the size of the
+               whole section, and a filtered layer that big has to be
+               re-rasterised as it scrolls — which is what made Capabilities and
+               Products flicker. A radial gradient that fades to transparent is
+               already soft; blurring it by 10px changed almost nothing on
+               screen and cost a full-section paint per frame. */
         }
 
         /* ═══ sticky top nav ═══
@@ -1591,7 +1602,13 @@
         .ps-demo-frame { display: block; width: 100%; height: 100%; border: 0; background: #000;
                          position: relative; z-index: 1; object-fit: contain; }
         /* skip rendering off-screen / inactive panels to reduce scroll jank */
-        .ps-panel:not(.is-on) { content-visibility: auto; }
+        /* `content-visibility: auto` used to sit on the inactive panels to keep
+           their cost down. It estimated their size until they crossed the
+           viewport and then re-laid them out at the real size, and switching
+           panels flipped containment on and off — both of which show up as a
+           flicker in this section. The reels they contain are now paused
+           whenever they are not the visible panel, which is what the
+           containment was standing in for. */
 
         /* ── video control bar: appears on hover over the demo shot ── */
         .ps-controls {
@@ -2498,13 +2515,13 @@
                                     </div>
                                     <div class="book">
                                         <p class="book-by"><b>Probabilistic Robotics via Rust</b><span>Book</span></p>
-                                        <a href="books/probabilistic-robotics-via-rust/" class="book-cover bc-design">
+                                        <a href="https://prvr.shannon.id/" class="book-cover bc-design">
                                             <img src="book-cover/probabilistic-robotics-via-rust-cover.png" alt="Probabilistic Robotics via Rust" style="width:100%;height:100%;object-fit:cover;display:block;">
                                         </a>
                                     </div>
                                     <div class="book">
                                         <p class="book-by"><b>Reinforcement Learning for Robotics</b><span>Book</span></p>
-                                        <a href="books/reinforcement-learning-for-robotics/" class="book-cover bc-ink bc-v3">
+                                        <a href="https://rl4rvr.shannon.id/" class="book-cover bc-ink bc-v3">
                                             <img src="book-cover/reinforcement-learning-for-robotics-cover.png" alt="Reinforcement Learning for Robotics" style="width:100%;height:100%;object-fit:cover;display:block;">
                                         </a>
                                     </div>
@@ -2851,15 +2868,52 @@
     <!-- ═══════════ SCRIPTS ═══════════ -->
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@studio-freight/lenis@1.0.42/dist/lenis.min.js"></script>
+    <!-- `@studio-freight/lenis` is the retired name; 1.3 damps by elapsed
+         time, so the same lerp settles at the same rate on a 60 Hz and a
+         120 Hz display. The old 1.0.42 lerped by a fixed fraction per
+         frame, which is why scrolling felt twice as fast on a ProMotion
+         screen as on an external monitor. -->
+    <style>
+        html.lenis, html.lenis body { height: auto; }
+
+        /* An iframe swallows the wheel events that land on it: the reel's own
+           document handles them, Lenis never sees them, and the page falls back
+           to the browser's native scroll chaining for the rest of the gesture.
+           Measured, it is the difference between a wheel moving the page 799px
+           and moving it 1px — which is why scrolling stopped feeling smooth
+           from the Products section on, and stayed that way until a new gesture
+           started somewhere else.
+
+           Lenis ships this rule in its own stylesheet for exactly this reason.
+           Lenis ships this rule in its own stylesheet, scoped to `.lenis-smooth`
+           — a class it only carries mid-gesture, which is too late to keep a
+           wheel from being swallowed. Unconditional here instead.
+
+           The reels are non-interactive in embed mode: their internal control
+           bar is hidden, and the play/pause/scrub controls the visitor uses are
+           the parent's `.ps-controls` overlay, which sits above the iframe and
+           keeps its own pointer events. */
+        .ps-demo-frame { pointer-events: none; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/lenis@1.3.26/dist/lenis.min.js"
+            integrity="sha384-jqpi9VmOdhyLoLURgjCn7EpnG9BbnHW57ibIZoeaIU+erWDH3k8fQQg0xH2ySjnw"
+            crossorigin="anonymous"></script>
 
     <script>
         /* ---------- smooth scroll ---------- */
-        const lenis = new Lenis({ lerp: 0.12, smoothWheel: true });
-        function raf(t) { lenis.raf(t); requestAnimationFrame(raf); }
-        requestAnimationFrame(raf);
         gsap.registerPlugin(ScrollTrigger);
-        lenis.on('scroll', () => ScrollTrigger.update());
+        const lenis = new Lenis({ lerp: 0.12, smoothWheel: true });
+        /* One clock for both. Lenis used to run its own requestAnimationFrame
+           loop alongside GSAP's ticker: the frame that moved the page and the
+           frame that updated the ScrollTriggers could land in either order, so
+           everything scroll-linked trailed the scroll by up to a frame. That
+           was the judder. The ticker now drives Lenis first and ScrollTrigger
+           off its scroll event, in that order, every frame. lagSmoothing(0)
+           stops GSAP fast-forwarding after a long frame — a correction that on
+           a scroll-linked animation reads as a lurch. */
+        lenis.on('scroll', ScrollTrigger.update);
+        gsap.ticker.add(t => lenis.raf(t * 1000));   // the ticker counts seconds
+        gsap.ticker.lagSmoothing(0);
 
         /* ---------- entrance + reveals ---------- */
         gsap.from("#nav", { y: -14, opacity: 0, duration: .7, ease: "power2.out", clearProps: "transform" });
@@ -2870,8 +2924,16 @@
            button it used to stand in for is gone. */
         (function () {
             const nav = document.getElementById("nav");
+            /* Write only when the state flips. The bar carries a
+               backdrop-filter, so touching its class list on every scroll event
+               asks the compositor to re-blur what is behind it — at scroll rate,
+               for a class that changes twice in a page. */
+            let stuck = null;
             function onScroll() {
-                nav.classList.toggle("is-stuck", scrollY > 40);
+                const next = scrollY > 40;
+                if (next === stuck) return;
+                stuck = next;
+                nav.classList.toggle("is-stuck", next);
             }
             addEventListener("scroll", onScroll, { passive: true });
             lenis.on("scroll", onScroll);
@@ -2959,6 +3021,9 @@
             onEnter: batch => gsap.to(batch, {
                 y: 0, opacity: 1, duration: .7, ease: "power2.out",
                 stagger: 0.08, overwrite: true,
+                // promoted for the ~1s it animates, then handed back — rather
+                // than every reveal on the page holding a layer from first paint
+                onStart: function () { this.targets().forEach(el => { el.style.willChange = "transform, opacity"; }); },
                 onComplete: function () { this.targets().forEach(el => { el.style.willChange = "auto"; }); }
             }),
             start: "top 92%",
@@ -3196,6 +3261,62 @@
 
             /* initialise to Robotics */
             switchCat("robotics");
+        })();
+
+        /* ---------- demo reels: only the visible one runs ----------
+           Each reel is a canvas animation inside an iframe, and all six ran for
+           the whole session — measured at 60 fps each, five of them behind a
+           hidden panel, on top of the halftone fields. The reels already accept
+           play/pause over postMessage (see video-demo/*), so the parent stops
+           the ones nobody can see: every panel but the active one, and all of
+           them while the showcase is off screen.
+
+           Pausing is not unloading. The documents stay alive, so a panel switch
+           still lands on a running reel with no load delay — which is what the
+           eager frames are for. A reel the visitor paused by hand stays paused. */
+        (function () {
+            const section = document.getElementById("showcase");
+            const frames = [...document.querySelectorAll(".ps-demo-frame")];
+            if (!section || !frames.length) return;
+
+            const manual = new WeakSet();     // paused by the visitor — leave it alone
+            let sectionOn = true;
+
+            const shouldRun = f => sectionOn && !manual.has(f)
+                && !!f.closest(".ps-panel")?.classList.contains("is-on");
+
+            function sync() {
+                frames.forEach(f => {
+                    const run = shouldRun(f);
+                    if (f.dataset.running === String(run)) return;
+                    f.dataset.running = String(run);
+                    if (f.contentWindow) f.contentWindow.postMessage({ type: run ? "play" : "pause" }, "*");
+                });
+            }
+
+            /* the visitor's own play/pause outranks all of the above */
+            document.querySelectorAll(".ps-shot").forEach(shot => {
+                const f = shot.querySelector(".ps-demo-frame");
+                const btn = shot.querySelector(".ps-btn-toggle");
+                if (!f || !btn) return;
+                btn.addEventListener("click", () => {
+                    if (manual.has(f)) manual.delete(f); else manual.add(f);
+                    f.dataset.running = "";   // so the next sync re-issues for it
+                });
+            });
+
+            new IntersectionObserver(([entry]) => { sectionOn = entry.isIntersecting; sync(); },
+                { rootMargin: "200px" }).observe(section);
+
+            /* a panel going live is a class change — watch for it rather than
+               reaching into the switcher above */
+            const mo = new MutationObserver(sync);
+            document.querySelectorAll(".ps-panel").forEach(p =>
+                mo.observe(p, { attributes: true, attributeFilter: ["class"] }));
+
+            /* an iframe that has not loaded yet cannot receive a message */
+            frames.forEach(f => f.addEventListener("load", () => { f.dataset.running = ""; sync(); }));
+            sync();
         })();
 
         /* ---------- video controls: play/pause, replay, scrubber ----------
@@ -3480,7 +3601,32 @@
             }
 
             let t = Math.random() * 100, ts = t, frame = 0;
+
+            /* Dot fills are batched by alpha; see the end of the draw loop. */
+            const BUCKETS = 16, paths = new Array(BUCKETS).fill(null);
+
+            /* The field animates only while it is on screen. Every canvas on
+               the page used to draw for the whole session: the hero's ~26k dots
+               kept being redrawn while the reader was four sections further
+               down, and the footer's ~30k were animating before they had ever
+               been seen. Two fields running flat out was the largest fixed cost
+               on the page, and it was paid on every frame of every scroll. */
+            let onScreen = false, running = false;
+            function start() {
+                if (running || !onScreen || document.hidden) return;
+                running = true;
+                requestAnimationFrame(draw);
+            }
+            new IntersectionObserver(([entry]) => {
+                onScreen = entry.isIntersecting;
+                start();
+            }, { rootMargin: "150px" }).observe(canvas);
+            document.addEventListener("visibilitychange", start);
+
             function draw() {
+                // t advances only while drawing, so the texture resumes where it
+                // left off rather than jumping on the way back into view.
+                if (!onScreen || document.hidden) { running = false; return; }
                 requestAnimationFrame(draw);
                 if (frame++ % 2) return;   // 30fps is plenty for texture
                 resize();
@@ -3533,20 +3679,42 @@
                             }
                         }
                         if (r < .3) continue;
-                        // continuous grey → brand-blue blend (no threshold), so the
-                        // lens dissolves into the surrounding dot field with no seam
+                        const rad = Math.min(r, GAP * .6);
                         if (hot > .01) {
+                            // A lens or sweep dot carries its own colour — a
+                            // continuous grey → brand-blue blend, no threshold,
+                            // so the lens dissolves into the field with no seam.
+                            // These are the only dots still drawn one at a time,
+                            // and there are a few hundred of them.
                             const m = hot * .85;
                             ctx.fillStyle = "rgb(" + ((128 + (76 - 128) * m) | 0) + ","
                                 + ((148 + (126 - 148) * m) | 0) + ","
                                 + ((188 + (255 - 188) * m) | 0) + ")";
+                            ctx.globalAlpha = a;
+                            ctx.beginPath();
+                            ctx.arc(px, py, rad, 0, 6.2832);
+                            ctx.fill();
+                            ctx.fillStyle = "#8094BC";
+                            continue;
                         }
-                        ctx.globalAlpha = a;
-                        ctx.beginPath();
-                        ctx.arc(px, py, Math.min(r, GAP * .6), 0, 6.2832);
-                        ctx.fill();
-                        if (hot > .01) ctx.fillStyle = "#8094BC";
+                        // Everything else is batched: one path per 1/16th of
+                        // alpha, filled once. The field used to issue a
+                        // beginPath and a fill per dot — 26k of each per frame
+                        // on the hero — where it now issues at most 16.
+                        const b = Math.min(BUCKETS - 1, (a * BUCKETS) | 0);
+                        const path = paths[b] || (paths[b] = new Path2D());
+                        path.moveTo(px + rad, py);   // start a subpath, or fill() joins them
+                        path.arc(px, py, rad, 0, 6.2832);
                     }
+                }
+                for (let b = 0; b < BUCKETS; b++) {
+                    const path = paths[b];
+                    if (!path) continue;
+                    paths[b] = null;
+                    // bucket centre, so quantising alpha neither darkens nor
+                    // lightens the field overall
+                    ctx.globalAlpha = (b + .5) / BUCKETS;
+                    ctx.fill(path);
                 }
                 ctx.globalAlpha = 1;
 

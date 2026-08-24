@@ -1,11 +1,10 @@
 import Link from 'next/link';
 import { Fragment, type ReactNode } from 'react';
 import { Halftone } from './halftone';
-import { SHANNON_BOOKS, SHANNON_HOME, SHANNON_LIBRARY } from '@/lib/shannon';
 
 export interface Crumb {
   label: string;
-  /** Absolute for the marketing site, root-relative for a route in this book. */
+  /** Root-relative for a route in this book, absolute for anything outside it. */
   href?: string;
   /** Use a plain <a> instead of Next.js <Link> — for links outside the book. */
   external?: boolean;
@@ -50,14 +49,14 @@ export function PageBanner({ crumb, title, sub, small = false }: PageBannerProps
 }
 
 /**
- * The trail every page in this book shares: the site, its Library, the Books
- * shelf, then wherever the reader actually is.
+ * The trail a page in this book shows.
+ *
+ * The book stands on its own domain, so the trail starts at the book itself.
+ * It used to be prefixed with SHANNON / LIBRARY / BOOKS — the walk back up
+ * through the marketing site the book was a directory of — and that prefix is
+ * what this function existed to add. It is kept as the one place a shared
+ * prefix would go again, so no page has to know whether there is one.
  */
 export function bookCrumb(...tail: Crumb[]): Crumb[] {
-  return [
-    { label: 'SHANNON', href: SHANNON_HOME, external: true },
-    { label: 'LIBRARY', href: SHANNON_LIBRARY, external: true },
-    { label: 'BOOKS', href: SHANNON_BOOKS, external: true },
-    ...tail,
-  ];
+  return [...tail];
 }

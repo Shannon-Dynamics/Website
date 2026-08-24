@@ -107,6 +107,22 @@ export function MdxContent({ source }: { source: string }) {
       source={source}
       components={components}
       options={{
+        /**
+         * next-mdx-remote 6 blocks JavaScript expressions in MDX by default —
+         * the mitigation for the injection its 5.x line was vulnerable to. That
+         * includes JSX attribute expressions, so every `outcomes={[...]}`,
+         * `items={[...]}` and the like silently became undefined and the
+         * chapters crashed on render.
+         *
+         * The MDX here is the book: first-party files in content/, reviewed in
+         * the same PRs as the code, never user-submitted. Expressions in it are
+         * as trusted as the components they feed. blockDangerousJS stays at its
+         * default, so eval, Function, process and friends remain out of reach.
+         *
+         * Should chapters ever accept outside contributions, turn this back on
+         * and pass those arrays from the page instead of the MDX.
+         */
+        blockJS: false,
         mdxOptions: {
           remarkPlugins: [remarkGfm, remarkMath],
           rehypePlugins: [
