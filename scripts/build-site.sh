@@ -13,7 +13,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 rm -rf dist
-mkdir -p dist
+mkdir -p dist/assets
+
+# The utility layer. This used to be compiled in the visitor's browser by
+# cdn.tailwindcss.com on every page load; it is compiled once here instead, and
+# only the classes the pages actually use survive.
+npx tailwindcss -i styles/tailwind.css -o dist/assets/tailwind.css --minify
 
 # Pages.
 cp index.html library-books.html library-open-source.html library-publications.html dist/
