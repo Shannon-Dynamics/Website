@@ -1,0 +1,5 @@
+/* The build input. Each page keeps its own hand-written CSS inline; this is
+   only the utility layer those pages are written against. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
