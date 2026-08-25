@@ -32,12 +32,12 @@ export const site = (path: string) => `${SHANNON_SITE}/${trimStart(path)}`;
  */
 export const asset = (path: string) => `/${trimStart(path)}`;
 
-export const SHANNON_HOME = site('index.html');
-export const SHANNON_CAPABILITIES = site('index.html#capabilities');
-export const SHANNON_PRODUCTS = site('index.html#showcase');
-export const SHANNON_LIBRARY = site('index.html#library');
-export const SHANNON_ECOSYSTEM = site('index.html#ecosystem');
-export const SHANNON_CONTACT = site('index.html#contact');
+export const SHANNON_HOME = site('');
+export const SHANNON_CAPABILITIES = site('#capabilities');
+export const SHANNON_PRODUCTS = site('#showcase');
+export const SHANNON_LIBRARY = site('#library');
+export const SHANNON_ECOSYSTEM = site('#ecosystem');
+export const SHANNON_CONTACT = site('#contact');
 export const SHANNON_BOOKS = site('library-books.html');
 export const SHANNON_EMAIL = 'hello@shannon.id';
 
