@@ -17,6 +17,11 @@
       "permanent": true
     },
     {
+      "source": "/books/probabilistic-robotics-via-rust/:path*/",
+      "destination": "https://prvr.shannon.id/:path*/",
+      "permanent": true
+    },
+    {
       "source": "/books/probabilistic-robotics-via-rust/:path*",
       "destination": "https://prvr.shannon.id/:path*/",
       "permanent": true
@@ -29,6 +34,11 @@
     {
       "source": "/books/reinforcement-learning-for-robotics/",
       "destination": "https://rl4rvr.shannon.id/",
+      "permanent": true
+    },
+    {
+      "source": "/books/reinforcement-learning-for-robotics/:path*/",
+      "destination": "https://rl4rvr.shannon.id/:path*/",
       "permanent": true
     },
     {
