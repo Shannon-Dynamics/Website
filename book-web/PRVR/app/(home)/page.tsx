@@ -3,6 +3,11 @@ import { HeroLocalization } from '@/components/home/hero-localization';
 import { PARTS } from '@/lib/book-structure';
 import { PageBanner, bookCrumb } from '@/components/shannon/page-banner';
 import { BOOK_PDF } from '@/lib/shannon';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+};
 
 export default function HomePage() {
   return (

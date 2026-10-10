@@ -23,6 +23,7 @@ export async function generateMetadata({
   return {
     title: `${chapter.n}. ${chapter.title}`,
     description: chapter.blurb,
+    alternates: { canonical: `/chapters/${chapter.slug}/` },
   };
 }
 

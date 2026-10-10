@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   title: 'Method',
   description:
     'How this book is built: the FCP method, the visual language, the toolchain, and the standard of evidence.',
+  alternates: { canonical: '/about/' },
 };
 
 const CRATES = [
