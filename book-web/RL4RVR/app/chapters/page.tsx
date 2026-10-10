@@ -6,6 +6,7 @@ import { PageBanner, bookCrumb } from '@/components/shannon/PageBanner';
 export const metadata: Metadata = {
   title: 'Contents',
   description: 'The full table of contents for Reinforcement Learning for Robotics — The FCP Way.',
+  alternates: { canonical: '/chapters/' },
 };
 
 export default function ChaptersPage() {

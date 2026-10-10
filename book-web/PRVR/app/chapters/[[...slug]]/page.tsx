@@ -106,5 +106,6 @@ export async function generateMetadata(props: { params: Promise<{ slug?: string[
   return {
     title: page.data.title,
     description: page.data.description,
+    alternates: { canonical: page.url },
   };
 }

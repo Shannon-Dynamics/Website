@@ -3,6 +3,11 @@ import { ArrowRight, Cpu, Eye, Sigma } from 'lucide-react';
 import { CHAPTERS, PARTS, ROBOTS } from '@/lib/chapters';
 import { PageBanner, bookCrumb } from '@/components/shannon/PageBanner';
 import { BOOK_PDF } from '@/lib/shannon';
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+};
 
 const LAYERS = [
   {

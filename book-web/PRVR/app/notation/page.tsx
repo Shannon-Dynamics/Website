@@ -9,6 +9,7 @@ export const metadata: Metadata = {
   title: 'Notation',
   description:
     'Every symbol used in Probabilistic Robotics via Rust, following Thrun, Burgard and Fox, extended with the operators modern estimation needs on manifolds.',
+  alternates: { canonical: '/notation/' },
 };
 
 export default function NotationPage() {

@@ -25,6 +25,8 @@ cp index.html library-books.html library-open-source.html library-publications.h
 # The two book landing pages the interactive editions replaced. Still reachable
 # by direct link, so they keep shipping.
 cp book-probabilistic-robotics-via-rust.html book-reinforcement-learning-for-robotics.html dist/
+# What crawlers ask for first.
+cp robots.txt sitemap.xml dist/
 
 # Assets: logos, the demo reels the homepage frames, the covers, the PDF editions.
 cp -R src video-demo book-cover book-pdf dist/

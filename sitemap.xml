@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The marketing pages. The two book-*.html landing pages are left out: the
+     interactive editions on their own subdomains replaced them, and each book
+     publishes its own sitemap there. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://shannon.id/</loc></url>
+  <url><loc>https://shannon.id/library-books.html</loc></url>
+  <url><loc>https://shannon.id/library-open-source.html</loc></url>
+  <url><loc>https://shannon.id/library-publications.html</loc></url>
+</urlset>
