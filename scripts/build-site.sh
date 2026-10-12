@@ -27,6 +27,8 @@ cp index.html library-books.html library-open-source.html library-publications.h
 cp book-probabilistic-robotics-via-rust.html book-reinforcement-learning-for-robotics.html dist/
 # What crawlers ask for first.
 cp robots.txt sitemap.xml dist/
+# Browsers request /favicon.ico on their own, whatever the pages link to.
+cp favicon.ico dist/
 
 # Assets: logos, the demo reels the homepage frames, the covers, the PDF editions.
 cp -R src video-demo book-cover book-pdf dist/
